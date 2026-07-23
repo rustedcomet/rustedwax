@@ -1,0 +1,19 @@
+*.iml
+.gradle/
+build/
+dist/
+local.properties
+.idea/
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Upstream extension, cloned for line-by-line porting. Not vendored.
+reference/
+
+# Local test screenshots — contain a personal Hive account and browser state.
+debug/
+
+# Kotlin incremental build metadata.
+.kotlin/

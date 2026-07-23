@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+	<!--
+		Phases 0–2: detection probe, encrypted key storage, manual broadcast.
+		No foreground service yet — automatic scrobbling is Phase 3.
+	-->
+
+	<!-- Talking to Hive nodes: validating a key, and broadcasting scrobbles. -->
+	<uses-permission android:name="android.permission.INTERNET" />
+	<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+	<!-- Lets us resolve app labels for the packages publishing media sessions. -->
+	<queries>
+		<intent>
+			<action android:name="android.intent.action.MAIN" />
+		</intent>
+	</queries>
+
+	<application
+		android:allowBackup="false"
+		android:icon="@android:drawable/ic_media_play"
+		android:label="@string/app_name"
+		android:supportsRtl="true"
+		android:theme="@style/Theme.RustedWax">
+
+		<activity
+			android:name=".MainActivity"
+			android:exported="true"
+			android:label="@string/app_name">
+			<intent-filter>
+				<action android:name="android.intent.action.MAIN" />
+				<category android:name="android.intent.category.LAUNCHER" />
+			</intent-filter>
+		</activity>
+
+		<!--
+			Stub listener. It exists so the OS has a component to grant
+			Notification Access to; getActiveSessions(ComponentName) then
+			accepts that component from anywhere in the process.
+			Real notification handling is never needed.
+		-->
+		<service
+			android:name=".detect.RustedWaxListenerService"
+			android:exported="false"
+			android:label="@string/app_name"
+			android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+			<intent-filter>
+				<action android:name="android.service.notification.NotificationListenerService" />
+			</intent-filter>
+		</service>
+
+		<provider
+			android:name="androidx.core.content.FileProvider"
+			android:authorities="${applicationId}.fileprovider"
+			android:exported="false"
+			android:grantUriPermissions="true">
+			<meta-data
+				android:name="android.support.FILE_PROVIDER_PATHS"
+				android:resource="@xml/file_paths" />
+		</provider>
+
+	</application>
+
+</manifest>
