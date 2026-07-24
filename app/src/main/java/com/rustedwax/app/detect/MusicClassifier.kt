@@ -214,6 +214,15 @@ object MusicClassifier {
 	private const val SHORT_FORM_MS = 90L * 1000
 
 	/**
+	 * Uploader-declared short. Free and works with no URL evidence at all —
+	 * which matters, because a shorts-feed session can finalize after the
+	 * address bar has moved on (observed 2026-07-24: an Education short went
+	 * out as `song` on the D4 default because the id, and with it the
+	 * category, was lost by finalize time).
+	 */
+	private val SHORTS_TAG = Regex("""#shorts?\b""", RegexOption.IGNORE_CASE)
+
+	/**
 	 * @param rawTitle the media session title, **before** cleaning
 	 * @param channel the session's ARTIST field — the channel, on YouTube
 	 * @param siteSaysMusic proof the origin was music.youtube.com
@@ -281,7 +290,9 @@ object MusicClassifier {
 		}
 		//    Short-form: shorts are browsed by the dozen, titles are dash-heavy
 		//    clip captions, and a real sub-90-second song is rare.
-		if (isShort || (durationMs != null && durationMs < SHORT_FORM_MS)) {
+		if (isShort || SHORTS_TAG.containsMatchIn(title) ||
+			(durationMs != null && durationMs < SHORT_FORM_MS)
+		) {
 			return video("short-form with no explicit music signal")
 		}
 

@@ -67,6 +67,27 @@ class SessionProbe(context: Context) {
 	 */
 	var onVideoConfirmed: ((videoId: String) -> Unit)? = null
 
+	/**
+	 * Cached watch-page title for a video id, or null when not fetched yet.
+	 * Used to corroborate a latched video id against what the session is
+	 * actually playing. Cache-only — must never touch the network.
+	 */
+	var pageTitleFor: ((videoId: String) -> String?)? = null
+
+	/**
+	 * Loose equality for "is the page's video the session's track". Chromium
+	 * sets the media-session title from the video title, so after trimming and
+	 * case-folding they should be equal; containment is allowed because one
+	 * side is sometimes truncated.
+	 */
+	private fun titlesMatch(a: String, b: String): Boolean {
+		fun norm(s: String) = s.lowercase().replace(Regex("""\s+"""), " ").trim()
+		val x = norm(a)
+		val y = norm(b)
+		if (x.isEmpty() || y.isEmpty()) return false
+		return x == y || x.contains(y) || y.contains(x)
+	}
+
 	private var started = false
 
 	private val activeSessionsListener =
@@ -221,6 +242,29 @@ class SessionProbe(context: Context) {
 		 */
 		private var taintedReason: String? = null
 
+		/**
+		 * The Confirmed identity captured while this track was actually
+		 * playing, kept for the track's lifetime.
+		 *
+		 * PHASE0's "resolve identity at finalize" rule is right for
+		 * notification hints (they arrive late) and exactly wrong for
+		 * address-bar evidence, which is right at track *start* and stale at
+		 * track *end*. Resolving from live evidence at finalize produced two
+		 * on-chain failures on 2026-07-24: a track that lost its video id
+		 * because the user had already scrolled to the next short (payload got
+		 * no url, no category, wrong kind), and two different songs broadcast
+		 * with the *same* url because one finalized while the bar showed the
+		 * other. So: latch on first confirmation, spend at finalize.
+		 */
+		private var latchedVideo: YouTubeProbe.Identity.Confirmed? = null
+
+		/**
+		 * Video ids disproven for this track by the watch page's own title not
+		 * matching the session's. Never re-latched; a rejected id also stops
+		 * qualifying as live URL evidence for this track.
+		 */
+		private val rejectedVideoIds = mutableSetOf<String>()
+
 		private var metadata: MediaMetadata? = controller.metadata
 		private var state: PlaybackState? = controller.playbackState
 
@@ -313,38 +357,70 @@ class SessionProbe(context: Context) {
 			trackStartedAtEpochSec = System.currentTimeMillis() / 1000
 			finalized = false
 			taintedReason = null
+			latchedVideo = null
+			rejectedVideoIds.clear()
 		}
 
 		/**
 		 * Identity for the given metadata, using the hint bound to *this*
-		 * session rather than whatever landed last for the package, and
-		 * applying the taint rule.
+		 * session rather than whatever landed last for the package, applying
+		 * the taint rule, and latching the video id for the track's lifetime.
 		 */
 		private fun identityOf(md: MediaMetadata?): YouTubeProbe.Identity {
+			val sessionTitle = titleOf(md)
 			val hint = NotificationHints.bestFor(
 				packageName = packageName,
-				title = titleOf(md),
+				title = sessionTitle,
 				artist = artistOf(md),
 				soleSession = soleSession,
 			)
-			val id = YouTubeProbe.identify(
-				md = md,
-				hint = hint,
-				url = UrlEvidence.get(packageName),
-				soleSession = soleSession,
-			)
-			if (id is YouTubeProbe.Identity.Unconfirmed && id.provenOtherSite) {
+			// Evidence whose id was disproven for this track is not evidence.
+			val url = UrlEvidence.get(packageName)
+				?.takeUnless { it.videoId != null && it.videoId in rejectedVideoIds }
+			val live = YouTubeProbe.identify(md, hint, url, soleSession)
+
+			if (live is YouTubeProbe.Identity.Unconfirmed && live.provenOtherSite) {
 				if (taintedReason == null) {
-					EventLog.append("identity", "$packageName tainted for this track: ${id.reason}")
+					EventLog.append("identity", "$packageName tainted for this track: ${live.reason}")
 				}
-				taintedReason = id.reason
+				taintedReason = live.reason
 			}
-			if (id is YouTubeProbe.Identity.Confirmed && taintedReason == null) {
-				onVideoConfirmed?.invoke(id.videoId)
+
+			// Latch the first confirmation. Later confirmations with a
+			// different id are the address bar moving on, not this track
+			// changing — a track change resets the latch.
+			if (taintedReason == null && latchedVideo == null &&
+				live is YouTubeProbe.Identity.Confirmed &&
+				live.videoId !in rejectedVideoIds
+			) {
+				latchedVideo = live.copy(source = "${live.source} (latched)")
+				EventLog.append("identity", "$packageName latched video ${live.videoId} for this track")
+				onVideoConfirmed?.invoke(live.videoId)
 			}
-			return taintedReason
-				?.let { YouTubeProbe.Identity.Unconfirmed("another site was proven earlier: $it", true) }
-				?: id
+
+			// Corroborate the latch once enrichment has the page: the watch
+			// page's own title must match what the session is playing. A clear
+			// mismatch means the bar was already showing some other video when
+			// we latched — drop the id rather than broadcast a wrong url.
+			latchedVideo?.let { l ->
+				val pageTitle = pageTitleFor?.invoke(l.videoId)
+				if (pageTitle != null && sessionTitle != null &&
+					!titlesMatch(pageTitle, sessionTitle)
+				) {
+					EventLog.append(
+						"identity",
+						"$packageName unlatched ${l.videoId}: page title " +
+							"\"$pageTitle\" ≠ session title \"$sessionTitle\"",
+					)
+					rejectedVideoIds += l.videoId
+					latchedVideo = null
+				}
+			}
+
+			taintedReason?.let {
+				return YouTubeProbe.Identity.Unconfirmed("another site was proven earlier: $it", true)
+			}
+			return latchedVideo ?: live
 		}
 
 		/** The hint the probe is currently bound to, for the diagnostics card. */

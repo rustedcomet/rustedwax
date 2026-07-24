@@ -254,6 +254,21 @@ class MusicClassifierTest {
 	}
 
 	/**
+	 * Broadcast 2026-07-24T17:27 as `song` on the D4 default: the video id
+	 * (and with it the Education category) was lost by finalize time, and
+	 * nothing else fired. The uploader-declared #shorts tag is evidence that
+	 * survives losing the URL.
+	 */
+	@Test
+	fun `a #shorts tag in the title is short-form even with no url evidence`() {
+		assertEquals(video, kindOf(
+			"Kya Yajooj Majooj Ki Deewar Abhi Bhi Mojood Hai? #shorts",
+			"Times Cover", durationMs = 2 * 60 * 1000L))
+		// Explicit music evidence still wins for a tagged short.
+		assertEquals(song, kindOf("Riff (Guitar Cover) #shorts", "Someone"))
+	}
+
+	/**
 	 * Word boundaries: a music word buried inside a larger word is not a match.
 	 * "discover" is not "cover"; "preview" is not "review".
 	 */

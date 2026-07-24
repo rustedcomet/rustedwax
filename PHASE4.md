@@ -329,6 +329,38 @@ Track`, categorized `Entertainment`, with no music vocabulary, now lands as
 `video`. The user's stated priority is playlist purity — a missed song is one
 lost entry; a false one is permanent curation debt.
 
+## 9c. Field findings — 2026-07-24 evening: the finalize-time evidence race
+
+Two on-chain failures with the same root cause, both found by reading the
+account history back off the chain:
+
+- `17:27` — an Education-category short broadcast as `song` with **no url**.
+  The Now card had shown the category correctly while it played; by finalize
+  the user had scrolled to the next short, the address bar no longer matched,
+  identity degraded to SiteOnly, and with no video id there was no category —
+  the D4 default fired.
+- `04:07` / `04:11` — two different songs broadcast with the **same url**
+  (`v=7FPf8mHXIpY`): a track finalized while the bar showed the other video
+  and inherited its id. Misattribution, on an immutable chain.
+
+PHASE0's rule — *resolve identity at finalize, because the notification hint
+arrives late* — is exactly wrong for address-bar evidence, which is right at
+track **start** and stale at track **end**. The two evidence types age in
+opposite directions.
+
+Fix (v0.4.2): **latch on first confirmation, spend at finalize.** The first
+Confirmed identity is captured on the Watch and kept for the track's lifetime
+(cleared on track change). Once enrichment has the watch page, the page's own
+title is checked against the session title; a clear mismatch rejects the id
+for the track (fail-closed — no url beats a wrong url) and the id can't
+re-latch. Additionally, an uploader-declared `#shorts` tag in the title now
+counts as short-form, since it survives losing the URL entirely.
+
+Also observed, deliberately not chased yet: `Title | Channel`-shaped titles
+split as artist|track by the separator heuristic (a kitten video broadcast
+with artist and title swapped). Harmless while kind=video; worth a look if it
+ever shows up on a song.
+
 ## 10. Before enabling D4
 
 Song-by-default is irreversible per entry. Run the new classifier over the
