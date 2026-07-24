@@ -14,12 +14,31 @@ import com.rustedwax.app.hive.HiveScrobblePayload
  * which is the general shape of the bug: covers, live takes and lyric videos
  * are exactly the music that doesn't look like `Artist - Track`.
  *
- * ## The default flipped (decision D4)
+ * ## Evidence beats keywords (2026-07-24 field data)
  *
- * Proven-YouTube playback is now **`song` unless something says otherwise**.
- * That inverts the risk: the old default under-claimed music, the new one can
- * over-claim it. The blocklist is what keeps that honest, and it is the part
- * worth tuning against real listening — see PHASE4.md §10.
+ * A day of real testing produced eleven film clips, trailers and shorts
+ * scrobbled as `song`. Fetching their watch pages showed why: four were
+ * categorized `Film & Animation` by YouTube itself — a category this class
+ * didn't know — and the rest sat in ambiguous categories (`Entertainment`,
+ * `People & Blogs`) where the old code fell through to weak heuristics: a `|`
+ * or `-` in the title read as "names an artist", or the bare D4 default.
+ *
+ * So the hierarchy is now explicit:
+ *
+ *  1. **Category, when known, governs.** `Music` → song. Film/gaming/news →
+ *     video. An *ambiguous* category doesn't decide — but it demands
+ *     **explicit** music evidence (a cover, lyrics, a VEVO channel), because an
+ *     uploader who had a Music category available and didn't pick it is weak
+ *     evidence against, and a dash in the title is no rebuttal.
+ *  2. **Short-form is held to the same higher bar.** Shorts are rapid-fire
+ *     browsing; one wrong default per scroll session ruins a playlist. And
+ *     almost no real song is under 90 seconds.
+ *  3. Keyword lists remain as the **offline fallback only** — for when
+ *     enrichment is off or the fetch failed.
+ *
+ * The asymmetry is deliberate and matches how the data is used: a missed song
+ * is one lost playlist entry; a false song is permanent playlist pollution the
+ * user has to curate away by hand, forever, on an immutable chain.
  *
  * ## Ordering matters
  *
@@ -44,10 +63,19 @@ object MusicClassifier {
 	/** YouTube's own category, when enrichment resolved one. Decisive. */
 	private const val MUSIC_CATEGORY = "music"
 
-	private val NON_MUSIC_CATEGORIES = setOf(
-		"gaming", "news & politics", "sports", "education", "howto & style",
-		"science & technology", "autos & vehicles", "travel & events",
-		"pets & animals",
+	/**
+	 * Categories that decisively mean "not music". `Film & Animation` was the
+	 * costly omission: every movie trailer and film clip in the 2026-07-24
+	 * sample carried it, fetched correctly, and was then ignored.
+	 *
+	 * `Entertainment`, `People & Blogs` and `Comedy` are deliberately *not*
+	 * here — fan-uploaded music and comedy songs live there. They are handled
+	 * as ambiguous instead: known, non-music, non-decisive.
+	 */
+	private val DECISIVE_NON_MUSIC_CATEGORIES = setOf(
+		"film & animation", "gaming", "news & politics", "sports", "education",
+		"howto & style", "science & technology", "autos & vehicles",
+		"travel & events", "pets & animals", "nonprofits & activism",
 	)
 
 	/**
@@ -69,11 +97,14 @@ object MusicClassifier {
 		"teaser", "tier list", "first look", "hands on", "devlog",
 		"sermon", "lecture", "keynote", "webinar", "recipe", "asmr",
 		"breaking news", "town hall", "debate", "testimony",
+		// Film-clip vocabulary, from the 2026-07-24 field sample.
+		"movie scene", "movie scenes", "top movie", "movie clip", "movie clips",
+		"full movie", "short film", "showreel", "behind the scenes",
 		// Reaction: the bare word is a real song ("Chain Reaction"), so require
 		// the video-format phrasing instead.
 		"reaction video", "reacts to",
-		// Trailer: bare "trailer" blocks "Trailer Trash", "Trailer Park"; a
-		// real trailer names what it is a trailer *for*.
+		// Trailer: bare "trailer" blocks "Trailer Trash", "Trailer Park"; the
+		// structural rule below handles the word in film context.
 		"official trailer", "movie trailer", "game trailer",
 		// Hearing: bare word blocks "Hearing Damage"; keep only the venues.
 		"senate hearing", "court hearing", "congressional hearing",
@@ -84,23 +115,31 @@ object MusicClassifier {
 	).map { Term(it, wordish(it)) }
 
 	/**
-	 * Words in the *channel name* only. These are too common in song titles to
-	 * match there — "Bad News" and "Good News" are songs; `BBC News` is not a
-	 * band.
+	 * "Trailer" recognized structurally instead of by enumerated phrase —
+	 * "Official *Final* Trailer" slipped past the exact phrases in the field
+	 * sample. A film context word within two words before "trailer", or
+	 * "Trailer 2" / "Trailer (2026)". Song titles that merely *contain* the
+	 * word ("Trailer Trash (Official Video)") match neither shape.
 	 */
-	private val NON_MUSIC_CHANNEL =
-		listOf("news", "gaming", "podcast", "esports", "sports", "tutorials")
-			.map { Term(it, wordish(it)) }
+	private val TRAILER_STRUCTURAL = Regex(
+		"""\b(?:official|final|teasers?|movie|film|imax|4k)\s+(?:\w+\s+){0,2}trailers?\b""" +
+			"""|\btrailers?\s*(?:#?\d|\(\d{4}\))""",
+		RegexOption.IGNORE_CASE,
+	)
 
 	/**
-	 * A "cover" that actually means a music cover — never the bare word.
-	 *
-	 * Real covers are always qualified: an instrument or style in front
-	 * ("Guitar Cover", "Acoustic Cover"), the song named after ("cover of…",
-	 * "cover song"), or the whole thing bracketed ("(Guitar Cover)",
-	 * "【Drum Cover】"). "Magazine Cover Photo" matches none of these — and even
-	 * if it somehow did, the blocklist above runs first.
+	 * Words in the *channel name* only. These are too common in song titles to
+	 * match there — "Bad News" and "Good News" are songs; `BBC News` is not a
+	 * band. The film row exists because clip channels advertise themselves in
+	 * the name: "Movie Trailers Source", "Cinema Crunch", "Universal Pictures",
+	 * "Groovy Movie Dog", "Natalizio Filmes" (all observed misclassified).
 	 */
+	private val NON_MUSIC_CHANNEL = listOf(
+		"news", "gaming", "podcast", "esports", "sports", "tutorials",
+		"movie", "movies", "movieclips", "film", "films", "filmes", "cinema",
+		"trailers", "pictures",
+	).map { Term(it, wordish(it)) }
+
 	/** Instruments/styles that qualify a "cover" or "playthrough" as musical. */
 	private const val INSTRUMENTS =
 		"""guitar|electric|acoustic|bass|drums?|piano|keyboard|synth|""" +
@@ -168,10 +207,18 @@ object MusicClassifier {
 	private const val LONG_FORM_MS = 30L * 60 * 1000
 
 	/**
+	 * Below this, weak evidence isn't enough. Almost no real song is under 90
+	 * seconds, but a huge share of shorts and clips are — and their titles are
+	 * full of dashes and pipes that fool the artist heuristic.
+	 */
+	private const val SHORT_FORM_MS = 90L * 1000
+
+	/**
 	 * @param rawTitle the media session title, **before** cleaning
 	 * @param channel the session's ARTIST field — the channel, on YouTube
 	 * @param siteSaysMusic proof the origin was music.youtube.com
 	 * @param enrichedCategory YouTube's own category string, when known
+	 * @param isShort true when the URL said `/shorts/`
 	 */
 	fun classify(
 		rawTitle: String,
@@ -179,16 +226,16 @@ object MusicClassifier {
 		durationMs: Long?,
 		siteSaysMusic: Boolean,
 		enrichedCategory: String? = null,
+		isShort: Boolean = false,
 	): Result {
 		val title = rawTitle.lowercase()
 		val ch = channel?.trim()?.lowercase().orEmpty()
+		val category = enrichedCategory?.trim()?.lowercase()?.ifEmpty { null }
 
 		// 1. YouTube's own answer beats every heuristic below it.
-		enrichedCategory?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }?.let { category ->
-			if (category == MUSIC_CATEGORY) return song("YouTube category: Music")
-			if (category in NON_MUSIC_CATEGORIES) {
-				return video("YouTube category: $enrichedCategory")
-			}
+		if (category == MUSIC_CATEGORY) return song("YouTube category: Music")
+		if (category in DECISIVE_NON_MUSIC_CATEGORIES) {
+			return video("YouTube category: $enrichedCategory")
 		}
 
 		// 2. Blocklist. Runs before the positive signals so "Guitar Tutorial"
@@ -197,39 +244,59 @@ object MusicClassifier {
 		NON_MUSIC_TITLE.firstOrNull { it.matches(title) }?.let {
 			return video("title has non-music \"${it.text}\"")
 		}
+		if (TRAILER_STRUCTURAL.containsMatchIn(title)) {
+			return video("title reads as a film trailer")
+		}
 		NON_MUSIC_CHANNEL.firstOrNull { it.matches(ch) }?.let {
 			return video("channel has non-music \"${it.text}\"")
 		}
 		// A "playthrough" with no instrument is a game playthrough. The
-		// instrument-qualified case is let through to become a song at step 3;
+		// instrument-qualified case is let through to become a song below;
 		// unlike a cover, a bare playthrough defaults to gaming, not music.
 		if (PLAYTHROUGH_ANY.containsMatchIn(title) && !PLAYTHROUGH_MUSIC.containsMatchIn(title)) {
 			return video("game playthrough (no instrument)")
 		}
 
-		// 3. Positive evidence.
+		// 3. Explicit music evidence — enough to overrule an ambiguous
+		//    category and to qualify a short.
 		if (siteSaysMusic) return song("music.youtube.com")
 		MUSIC_CHANNEL_SUFFIXES.firstOrNull { ch.endsWith(it) }?.let {
 			return song("channel ends with \"$it\"")
 		}
-		// A cover only counts in a real musical construction, never as the bare
-		// word — that's what a magazine cover, a cover story and album cover
-		// all trip on, and none of them reach here anyway (blocklisted above).
 		if (COVER_MUSIC.containsMatchIn(title)) return song("title names a cover")
 		if (PLAYTHROUGH_MUSIC.containsMatchIn(title)) return song("title names a playthrough")
 		MUSIC_TITLE.firstOrNull { it.matches(title) }?.let {
 			return song("title has music \"${it.text}\"")
 		}
+
+		// 4. From here down only weak evidence remains — and two situations
+		//    where weak evidence is not accepted.
+		//
+		//    A known non-music category: the uploader had "Music" available and
+		//    chose something else. The 2026-07-24 sample was full of film clips
+		//    in `Entertainment` whose `|`-separated titles passed the artist
+		//    heuristic below; that heuristic doesn't outrank the uploader.
+		if (category != null) {
+			return video("category \"$enrichedCategory\" and no explicit music signal")
+		}
+		//    Short-form: shorts are browsed by the dozen, titles are dash-heavy
+		//    clip captions, and a real sub-90-second song is rare.
+		if (isShort || (durationMs != null && durationMs < SHORT_FORM_MS)) {
+			return video("short-form with no explicit music signal")
+		}
+
+		// 5. Weak evidence, acceptable only for ordinary watch-page videos of
+		//    unknown category.
 		if (TitleParser.looksLikeMusic(rawTitle, channel)) {
 			return song("title names an artist")
 		}
 
-		// 4. Nothing said music, and it's long. Probably a talk or a stream.
+		// 6. Nothing said music, and it's long. Probably a talk or a stream.
 		if (durationMs != null && durationMs >= LONG_FORM_MS) {
 			return video("no music signal and longer than 30 min")
 		}
 
-		// 5. D4 — default to music.
+		// 7. D4 — default to music.
 		return song("default for YouTube (no non-music signal)")
 	}
 }

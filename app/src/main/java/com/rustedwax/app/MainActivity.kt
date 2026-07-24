@@ -184,7 +184,11 @@ class MainActivity : ComponentActivity() {
 						}
 					},
 					onBroadcastSession = { session ->
-						val payload = ScrobbleBuilder.from(session)
+						// Same cached facts the Now card showed — the button must
+						// broadcast exactly the payload the user just looked at.
+						val facts = session.confirmed
+							?.let { ScrobbleEngine.cachedFacts(it.videoId) }
+						val payload = ScrobbleBuilder.from(session, facts)
 						if (payload == null) {
 							report("Nothing broadcastable in that session yet.", isError = true)
 						} else {

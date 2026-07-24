@@ -18,7 +18,8 @@ class MusicClassifierTest {
 		durationMs: Long? = 4 * 60 * 1000L,
 		siteSaysMusic: Boolean = false,
 		category: String? = null,
-	) = MusicClassifier.classify(title, channel, durationMs, siteSaysMusic, category).kind
+		isShort: Boolean = false,
+	) = MusicClassifier.classify(title, channel, durationMs, siteSaysMusic, category, isShort).kind
 
 	private val song = HiveScrobblePayload.KIND_SONG
 	private val video = HiveScrobblePayload.KIND_VIDEO
@@ -93,6 +94,99 @@ class MusicClassifierTest {
 	@Test
 	fun `D4 default is song`() {
 		assertEquals(song, kindOf("Some upload with no signals at all", "A Channel"))
+	}
+
+	/**
+	 * The 2026-07-24 field sample: eleven film clips, trailers and shorts that
+	 * went on-chain as `song`. Titles, channels and categories are the real
+	 * values fetched from each video's watch page. Every one must be `video`.
+	 */
+	@Test
+	fun `the field sample of misclassified film content is video`() {
+		// Film & Animation — the category alone must decide these.
+		assertEquals(video, kindOf(
+			"COYOTE VS. ACME Official Final Trailer (2026) John Cena",
+			"ONE Media", category = "Film & Animation"))
+		assertEquals(video, kindOf(
+			"THE END OF OAK STREET Official Final Trailer (2026)",
+			"ONE Media", category = "Film & Animation"))
+		assertEquals(video, kindOf(
+			"Top Movie Scene | Giant Spider Attack | Kong: Skull Island",
+			"VISIONREEL PRODUCTIONS", category = "Film & Animation"))
+		assertEquals(video, kindOf(
+			"You Don't Like Real Girls | Blade Runner 2049 [Open Matte]",
+			"Natalizio Filmes", category = "Film & Animation"))
+		// Ambiguous categories — known-but-not-music demands explicit evidence,
+		// and a pipe or dash in the title is not explicit evidence.
+		assertEquals(video, kindOf(
+			"You and who? | 🎬 Notting Hill (1999)",
+			"Universal Pictures", category = "Entertainment"))
+		assertEquals(video, kindOf(
+			"The weapon is meant as a gift -- It is a Crysknife  | DUNE 2021 |",
+			"Groovy Movie Dog", category = "Entertainment"))
+		assertEquals(video, kindOf(
+			"Gsxr1000r police chase x Rolling in the deep",
+			"Awahys", category = "Entertainment"))
+		assertEquals(video, kindOf(
+			"The surgeon (Short Film)",
+			"AidAVisioN", category = "People & Blogs"))
+		assertEquals(video, kindOf(
+			"Connie Doherty - Showreel",
+			"Connie Doherty", category = "People & Blogs"))
+		assertEquals(video, kindOf(
+			"Cozy Kitchen Ghibli Vibes💖",
+			"Cozy Minamy", category = "People & Blogs"))
+		assertEquals(video, kindOf(
+			"One of the Coldest Scenes in Western Movies - \"How good are ya\"",
+			"Cinema Crunch", category = "People & Blogs", isShort = true))
+	}
+
+	/** The same sample with enrichment OFF — the structural fallbacks. */
+	@Test
+	fun `the field sample degrades sanely without a category`() {
+		// "Official Final Trailer" slipped past the exact phrase "official
+		// trailer"; the structural rule reads context + trailer.
+		assertEquals(video, kindOf(
+			"COYOTE VS. ACME Official Final Trailer (2026) John Cena", "ONE Media"))
+		// Clip channels advertise themselves in the name.
+		assertEquals(video, kindOf("Some scene compilation", "Movie Trailers Source"))
+		assertEquals(video, kindOf("Some scene compilation", "Cinema Crunch"))
+		assertEquals(video, kindOf("Random clip", "Universal Pictures"))
+		// Film vocabulary in the title.
+		assertEquals(video, kindOf(
+			"Top Movie Scene | Giant Spider Attack | Kong: Skull Island", "Somebody"))
+		assertEquals(video, kindOf("The surgeon (Short Film)", "AidAVisioN"))
+		assertEquals(video, kindOf("Connie Doherty - Showreel", "Connie Doherty"))
+	}
+
+	/**
+	 * An ambiguous category requires explicit evidence — but explicit evidence
+	 * does win. Fan-uploaded covers commonly sit in Entertainment or People &
+	 * Blogs, and they must not be lost to the stricter rule.
+	 */
+	@Test
+	fun `explicit music evidence overrules an ambiguous category`() {
+		assertEquals(song, kindOf(
+			"Creep (Acoustic Cover)", "Some Person", category = "Entertainment"))
+		assertEquals(song, kindOf(
+			"Duality (Lyrics)", "LyricChannel", category = "People & Blogs"))
+		assertEquals(song, kindOf(
+			"Anything at all", "Radiohead - Topic", category = "Entertainment"))
+	}
+
+	/**
+	 * Shorts are browsed by the dozen and titled like clip captions, so weak
+	 * evidence (a dash, the bare default) is not accepted for them.
+	 */
+	@Test
+	fun `shorts need explicit music evidence`() {
+		assertEquals(video, kindOf("Epic Moment - Best Scene Ever", "Clips", isShort = true))
+		assertEquals(video, kindOf("Some random caption", "Uploader", isShort = true))
+		// Explicit evidence still qualifies a short as music.
+		assertEquals(song, kindOf("Zombie 【Guitar Cover】", "OLD MOON CHILD", isShort = true))
+		// Same bar for anything under 90 seconds, shorts URL or not.
+		assertEquals(video, kindOf("Funny Dog - Compilation", "Dogs", durationMs = 45_000L))
+		assertEquals(song, kindOf("Riff (Official Audio)", "Band", durationMs = 45_000L))
 	}
 
 	/**

@@ -23,6 +23,8 @@ object UrlEvidence {
 	data class Evidence(
 		val host: String?,
 		val videoId: String?,
+		/** True when the bar showed a `/shorts/` path — shorts are classified more strictly. */
+		val isShort: Boolean = false,
 		/** Exactly what the address bar contained, for the log. */
 		val raw: String,
 		val atMillis: Long = System.currentTimeMillis(),

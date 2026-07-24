@@ -306,6 +306,29 @@ be tested without a device or a network. That's what makes D8's "breakage must
 be visible" mitigation real: markup drift fails a test rather than silently
 degrading in production.
 
+## 9b. Field findings — 2026-07-24, first day of real 0.4.0 use
+
+Eleven film clips, trailers and shorts scrobbled as `song`. Fetching each
+video's watch page showed the failure was **not** missing keywords:
+
+| Failure | Evidence | Fix (v0.4.1) |
+| --- | --- | --- |
+| `Film & Animation` absent from the category list | 4 of 11 carried it; enrichment fetched it correctly and the classifier ignored it | Added to the decisive non-music categories |
+| Ambiguous category fell through to *weak* heuristics | `You and who? \| 🎬 Notting Hill (1999)` (Entertainment) passed the artist heuristic on its `\|` | A known non-music category now **demands explicit** music evidence (cover/lyrics/VEVO/…); a separator or the bare default no longer suffices |
+| Exact phrases are brittle | `Official **Final** Trailer` ≠ `official trailer` | Structural rule: film-context word within two words before "trailer", or `Trailer 2` / `Trailer (2026)` |
+| Shorts scrobble on defaults | 18-second clip captioned with dashes read as `Artist - Track` | `/shorts/` URLs and anything under 90 s require explicit evidence |
+| Preview lied about the kind | Now tab classified from the title alone; enrichment only ran at finalize | Facts are **prefetched** when the video id appears; the Now card, the manual broadcast button and the engine all read the same cache |
+
+The principle that fell out: **evidence is layered, and weak evidence is only
+acceptable when nothing better exists.** Category > blocklist/structure >
+explicit music vocabulary > title-shape heuristics > default. An uploader who
+had "Music" available and picked something else outranks a dash in their title.
+
+Known trade, accepted: a fan upload of a real song titled plain `Artist -
+Track`, categorized `Entertainment`, with no music vocabulary, now lands as
+`video`. The user's stated priority is playlist purity — a missed song is one
+lost entry; a false one is permanent curation debt.
+
 ## 10. Before enabling D4
 
 Song-by-default is irreversible per entry. Run the new classifier over the

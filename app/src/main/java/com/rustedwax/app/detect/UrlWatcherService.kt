@@ -73,6 +73,7 @@ class UrlWatcherService : AccessibilityService() {
 			UrlEvidence.Evidence(
 				host = hostOf(raw),
 				videoId = VIDEO_ID.find(raw)?.groupValues?.get(1),
+				isShort = raw.contains("/shorts/", ignoreCase = true),
 				raw = raw,
 			),
 		)

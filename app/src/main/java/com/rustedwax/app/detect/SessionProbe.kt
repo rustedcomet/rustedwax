@@ -60,6 +60,13 @@ class SessionProbe(context: Context) {
 	 */
 	var onTrackFinalized: ((SessionSnapshot) -> Unit)? = null
 
+	/**
+	 * Fires when a session's video id becomes known — the earliest moment
+	 * enrichment can start. Wired to the engine's prefetch, which dedupes, so
+	 * being called on every identity re-check is fine.
+	 */
+	var onVideoConfirmed: ((videoId: String) -> Unit)? = null
+
 	private var started = false
 
 	private val activeSessionsListener =
@@ -331,6 +338,9 @@ class SessionProbe(context: Context) {
 					EventLog.append("identity", "$packageName tainted for this track: ${id.reason}")
 				}
 				taintedReason = id.reason
+			}
+			if (id is YouTubeProbe.Identity.Confirmed && taintedReason == null) {
+				onVideoConfirmed?.invoke(id.videoId)
 			}
 			return taintedReason
 				?.let { YouTubeProbe.Identity.Unconfirmed("another site was proven earlier: $it", true) }

@@ -101,6 +101,7 @@ class RustedWaxListenerService : NotificationListenerService() {
 		if (probe != null) return
 		probe = SessionProbe(applicationContext).also { p ->
 			p.onTrackFinalized = ScrobbleEngine::onTrackFinalized
+			p.onVideoConfirmed = ScrobbleEngine::prefetch
 			p.start()
 			ProbeHolder.set(p)
 		}

@@ -40,6 +40,7 @@ object ScrobbleBuilder {
 			durationMs = duration,
 			siteSaysMusic = siteSaysMusic,
 			enrichedCategory = facts?.category,
+			isShort = session.confirmed?.isShort == true,
 		)
 
 		val parsed = TitleParser.parse(rawTitle, channel)
@@ -61,15 +62,26 @@ object ScrobbleBuilder {
 		)
 	}
 
-	/** Why the kind came out the way it did, for the diagnostics card. */
+	/**
+	 * Why the kind came out the way it did, for the diagnostics card. Uses the
+	 * same inputs as [from], so the preview and the broadcast can't disagree —
+	 * an earlier version dropped `siteSaysMusic` and `isShort` here, and the
+	 * card showed a different verdict than the one that went on-chain.
+	 */
 	fun kindReason(session: SessionSnapshot, facts: VideoFacts? = null): String? {
 		val title = facts?.title ?: session.title ?: return null
+		val siteSaysMusic = when (val id = session.identity) {
+			is YouTubeProbe.Identity.Confirmed -> id.isMusic
+			is YouTubeProbe.Identity.SiteOnly -> id.isMusic
+			else -> false
+		}
 		return MusicClassifier.classify(
 			rawTitle = title,
 			channel = facts?.author ?: session.artist,
 			durationMs = session.durationMs,
-			siteSaysMusic = false,
+			siteSaysMusic = siteSaysMusic,
 			enrichedCategory = facts?.category,
+			isShort = session.confirmed?.isShort == true,
 		).reason
 	}
 

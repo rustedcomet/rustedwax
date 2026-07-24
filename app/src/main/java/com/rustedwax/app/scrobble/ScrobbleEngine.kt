@@ -44,7 +44,16 @@ object ScrobbleEngine {
 	private lateinit var queue: BroadcastQueue
 	private lateinit var settings: Settings
 	private lateinit var resolver: MetadataResolver
+	private lateinit var factsCache: FactsCache
 	private val broadcaster = HiveBroadcaster()
+
+	/**
+	 * Video ids a prefetch has already been launched for this session. Never
+	 * cleared on failure: a video that couldn't be resolved once (offline,
+	 * markup drift) shouldn't be re-fetched every second by the UI tick that
+	 * triggers identity checks.
+	 */
+	private val prefetched = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 	private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 	private val broadcastLock = Mutex()
 
@@ -75,7 +84,8 @@ object ScrobbleEngine {
 		ledger = DedupLedger(appContext)
 		queue = BroadcastQueue(appContext)
 		settings = Settings(appContext)
-		resolver = YouTubePageResolver(FactsCache(appContext))
+		factsCache = FactsCache(appContext)
+		resolver = YouTubePageResolver(factsCache)
 		initialised = true
 		ledger.prune()
 		_queueSize.value = queue.size()
@@ -152,6 +162,30 @@ object ScrobbleEngine {
 			}
 		}
 	}
+
+	/**
+	 * Start resolving a video's facts the moment it's identified, instead of
+	 * at finalize minutes later.
+	 *
+	 * Two reasons this matters beyond latency. The broadcast path stops
+	 * depending on a live network at the exact moment a track ends. And the
+	 * Now-tab preview reads the same cache via [cachedFacts], so the kind it
+	 * shows is the kind that will be broadcast — during the field test the
+	 * preview classified from the title alone while enrichment later said
+	 * otherwise, and the mismatch made the filter look arbitrary.
+	 */
+	fun prefetch(videoId: String) {
+		if (!initialised || !settings.enrichment) return
+		if (!prefetched.add(videoId)) return
+		scope.launch {
+			runCatching { resolver.resolve(videoId) }
+				.onFailure { EventLog.append("enrich", "prefetch failed: ${it.message}") }
+		}
+	}
+
+	/** Already-resolved facts, memory/disk only — never the network. */
+	fun cachedFacts(videoId: String): VideoFacts? =
+		if (initialised) factsCache.get(videoId) else null
 
 	/**
 	 * Best-effort lookup of the video's own metadata.

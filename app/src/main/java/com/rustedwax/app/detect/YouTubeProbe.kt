@@ -100,6 +100,8 @@ object YouTubeProbe {
 			val videoId: String,
 			val url: String,
 			val isMusic: Boolean,
+			/** True when the address bar showed a `/shorts/` path. */
+			val isShort: Boolean = false,
 			override val source: String,
 		) : Identity
 
@@ -163,6 +165,7 @@ object YouTubeProbe {
 						videoId = id,
 						url = watchUrl(id),
 						isMusic = url.host == YOUTUBE_MUSIC_HOST,
+						isShort = url.isShort,
 						source = "$corroboration → $id",
 					)
 				}

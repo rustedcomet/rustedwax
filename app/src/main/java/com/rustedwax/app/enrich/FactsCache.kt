@@ -17,7 +17,15 @@ class FactsCache(context: Context, private val maxEntries: Int = 200) {
 
 	private val dir = File(context.filesDir, "enrich").apply { mkdirs() }
 
+	/**
+	 * Memory front for the disk store. Exists so the Now-tab preview — which
+	 * re-renders every second — can ask for facts without touching disk after
+	 * the first hit.
+	 */
+	private val memory = java.util.concurrent.ConcurrentHashMap<String, VideoFacts>()
+
 	fun get(videoId: String): VideoFacts? {
+		memory[videoId]?.let { return it }
 		val file = fileFor(videoId) ?: return null
 		if (!file.exists()) return null
 		return runCatching {
@@ -30,10 +38,11 @@ class FactsCache(context: Context, private val maxEntries: Int = 200) {
 				originalArtist = o.optStringOrNull("originalArtist"),
 				originalTitle = o.optStringOrNull("originalTitle"),
 			)
-		}.getOrNull()
+		}.getOrNull()?.also { memory[it.videoId] = it }
 	}
 
 	fun put(facts: VideoFacts) {
+		memory[facts.videoId] = facts
 		val file = fileFor(facts.videoId) ?: return
 		runCatching {
 			val o = JSONObject()
