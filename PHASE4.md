@@ -435,6 +435,15 @@ rightly rejects the stale id) — those scrobbles carry no `url`, and category
 enrichment can't run for them. MusicBrainz, which needs no id, is exactly the
 layer that still works there.
 
+**Addendum (v0.5.2)** — TV episode numbering joined the format tier. "The Big
+Bang Theory Season 6 Ep 19 - Best Scenes" showed `song` on the Now card until
+its Comedy category arrived: "Ep 19" wasn't recognized offline, and the ` - `
+then read as an artist separator. Since the enriched verdict only *previews*
+late but *broadcasts* correctly, the real exposure is the no-id case where the
+offline verdict is final — so `Season <n> Ep <n>` and `SxxExx` now decide
+`video` with no category at all. Bare `EP <n>` is deliberately not matched:
+in music, EP is a release format, and "EP 2" names real records.
+
 ### Ecosystem finding — first writer wins on scrobble.life
 
 The site keeps one canonical record per video id, seeded by the **first**

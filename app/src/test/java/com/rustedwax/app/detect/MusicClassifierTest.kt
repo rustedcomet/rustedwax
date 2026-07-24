@@ -272,6 +272,35 @@ class MusicClassifierTest {
 		assertEquals(video, kindOf("Chain Reaction", "Diana Ross"))
 	}
 
+	/**
+	 * The sitcom compilation that showed "song" until its Comedy category
+	 * arrived: "Season 6 Ep 19" wasn't recognized offline, and the ` - ` then
+	 * read as an artist separator. Episode numbering must decide it with no
+	 * category at all — this is the verdict that stands when the id is lost.
+	 */
+	@Test
+	fun `episode numbering is a video even offline`() {
+		assertEquals(video, kindOf(
+			"The Big Bang Theory Season 6 Ep 19 - Best Scenes", "XxGanishxX"))
+		assertEquals(video, kindOf("Breaking Bad S02E05 - Full Recap", "Clips4U"))
+		assertEquals(video, kindOf("The Office Season 3 Episode 12", "SomeFan"))
+		// …and with the category present the verdict is the same, not fought over.
+		assertEquals(video, kindOf(
+			"The Big Bang Theory Season 6 Ep 19 - Best Scenes", "XxGanishxX",
+			category = "Comedy"))
+	}
+
+	/**
+	 * "EP" is a release format in music — "EP 2" names real records. Episode
+	 * matching requires the season context or the SxxExx shape, so music EPs
+	 * fall through to the music evidence they carry.
+	 */
+	@Test
+	fun `music EPs are not TV episodes`() {
+		assertEquals(song, kindOf("Bloom EP (Full Album)", "Some Band"))
+		assertEquals(song, kindOf("Whirlwind EP 2 (Official Audio)", "Some Band"))
+	}
+
 	/** The actual non-music formats those words describe are caught outright. */
 	@Test
 	fun `reaction videos trailers and hearings are still videos`() {

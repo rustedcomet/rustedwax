@@ -141,6 +141,23 @@ object MusicClassifier {
 	)
 
 	/**
+	 * TV episode numbering. The blocklist word "episode" already catches the
+	 * spelled-out form; this catches the abbreviations — "Season 6 Ep 19",
+	 * "S06E19" — which fooled the offline path on a sitcom-scenes compilation
+	 * whose ` - ` then read as an artist separator (observed 2026-07-24,
+	 * rescued only because the Comedy category arrived in time).
+	 *
+	 * Bare "Ep <n>" is deliberately NOT matched: in music, EP is a release
+	 * format, and titles like "EP 2" name real records. The season context or
+	 * the SxxExx shape is required.
+	 */
+	private val EPISODE_STRUCTURAL = Regex(
+		"""\bs(?:eason)?\s*\d{1,2}\s*[,.\- ]*\s*ep(?:isode)?s?\.?\s*\d{1,3}\b""" +
+			"""|\bs\d{1,2}\s?e\d{1,3}\b""",
+		RegexOption.IGNORE_CASE,
+	)
+
+	/**
 	 * Words that usually mean commentary but are also real song titles —
 	 * "Chain Reaction" is Diana Ross. These sit *below* MusicBrainz and the
 	 * Music category, so a verified song passes while `"Exit Wound" REACTION |
@@ -274,6 +291,9 @@ object MusicClassifier {
 		}
 		if (NEWS_STRUCTURAL.containsMatchIn(title)) {
 			return video("title reads as a music-news headline")
+		}
+		if (EPISODE_STRUCTURAL.containsMatchIn(title)) {
+			return video("title reads as a TV episode")
 		}
 		NON_MUSIC_CHANNEL.firstOrNull { it.matches(ch) }?.let {
 			return video("channel has non-music \"${it.text}\"")

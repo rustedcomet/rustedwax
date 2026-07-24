@@ -104,8 +104,9 @@ Evidence, strongest first — a stronger layer always beats a weaker one:
 1. **Format evidence** → video, beating everything including the category (field data showed
    tutorials and music-news bulletins categorized *Music* by their uploaders): podcast / tutorial /
    how-to / gameplay / review titles, trailers recognized structurally (`Official Final Trailer`,
-   `Trailer 2`), music-news headlines (`… Releases New Single …`), clip channels (`… Movies`,
-   `… Cinema`, `… Pictures`), game playthroughs without an instrument.
+   `Trailer 2`), music-news headlines (`… Releases New Single …`), TV episode numbering
+   (`Season 6 Ep 19`, `S06E19` — but not music's `EP 2`), clip channels (`… Movies`, `… Cinema`,
+   `… Pictures`), game playthroughs without an instrument.
 2. **YouTube's `Music` category** (needs "Look videos up") → song.
 3. **Hard music evidence** → song, strong enough to overrule a non-music category:
    music.youtube.com, a **MusicBrainz match** on the artist + recording, an instrument-qualified
