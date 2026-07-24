@@ -101,18 +101,26 @@ Scrobble rules, from `hive-scrobbler.ts#finalize`, with one deliberate deviation
 
 Evidence, strongest first — a stronger layer always beats a weaker one:
 
-1. **YouTube's own category** (needs "Look videos up"): `Music` → song; Film & Animation, Gaming,
-   News, Sports, Education… → video. An *ambiguous* category (Entertainment, People & Blogs) doesn't
-   decide, but it raises the bar: only explicit evidence below can make the entry a song.
-2. **Blocklist and structure** → video: podcast/tutorial/gameplay/review-shaped titles, trailers
-   recognized structurally (`Official Final Trailer`, `Trailer 2`), clip channels (`… Movies`,
+1. **Format evidence** → video, beating everything including the category (field data showed
+   tutorials and music-news bulletins categorized *Music* by their uploaders): podcast / tutorial /
+   how-to / gameplay / review titles, trailers recognized structurally (`Official Final Trailer`,
+   `Trailer 2`), music-news headlines (`… Releases New Single …`), clip channels (`… Movies`,
    `… Cinema`, `… Pictures`), game playthroughs without an instrument.
-3. **Explicit music evidence** → song: music.youtube.com, a VEVO/`- Topic`/label channel, a
-   **MusicBrainz match** on the parsed artist + recording, an instrument-qualified cover or
-   playthrough, lyrics/instrumental/remix/live-performance vocabulary.
-4. **Weak evidence** — an `Artist - Track`-shaped title — is accepted only for ordinary videos of
-   unknown category, never for shorts, sub-90-second clips, or `#shorts`-tagged titles.
-5. **Default** → song, for ordinary-length watch-page videos with no signal at all.
+2. **YouTube's `Music` category** (needs "Look videos up") → song.
+3. **Hard music evidence** → song, strong enough to overrule a non-music category:
+   music.youtube.com, a **MusicBrainz match** on the artist + recording, an instrument-qualified
+   cover or playthrough.
+4. **A decisive non-music category** → video: Film & Animation, Gaming, News, Sports, Education…
+5. **Commentary words that are also song titles** (`reaction`) → video — below MusicBrainz on
+   purpose, so "Chain Reaction" the song is rescued while reaction videos are caught.
+6. **Music vocabulary** → song: VEVO/`- Topic`/label channels, lyrics / instrumental / remix /
+   live-performance / official-audio wording.
+7. **Weak evidence** — an `Artist - Track`-shaped title — is accepted only for ordinary videos of
+   unknown category, never for shorts, sub-90-second clips, or `#shorts`-tagged titles, and never
+   when a known category said not-music.
+8. **No evidence at all** → **video**. (Revised from the original song-default: two days of field
+   data showed every default-song hit was a news clip, movie scene or vlog. Real music virtually
+   always carries a signal above — and MusicBrainz is the safety net for untagged uploads.)
 
 The Now tab shows **kind because**, **category** and **musicbrainz** lines explaining every verdict
 before anything goes on-chain — check them there, because on-chain is forever.

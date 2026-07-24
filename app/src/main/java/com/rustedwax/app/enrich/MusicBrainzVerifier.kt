@@ -7,7 +7,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -90,7 +89,11 @@ class MusicBrainzVerifier(context: Context) {
 		if (artist.length > 100 || track.length > 150) return null
 		cached(artist, track)?.let { return it }
 
-		val body = withTimeoutOrNull(TIMEOUT_MS) { fetch(artist, track) }
+		// No outer timeout: it used to wrap the rate-limit queue wait as well,
+		// so during rapid shorts browsing most lookups timed out before their
+		// HTTP request ever started. The connection's own connect/read
+		// timeouts bound the actual network time.
+		val body = fetch(artist, track)
 		if (body == null) {
 			EventLog.append("musicbrainz", "lookup failed for \"$artist\" / \"$track\"")
 			return null

@@ -176,6 +176,23 @@ object ScrobbleEngine {
 	}
 
 	/**
+	 * The artist/track pairs worth asking MusicBrainz about, most likely
+	 * first: the parsed pair, then the *swapped* pair. The swap exists because
+	 * `Title | Channel`-shaped uploads split backwards (observed on-chain:
+	 * artist "Michael Jackson MTV Awards 1995…" title "Remastered HD") — when
+	 * the reversed pair is the real recording, MusicBrainz says so, and its
+	 * canonical fields land in the payload the right way round.
+	 */
+	private fun mbCandidates(credits: ScrobbleBuilder.Parsed): List<Pair<String, String>> {
+		val artist = credits.artist?.takeIf { it.isNotBlank() } ?: return emptyList()
+		val out = mutableListOf(artist to credits.track)
+		if (!credits.track.equals(artist, ignoreCase = true)) {
+			out += credits.track to artist
+		}
+		return out
+	}
+
+	/**
 	 * Best-effort MusicBrainz confirmation of the artist/track the payload
 	 * would carry. Null when disabled, unparseable, or the network couldn't
 	 * answer — every path degrades to the pre-MusicBrainz behaviour.
@@ -186,11 +203,16 @@ object ScrobbleEngine {
 	): MusicBrainzVerifier.Match? {
 		if (!settings.enrichment) return null
 		val credits = ScrobbleBuilder.creditsOf(session, facts) ?: return null
-		val artist = credits.artist ?: return null
-		return runCatching { musicBrainz.verify(artist, credits.track) }.getOrElse {
-			EventLog.append("musicbrainz", "verifier threw: ${it.message}")
-			null
+		var last: MusicBrainzVerifier.Match? = null
+		for ((artist, track) in mbCandidates(credits)) {
+			val match = runCatching { musicBrainz.verify(artist, track) }.getOrElse {
+				EventLog.append("musicbrainz", "verifier threw: ${it.message}")
+				null
+			}
+			if (match?.found == true) return match
+			last = match ?: last
 		}
+		return last
 	}
 
 	/** Cache-only MusicBrainz verdict for the Now-tab preview. */
@@ -200,8 +222,13 @@ object ScrobbleEngine {
 	): MusicBrainzVerifier.Match? {
 		if (!initialised || !settings.enrichment) return null
 		val credits = ScrobbleBuilder.creditsOf(session, facts) ?: return null
-		val artist = credits.artist ?: return null
-		return musicBrainz.cached(artist, credits.track)
+		var last: MusicBrainzVerifier.Match? = null
+		for ((artist, track) in mbCandidates(credits)) {
+			val match = musicBrainz.cached(artist, track)
+			if (match?.found == true) return match
+			last = match ?: last
+		}
+		return last
 	}
 
 	/**
@@ -226,9 +253,14 @@ object ScrobbleEngine {
 			// the time anyone looks. Same credits derivation as the payload.
 			val rawTitle = facts.title ?: return@launch
 			val parsed = TitleParser.parse(rawTitle, facts.author)
-			val artist = facts.originalArtist ?: parsed.artist ?: return@launch
-			val track = facts.originalTitle?.let { TitleParser.clean(it) } ?: parsed.track
-			runCatching { musicBrainz.verify(artist, track) }
+			val credits = ScrobbleBuilder.Parsed(
+				artist = facts.originalArtist ?: parsed.artist,
+				track = facts.originalTitle?.let { TitleParser.clean(it) } ?: parsed.track,
+			)
+			for ((artist, track) in mbCandidates(credits)) {
+				val match = runCatching { musicBrainz.verify(artist, track) }.getOrNull()
+				if (match?.found == true) break
+			}
 		}
 	}
 

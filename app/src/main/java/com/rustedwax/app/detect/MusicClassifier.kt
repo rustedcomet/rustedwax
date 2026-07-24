@@ -128,6 +128,29 @@ object MusicClassifier {
 	)
 
 	/**
+	 * Music *news* headlines. "Marilyn Manson Releases Heavy New Single…" is a
+	 * 47-second news clip that YouTube categorizes as **Music** — the uploader
+	 * talks about music, so the category is honest and still wrong for us.
+	 * Headline verbs next to release nouns essentially never occur in a song's
+	 * own title, so this may safely outrank the category.
+	 */
+	private val NEWS_STRUCTURAL = Regex(
+		"""\b(?:releases?|announces?|drops|unveils|teases|debuts|confirms)\b""" +
+			"""[^.!?\n]{0,60}?\b(?:singles?|albums?|ep|tours?|records?|tracklist)\b""",
+		RegexOption.IGNORE_CASE,
+	)
+
+	/**
+	 * Words that usually mean commentary but are also real song titles —
+	 * "Chain Reaction" is Diana Ross. These sit *below* MusicBrainz and the
+	 * Music category, so a verified song passes while `"Exit Wound" REACTION |
+	 * Old School Fan Hears…` (whose pipe-split otherwise reads as an artist)
+	 * gets caught.
+	 */
+	private val CONTEXTUAL_NON_MUSIC = listOf("reaction")
+		.map { Term(it, wordish(it)) }
+
+	/**
 	 * Words in the *channel name* only. These are too common in song titles to
 	 * match there — "Bad News" and "Good News" are songs; `BBC News` is not a
 	 * band. The film row exists because clip channels advertise themselves in
@@ -200,13 +223,6 @@ object MusicClassifier {
 	}
 
 	/**
-	 * Above this, with *no* music evidence at all, we call it a video.
-	 * Deliberately generous: DJ sets, full albums and concert films are long
-	 * and are music, so this can only fire when nothing else spoke up.
-	 */
-	private const val LONG_FORM_MS = 30L * 60 * 1000
-
-	/**
 	 * Below this, weak evidence isn't enough. Almost no real song is under 90
 	 * seconds, but a huge share of shorts and clips are — and their titles are
 	 * full of dashes and pipes that fool the artist heuristic.
@@ -245,20 +261,19 @@ object MusicClassifier {
 		val ch = channel?.trim()?.lowercase().orEmpty()
 		val category = enrichedCategory?.trim()?.lowercase()?.ifEmpty { null }
 
-		// 1. YouTube's own answer beats every heuristic below it.
-		if (category == MUSIC_CATEGORY) return song("YouTube category: Music")
-		if (category in DECISIVE_NON_MUSIC_CATEGORIES) {
-			return video("YouTube category: $enrichedCategory")
-		}
-
-		// 2. Blocklist. Runs before the positive signals so "Guitar Tutorial"
-		//    doesn't get rescued by the word "guitar", and "Magazine Cover
-		//    Photo" doesn't get rescued by the word "cover".
+		// 1. Format evidence beats category — in BOTH directions. The
+		//    2026-07-24 evening sample had "How to Throat Sing like in DUNE!"
+		//    (a tutorial) and a Marilyn Manson news bulletin both categorized
+		//    **Music** by their uploaders. A tutorial, trailer or headline is
+		//    not a listen, whatever box the uploader ticked.
 		NON_MUSIC_TITLE.firstOrNull { it.matches(title) }?.let {
 			return video("title has non-music \"${it.text}\"")
 		}
 		if (TRAILER_STRUCTURAL.containsMatchIn(title)) {
 			return video("title reads as a film trailer")
+		}
+		if (NEWS_STRUCTURAL.containsMatchIn(title)) {
+			return video("title reads as a music-news headline")
 		}
 		NON_MUSIC_CHANNEL.firstOrNull { it.matches(ch) }?.let {
 			return video("channel has non-music \"${it.text}\"")
@@ -270,26 +285,43 @@ object MusicClassifier {
 			return video("game playthrough (no instrument)")
 		}
 
-		// 3. Explicit music evidence — enough to overrule an ambiguous
-		//    category and to qualify a short.
+		// 2. YouTube says Music, and nothing above disagreed.
+		if (category == MUSIC_CATEGORY) return song("YouTube category: Music")
+
+		// 3. Hard music evidence — strong enough to overrule even a decisive
+		//    non-music category (an instrument cover filed under Education is
+		//    still that song being played).
 		if (siteSaysMusic) return song("music.youtube.com")
 		if (musicbrainzMatch) return song("MusicBrainz confirms artist and recording")
+		if (COVER_MUSIC.containsMatchIn(title)) return song("title names a cover")
+		if (PLAYTHROUGH_MUSIC.containsMatchIn(title)) return song("title names a playthrough")
+
+		// 4. The uploader's own non-music categorization.
+		if (category in DECISIVE_NON_MUSIC_CATEGORIES) {
+			return video("YouTube category: $enrichedCategory")
+		}
+
+		// 5. Commentary words that are also song titles — kept *below*
+		//    MusicBrainz and the Music category on purpose, so real songs
+		//    ("Chain Reaction") get rescued by the layers above rather than
+		//    sacrificed to the word.
+		CONTEXTUAL_NON_MUSIC.firstOrNull { it.matches(title) }?.let {
+			return video("title has \"${it.text}\" and no stronger music evidence")
+		}
+
+		// 6. Music vocabulary and artist-owned channels.
 		MUSIC_CHANNEL_SUFFIXES.firstOrNull { ch.endsWith(it) }?.let {
 			return song("channel ends with \"$it\"")
 		}
-		if (COVER_MUSIC.containsMatchIn(title)) return song("title names a cover")
-		if (PLAYTHROUGH_MUSIC.containsMatchIn(title)) return song("title names a playthrough")
 		MUSIC_TITLE.firstOrNull { it.matches(title) }?.let {
 			return song("title has music \"${it.text}\"")
 		}
 
-		// 4. From here down only weak evidence remains — and two situations
+		// 7. From here down only weak evidence remains — and two situations
 		//    where weak evidence is not accepted.
 		//
 		//    A known non-music category: the uploader had "Music" available and
-		//    chose something else. The 2026-07-24 sample was full of film clips
-		//    in `Entertainment` whose `|`-separated titles passed the artist
-		//    heuristic below; that heuristic doesn't outrank the uploader.
+		//    chose something else; a `|`-separated title doesn't outrank them.
 		if (category != null) {
 			return video("category \"$enrichedCategory\" and no explicit music signal")
 		}
@@ -301,18 +333,19 @@ object MusicClassifier {
 			return video("short-form with no explicit music signal")
 		}
 
-		// 5. Weak evidence, acceptable only for ordinary watch-page videos of
+		// 8. Weak evidence, acceptable only for ordinary watch-page videos of
 		//    unknown category.
 		if (TitleParser.looksLikeMusic(rawTitle, channel)) {
 			return song("title names an artist")
 		}
 
-		// 6. Nothing said music, and it's long. Probably a talk or a stream.
-		if (durationMs != null && durationMs >= LONG_FORM_MS) {
-			return video("no music signal and longer than 30 min")
-		}
-
-		// 7. D4 — default to music.
-		return song("default for YouTube (no non-music signal)")
+		// 9. Nothing said music at all. D4 originally defaulted this to song;
+		//    two days of field data showed every default-song hit was a news
+		//    clip, a movie scene or a vlog, while real music essentially always
+		//    carries at least one signal above — a category, a MusicBrainz
+		//    match, cover/lyrics vocabulary, an artist channel, or an
+		//    `Artist - Track` title. Default is video since v0.5.1;
+		//    MusicBrainz is the safety net for untagged uploads of real songs.
+		return video("no music evidence")
 	}
 }

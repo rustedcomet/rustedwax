@@ -49,11 +49,30 @@ class MusicClassifierTest {
 	}
 
 	@Test
-	fun `youtube's own category wins over everything`() {
-		// Would otherwise be blocked by "gameplay" in the title.
-		assertEquals(song, kindOf("Gameplay Theme", "Chan", category = "Music"))
-		// Would otherwise pass as music on the VEVO channel.
+	fun `youtube's Music category wins when the format rules don't object`() {
+		assertEquals(song, kindOf("Some Sunday Upload", "Chan", category = "Music"))
+		// A VEVO suffix is vocabulary-tier; the uploader's Gaming category outranks it.
 		assertEquals(video, kindOf("Anything", "SomeVEVO", category = "Gaming"))
+	}
+
+	/**
+	 * Field data 2026-07-24 evening: the category is wrong in BOTH directions.
+	 * "How to Throat Sing like in DUNE!" (a tutorial) and a Manson news
+	 * bulletin are both categorized Music by their uploaders. Format evidence
+	 * in the title now outranks the category.
+	 */
+	@Test
+	fun `format evidence beats a Music category`() {
+		assertEquals(video, kindOf(
+			"How to Throat Sing like in DUNE!", "Brandon Acker", category = "Music"))
+		assertEquals(video, kindOf(
+			"Marilyn Manson Releases Heavy New Single ‘Front Toward Enemy’ " +
+				"Ahead of Upcoming Album",
+			"Rock Celebrities", category = "Music", durationMs = 47_000L))
+		// The reverse rescue: hard music evidence beats a non-music category —
+		// an instrument cover filed under Education is still that song.
+		assertEquals(song, kindOf(
+			"Duality (Drum Cover)", "Some Academy", category = "Education"))
 	}
 
 	@Test
@@ -75,8 +94,11 @@ class MusicClassifierTest {
 
 	@Test
 	fun `channel blocklist only applies to the channel`() {
-		// "News" in a song title must not disqualify it…
-		assertEquals(song, kindOf("Bad News", "Some Band"))
+		// "News" in a song title must not *block* it — with positive evidence
+		// it's a song; without, it falls to the plain default, not the blocklist.
+		assertEquals(song, kindOf("Bad News", "Some Band", mbMatch = true))
+		assertEquals("no music evidence",
+			MusicClassifier.classify("Bad News", "Some Band", 4 * 60 * 1000L, false).reason)
 		// …but a news channel is not a band.
 		assertEquals(video, kindOf("Bad News", "BBC News"))
 	}
@@ -94,9 +116,18 @@ class MusicClassifierTest {
 		)
 	}
 
+	/**
+	 * D4 revised in v0.5.1: two days of field data showed every default-song
+	 * hit was a news clip, movie scene or vlog. With category, MusicBrainz and
+	 * the vocabulary layers supplying the positive path for real music, the
+	 * last-resort default is now video.
+	 */
 	@Test
-	fun `D4 default is song`() {
-		assertEquals(song, kindOf("Some upload with no signals at all", "A Channel"))
+	fun `no evidence at all defaults to video`() {
+		val r = MusicClassifier.classify(
+			"Some upload with no signals at all", "A Channel", 4 * 60 * 1000L, false)
+		assertEquals(video, r.kind)
+		assertEquals("no music evidence", r.reason)
 	}
 
 	/**
@@ -225,24 +256,35 @@ class MusicClassifierTest {
 	}
 
 	/**
-	 * The inverse risk: a blocklist word that is also a real song title. Bare
-	 * "reaction", "trailer" and "hearing" used to file these under video —
-	 * permanently, on-chain.
+	 * Real songs whose titles contain commentary/format words. Under the
+	 * video-by-default ladder they need *positive* evidence to land as song —
+	 * a category, a MusicBrainz match, or music vocabulary. That's the
+	 * documented trade: the safety net moved from "default to song" to
+	 * "MusicBrainz knows the recording".
 	 */
 	@Test
-	fun `real songs are not caught by ambiguous blocklist words`() {
-		assertEquals(song, kindOf("Chain Reaction", "Diana Ross"))
-		assertEquals(song, kindOf("Trailer Trash", "Modest Mouse"))
-		assertEquals(song, kindOf("Hearing Damage", "Thom Yorke"))
+	fun `real songs with ambiguous words are rescued by positive evidence`() {
+		assertEquals(song, kindOf("Chain Reaction", "Diana Ross", mbMatch = true))
+		assertEquals(song, kindOf("Chain Reaction", "Diana Ross", category = "Music"))
+		assertEquals(song, kindOf("Trailer Trash (Official Video)", "Modest Mouse"))
+		assertEquals(song, kindOf("Hearing Damage", "Thom Yorke", mbMatch = true))
+		// Without any positive evidence they fall to video — the accepted cost.
+		assertEquals(video, kindOf("Chain Reaction", "Diana Ross"))
 	}
 
-	/** …but the actual non-music formats those words describe are still caught. */
+	/** The actual non-music formats those words describe are caught outright. */
 	@Test
 	fun `reaction videos trailers and hearings are still videos`() {
 		assertEquals(video, kindOf("My Reaction Video to the Finale", "Reactor"))
 		assertEquals(video, kindOf("Reacts to the new trailer", "Streamer"))
 		assertEquals(video, kindOf("Dune Part Two - Official Trailer", "Warner Bros"))
 		assertEquals(video, kindOf("Senate Hearing on AI - Full", "C-SPAN"))
+		// Bare "reaction" is contextual: it loses to MusicBrainz/category but
+		// beats a pipe-split title that merely looks like Artist - Track.
+		assertEquals(video, kindOf(
+			"Marilyn Manson \"Exit Wound\" REACTION | Old School Fan Hears " +
+				"Chapter 2 First Single.",
+			"Some Reactor", durationMs = 11 * 60 * 1000L))
 	}
 
 	/**
@@ -296,11 +338,13 @@ class MusicClassifierTest {
 	 */
 	@Test
 	fun `does not match music or block words inside larger words`() {
-		// "discover" must not trip the cover rule → falls to default song, but
+		// "discover" must not trip the cover rule — it falls to the default,
 		// crucially not *because* of "cover".
-		assertEquals("default for YouTube (no non-music signal)",
+		assertEquals("no music evidence",
 			MusicClassifier.classify("Discover Weekly", "A Channel", 4 * 60 * 1000L, false, null).reason)
-		// "preview" must not trip the "review" blocklist.
-		assertEquals(song, kindOf("World Premiere Preview", "A Band"))
+		// "preview" must not trip the "review" blocklist — the default fires,
+		// not the blocklist.
+		assertEquals("no music evidence",
+			MusicClassifier.classify("World Premiere Preview", "A Band", 4 * 60 * 1000L, false, null).reason)
 	}
 }

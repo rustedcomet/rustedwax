@@ -391,6 +391,50 @@ MusicBrainz etiquette; absent artists are a missed upgrade, never a wrong one.
 This is the mobile answer to upstream's Wikipedia/Wikidata layer, which
 DEVELOPMENT_PLAN originally deferred.
 
+## 9e. v0.5.1 — the category is wrong in both directions; D4 revised
+
+The 2026-07-24 evening batch, checked against each video's watch page:
+
+| Video | Reality | YouTube category | v0.5.0 verdict |
+| --- | --- | --- | --- |
+| "How to Throat Sing like in DUNE!" | tutorial | **Music** | song ✗ |
+| "Marilyn Manson Releases Heavy New Single…" (47 s) | news | **Music** | song ✗ |
+| "MAPHRA - DOOMED = BEST COVER 2026🥵💯" | cover hype clip | Education | video (kept) |
+| "Saturday Night Fever: Tony's solo dance" | movie clip | Film & Animation | song ✗ (id lost → no category → old default) |
+| `"Exit Wound" REACTION \| Old School Fan Hears…` | reaction | — (id lost) | song ✗ (pipe-split "names an artist") |
+
+The category-first ladder assumed the category is honest; it is — the Manson
+channel really does talk about music — and still wrong for *kind*: those
+videos are not listens. Changes:
+
+- **Format evidence now beats the category in both directions.** Blocklist,
+  trailer structure and a new music-news headline rule (`releases/announces …
+  single/album/tour`) outrank category `Music`; hard music evidence
+  (MusicBrainz, instrument covers, music.youtube.com) outranks a non-music
+  category.
+- **Bare "reaction" is a contextual tier**: below MusicBrainz and category
+  Music (so "Chain Reaction" is rescued by evidence), above weak title shapes
+  (so pipe-split reaction titles stop passing as artists).
+- **D4 revised: the last-resort default is now `video`.** Every default-song
+  hit in two days of field data was a news clip, a movie scene or a vlog.
+  Real music essentially always carries a positive signal — category,
+  MusicBrainz, cover/lyrics vocabulary, an artist channel, an `Artist - Track`
+  title. The documented cost: an untagged fan upload of a real song with none
+  of those now lands as `video` unless MusicBrainz knows the recording.
+- **MusicBrainz fixes that made the safety net real**: the 4-second timeout
+  wrapped the 1-req/s queue wait, so during shorts browsing most lookups died
+  before their HTTP request started (the "— (not checked yet)" the field test
+  saw everywhere) — the timeout now bounds only the network call. And the
+  engine tries the **swapped artist/track pair** as a second candidate, which
+  both widens the rescue and heals the `Title | Channel` reversed-split bug
+  for real songs: MusicBrainz returns the fields in their true roles.
+
+Still open, unchanged by this: ids often can't be latched during shorts-feed
+browsing (the address bar lags a scroll behind; the title corroboration then
+rightly rejects the stale id) — those scrobbles carry no `url`, and category
+enrichment can't run for them. MusicBrainz, which needs no id, is exactly the
+layer that still works there.
+
 ### Ecosystem finding — first writer wins on scrobble.life
 
 The site keeps one canonical record per video id, seeded by the **first**
