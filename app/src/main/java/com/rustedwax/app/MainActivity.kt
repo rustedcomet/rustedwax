@@ -188,7 +188,8 @@ class MainActivity : ComponentActivity() {
 						// broadcast exactly the payload the user just looked at.
 						val facts = session.confirmed
 							?.let { ScrobbleEngine.cachedFacts(it.videoId) }
-						val payload = ScrobbleBuilder.from(session, facts)
+						val mb = ScrobbleEngine.cachedMusicMatch(session, facts)
+						val payload = ScrobbleBuilder.from(session, facts, mb)
 						if (payload == null) {
 							report("Nothing broadcastable in that session yet.", isError = true)
 						} else {

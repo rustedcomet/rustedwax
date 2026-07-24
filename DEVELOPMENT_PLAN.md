@@ -28,7 +28,8 @@ observed as control cases but never broadcast; they widen once detection is prov
 - Privacy mode (AES-256-GCM envelope), key-compatible with desktop
 
 **Out of scope (v1)**
-- movie / episode kinds, Wikipedia/Wikidata enrichment (no DOM → no reliable `videoKind`)
+- movie / episode kinds (no DOM → no reliable `videoKind`). *Artist verification, the other thing
+  desktop's Wikipedia/Wikidata layer provided, landed in Phase 4 as a MusicBrainz check instead.*
 - guest (Google / scrobble.life) ingest path
 - editing/correcting scrobbles before broadcast
 
@@ -72,7 +73,7 @@ key formats, node lists, the challenge string, and the wire format of the privac
 | `core/storage/options.ts` (privacy keys) | — | `storage/Options.kt` | **Verbatim keys** — `hivePrivacyMusic`, `hivePrivacyVideos`, `hivePrivacyMoviesTv`, `hivePrivacyPodcasts`, `scrobblePercent`. |
 | `connectors/*` (406 files) | — | — | **Dropped.** Replaced by `core-detect/`. |
 | `core/content/connector.ts` | 1101 | `core-detect/PlaybackTracker.kt` | **Rewritten** — the state machine idea survives (start / progress / finalize); the DOM scraping does not. |
-| `core/object/pipeline/*` + `@web-scrobbler/metadata-filter` YouTube rules | ~290 + | `core-detect/pipeline/` | **Phase 3, required** (promoted from Phase 5 by Q5 — see PHASE0.md run 2). Browser metadata gives `ARTIST = "KornVEVO"` (the channel) and `TITLE = "Korn - Trash (Official Audio)"`, so `Artist - Title` splitting and suffix stripping are prerequisites for a correct payload, not polish. `metadata.ts` (Wikipedia/Wikidata) stays out of scope. |
+| `core/object/pipeline/*` + `@web-scrobbler/metadata-filter` YouTube rules | ~290 + | `core-detect/pipeline/` | **Phase 3, required** (promoted from Phase 5 by Q5 — see PHASE0.md run 2). Browser metadata gives `ARTIST = "KornVEVO"` (the channel) and `TITLE = "Korn - Trash (Official Audio)"`, so `Artist - Title` splitting and suffix stripping are prerequisites for a correct payload, not polish. `metadata.ts` (Wikipedia/Wikidata) was deferred; Phase 4 covered its artist-verification role with a MusicBrainz check (`enrich/MusicBrainzVerifier.kt`). |
 
 ### 3.1 Splitting `hive-scrobbler.ts`
 
@@ -260,8 +261,10 @@ Not carried over from the original plan: **cross-device dedup (§8)**. Desktop a
 together will still double-scrobble the same listen.
 
 **Phase 4 — Control, exclusivity, metadata fidelity** *(preempted privacy mode; see PHASE4.md)*
-Stop switch, browser-only watching with per-session hint binding, `song`-by-default classification,
-optional address-bar watcher, watch-page enrichment.
+Stop switch, browser-only watching with per-session hint binding, evidence-layered kind
+classification (category > blocklist/structure > explicit vocabulary > weak title shapes >
+default), optional address-bar watcher with track-lifetime id latching, watch-page enrichment,
+MusicBrainz artist/recording verification, song-only double-listen. Shipped as v0.4.0–v0.5.0.
 
 **Phase 5 — Privacy mode**
 `PrivacySecret`, `PrivacyCipher`, `PrivacyEnvelope`, four per-kind toggles matching the extension's

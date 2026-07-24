@@ -67,4 +67,19 @@ class ScrobbleRulesTest {
 		val d = ScrobbleRules.decide(playedMs = 120_000, durationMs = fourMinutes, threshold = 0.5)
 		assertEquals(listOf(50), d.percentages)
 	}
+
+	/**
+	 * The 160% double-listen is for songs. A looping short broadcast the same
+	 * clip twice in one block (observed on-chain 2026-07-24, percents 100+76);
+	 * videos are watched, not re-listened, so they cap at one transaction.
+	 */
+	@Test
+	fun `double listen applies to songs only`() {
+		val double = listOf(100, 76)
+		assertEquals(listOf(100, 76), ScrobbleRules.capForKind(double, "song"))
+		assertEquals(listOf(100), ScrobbleRules.capForKind(double, "video"))
+		assertEquals(listOf(100), ScrobbleRules.capForKind(double, "podcast"))
+		// A single-tx decision is untouched either way.
+		assertEquals(listOf(84), ScrobbleRules.capForKind(listOf(84), "video"))
+	}
 }

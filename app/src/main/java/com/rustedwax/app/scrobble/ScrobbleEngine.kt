@@ -15,9 +15,11 @@ import com.rustedwax.app.hive.HiveRpc
 import com.rustedwax.app.hive.HiveScrobblePayload
 import com.rustedwax.app.detect.ScrobbleBuilder
 import com.rustedwax.app.detect.SessionSnapshot
+import com.rustedwax.app.detect.TitleParser
 import com.rustedwax.app.detect.EventLog
 import com.rustedwax.app.enrich.FactsCache
 import com.rustedwax.app.enrich.MetadataResolver
+import com.rustedwax.app.enrich.MusicBrainzVerifier
 import com.rustedwax.app.enrich.VideoFacts
 import com.rustedwax.app.enrich.YouTubePageResolver
 import com.rustedwax.app.storage.KeyVault
@@ -45,6 +47,7 @@ object ScrobbleEngine {
 	private lateinit var settings: Settings
 	private lateinit var resolver: MetadataResolver
 	private lateinit var factsCache: FactsCache
+	private lateinit var musicBrainz: MusicBrainzVerifier
 	private val broadcaster = HiveBroadcaster()
 
 	/**
@@ -86,6 +89,7 @@ object ScrobbleEngine {
 		settings = Settings(appContext)
 		factsCache = FactsCache(appContext)
 		resolver = YouTubePageResolver(factsCache)
+		musicBrainz = MusicBrainzVerifier(appContext)
 		initialised = true
 		ledger.prune()
 		_queueSize.value = queue.size()
@@ -139,8 +143,9 @@ object ScrobbleEngine {
 		// title and artist or a fixed parse would look like a new track.
 		scope.launch {
 			val facts = enrich(session)
+			val mb = verifyMusic(session, facts)
 
-			val basePayload = ScrobbleBuilder.from(session, facts)
+			val basePayload = ScrobbleBuilder.from(session, facts, mb)
 			if (basePayload == null) {
 				EventLog.append("engine", "skipped: payload not buildable")
 				return@launch
@@ -156,11 +161,47 @@ object ScrobbleEngine {
 				return@launch
 			}
 
-			// One tx per entry — the 160% double-listen produces two.
-			decision.percentages.forEach { percent ->
+			// One tx per entry — the 160% double-listen produces two, songs only.
+			val percentages = ScrobbleRules.capForKind(decision.percentages, basePayload.kind)
+			if (percentages.size < decision.percentages.size) {
+				EventLog.append(
+					"engine",
+					"double-listen capped to one tx (kind=${basePayload.kind})",
+				)
+			}
+			percentages.forEach { percent ->
 				enqueueAndSend(basePayload.copy(percentPlayed = percent))
 			}
 		}
+	}
+
+	/**
+	 * Best-effort MusicBrainz confirmation of the artist/track the payload
+	 * would carry. Null when disabled, unparseable, or the network couldn't
+	 * answer — every path degrades to the pre-MusicBrainz behaviour.
+	 */
+	private suspend fun verifyMusic(
+		session: SessionSnapshot,
+		facts: VideoFacts?,
+	): MusicBrainzVerifier.Match? {
+		if (!settings.enrichment) return null
+		val credits = ScrobbleBuilder.creditsOf(session, facts) ?: return null
+		val artist = credits.artist ?: return null
+		return runCatching { musicBrainz.verify(artist, credits.track) }.getOrElse {
+			EventLog.append("musicbrainz", "verifier threw: ${it.message}")
+			null
+		}
+	}
+
+	/** Cache-only MusicBrainz verdict for the Now-tab preview. */
+	fun cachedMusicMatch(
+		session: SessionSnapshot,
+		facts: VideoFacts?,
+	): MusicBrainzVerifier.Match? {
+		if (!initialised || !settings.enrichment) return null
+		val credits = ScrobbleBuilder.creditsOf(session, facts) ?: return null
+		val artist = credits.artist ?: return null
+		return musicBrainz.cached(artist, credits.track)
 	}
 
 	/**
@@ -178,8 +219,16 @@ object ScrobbleEngine {
 		if (!initialised || !settings.enrichment) return
 		if (!prefetched.add(videoId)) return
 		scope.launch {
-			runCatching { resolver.resolve(videoId) }
+			val facts = runCatching { resolver.resolve(videoId) }
 				.onFailure { EventLog.append("enrich", "prefetch failed: ${it.message}") }
+				.getOrNull() ?: return@launch
+			// Chain the MusicBrainz check so the Now card's verdict is warm by
+			// the time anyone looks. Same credits derivation as the payload.
+			val rawTitle = facts.title ?: return@launch
+			val parsed = TitleParser.parse(rawTitle, facts.author)
+			val artist = facts.originalArtist ?: parsed.artist ?: return@launch
+			val track = facts.originalTitle?.let { TitleParser.clean(it) } ?: parsed.track
+			runCatching { musicBrainz.verify(artist, track) }
 		}
 	}
 

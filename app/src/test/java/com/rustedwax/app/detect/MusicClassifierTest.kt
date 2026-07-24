@@ -19,7 +19,10 @@ class MusicClassifierTest {
 		siteSaysMusic: Boolean = false,
 		category: String? = null,
 		isShort: Boolean = false,
-	) = MusicClassifier.classify(title, channel, durationMs, siteSaysMusic, category, isShort).kind
+		mbMatch: Boolean = false,
+	) = MusicClassifier
+		.classify(title, channel, durationMs, siteSaysMusic, category, isShort, mbMatch)
+		.kind
 
 	private val song = HiveScrobblePayload.KIND_SONG
 	private val video = HiveScrobblePayload.KIND_VIDEO
@@ -251,6 +254,25 @@ class MusicClassifierTest {
 		assertEquals(video, kindOf("Elden Ring Playthrough Part 1", "Gamer"))
 		assertEquals(song, kindOf("Master of Puppets - Guitar Playthrough", "Guitarist"))
 		assertEquals(song, kindOf("Enter Sandman 【Drum Playthrough】", "Drummer"))
+	}
+
+	/**
+	 * Broadcast 2026-07-24T17:35 as `video`: a 42-second performance clip of
+	 * a real song, whose only offline signal was the weak artist-separator
+	 * shape the short-form rule refuses. A MusicBrainz confirmation is
+	 * explicit evidence, so it rescues exactly this case.
+	 */
+	@Test
+	fun `a MusicBrainz match rescues a short performance clip`() {
+		assertEquals(video, kindOf("Maphra - Doomed", durationMs = 42_000L))
+		assertEquals(song, kindOf("Maphra - Doomed", durationMs = 42_000L, mbMatch = true))
+		// It also overrules an ambiguous category…
+		assertEquals(song, kindOf(
+			"Some Artist - Some Song", category = "Entertainment", mbMatch = true))
+		// …but never the blocklist: kind is about the video, not the song it
+		// contains, and a trailer scoring a real song is still a trailer.
+		assertEquals(video, kindOf(
+			"MOVIE Official Trailer (2026)", category = null, mbMatch = true))
 	}
 
 	/**

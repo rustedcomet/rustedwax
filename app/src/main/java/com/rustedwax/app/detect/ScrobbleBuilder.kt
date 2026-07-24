@@ -1,5 +1,6 @@
 package com.rustedwax.app.detect
 
+import com.rustedwax.app.enrich.MusicBrainzVerifier
 import com.rustedwax.app.enrich.VideoFacts
 import com.rustedwax.app.hive.HiveScrobblePayload
 
@@ -15,8 +16,31 @@ import com.rustedwax.app.hive.HiveScrobblePayload
  */
 object ScrobbleBuilder {
 
+	/**
+	 * The artist/track the payload would carry, before MusicBrainz has its
+	 * say. Public because the engine needs exactly this pair to *ask*
+	 * MusicBrainz, and the two computations must never drift apart.
+	 */
+	fun creditsOf(session: SessionSnapshot, facts: VideoFacts? = null): Parsed? {
+		val rawTitle = facts?.title ?: session.title ?: return null
+		val channel = facts?.author ?: session.artist
+		val parsed = TitleParser.parse(rawTitle, channel)
+		// A description credit beats a parsed one: on a cover it names the
+		// original artist, which is the whole point of looking.
+		return Parsed(
+			artist = facts?.originalArtist ?: parsed.artist,
+			track = facts?.originalTitle?.let { TitleParser.clean(it) } ?: parsed.track,
+		)
+	}
+
+	data class Parsed(val artist: String?, val track: String)
+
 	/** Null when the session isn't broadcastable — the caller shows why. */
-	fun from(session: SessionSnapshot, facts: VideoFacts? = null): HiveScrobblePayload? {
+	fun from(
+		session: SessionSnapshot,
+		facts: VideoFacts? = null,
+		mb: MusicBrainzVerifier.Match? = null,
+	): HiveScrobblePayload? {
 		if (!session.payloadViable) return null
 		val sessionTitle = session.title ?: return null
 		val duration = session.durationMs ?: return null
@@ -41,13 +65,14 @@ object ScrobbleBuilder {
 			siteSaysMusic = siteSaysMusic,
 			enrichedCategory = facts?.category,
 			isShort = session.confirmed?.isShort == true,
+			musicbrainzMatch = mb?.found == true,
 		)
 
-		val parsed = TitleParser.parse(rawTitle, channel)
-		// A description credit beats a parsed one: on a cover it names the
-		// original artist, which is the whole point of looking.
-		val artist = facts?.originalArtist ?: parsed.artist
-		val title = facts?.originalTitle?.let { TitleParser.clean(it) } ?: parsed.track
+		val credits = creditsOf(session, facts) ?: return null
+		// A MusicBrainz confirmation supplies the canonical spelling, so this
+		// entry lines up with every other scrobble of the same recording.
+		val artist = if (mb?.found == true) mb.artist ?: credits.artist else credits.artist
+		val title = if (mb?.found == true) mb.title ?: credits.track else credits.track
 
 		return HiveScrobblePayload(
 			kind = kind.kind,
@@ -68,7 +93,11 @@ object ScrobbleBuilder {
 	 * an earlier version dropped `siteSaysMusic` and `isShort` here, and the
 	 * card showed a different verdict than the one that went on-chain.
 	 */
-	fun kindReason(session: SessionSnapshot, facts: VideoFacts? = null): String? {
+	fun kindReason(
+		session: SessionSnapshot,
+		facts: VideoFacts? = null,
+		mb: MusicBrainzVerifier.Match? = null,
+	): String? {
 		val title = facts?.title ?: session.title ?: return null
 		val siteSaysMusic = when (val id = session.identity) {
 			is YouTubeProbe.Identity.Confirmed -> id.isMusic
@@ -82,6 +111,7 @@ object ScrobbleBuilder {
 			siteSaysMusic = siteSaysMusic,
 			enrichedCategory = facts?.category,
 			isShort = session.confirmed?.isShort == true,
+			musicbrainzMatch = mb?.found == true,
 		).reason
 	}
 

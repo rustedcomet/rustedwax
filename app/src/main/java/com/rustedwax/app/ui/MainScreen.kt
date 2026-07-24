@@ -472,7 +472,8 @@ private fun SessionCard(
 			// Prefetched facts come from the cache so the preview and the
 			// broadcast run on identical inputs — no network from the UI.
 			val facts = s.confirmed?.let { ScrobbleEngine.cachedFacts(it.videoId) }
-			ScrobbleBuilder.from(s, facts)?.let { payload ->
+			val mb = ScrobbleEngine.cachedMusicMatch(s, facts)
+			ScrobbleBuilder.from(s, facts, mb)?.let { payload ->
 				Spacer(Modifier.height(8.dp))
 				HorizontalDivider()
 				Spacer(Modifier.height(8.dp))
@@ -482,8 +483,16 @@ private fun SessionCard(
 				Field("kind", payload.kind)
 				// Why this is song or video — the part most worth checking
 				// before it's on a chain that can't be edited.
-				Field("kind because", ScrobbleBuilder.kindReason(s, facts))
+				Field("kind because", ScrobbleBuilder.kindReason(s, facts, mb))
 				Field("category", facts?.category ?: "— (not fetched yet)")
+				Field(
+					"musicbrainz",
+					when {
+						mb == null -> "— (not checked yet)"
+						mb.found -> "✓ ${mb.artist} — ${mb.title}"
+						else -> "no match"
+					},
+				)
 				Spacer(Modifier.height(8.dp))
 				Button(
 					onClick = { onBroadcast(s) },

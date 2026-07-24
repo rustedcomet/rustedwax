@@ -228,6 +228,9 @@ object MusicClassifier {
 	 * @param siteSaysMusic proof the origin was music.youtube.com
 	 * @param enrichedCategory YouTube's own category string, when known
 	 * @param isShort true when the URL said `/shorts/`
+	 * @param musicbrainzMatch true when MusicBrainz confirmed the parsed
+	 * artist and recording both exist — explicit evidence, so it qualifies
+	 * shorts and overrules ambiguous categories, but never beats the blocklist
 	 */
 	fun classify(
 		rawTitle: String,
@@ -236,6 +239,7 @@ object MusicClassifier {
 		siteSaysMusic: Boolean,
 		enrichedCategory: String? = null,
 		isShort: Boolean = false,
+		musicbrainzMatch: Boolean = false,
 	): Result {
 		val title = rawTitle.lowercase()
 		val ch = channel?.trim()?.lowercase().orEmpty()
@@ -269,6 +273,7 @@ object MusicClassifier {
 		// 3. Explicit music evidence — enough to overrule an ambiguous
 		//    category and to qualify a short.
 		if (siteSaysMusic) return song("music.youtube.com")
+		if (musicbrainzMatch) return song("MusicBrainz confirms artist and recording")
 		MUSIC_CHANNEL_SUFFIXES.firstOrNull { ch.endsWith(it) }?.let {
 			return song("channel ends with \"$it\"")
 		}

@@ -57,22 +57,26 @@ leaves the app watching, which is how you check what a title would have parsed t
 anything to the chain.
 
 ```
-Brave (playing) ──▶ Android MediaSession ──┐
-                                           ├──▶ RustedWaxNotificationListenerService
-       media notification (origin) ────────┘              │
-                                                   PlaybackTracker
-                                                          │  track ends
-                                                   ScrobbleRules (60% / 160%)
-                                                          │
-                                                   DedupLedger
-                                                          │
-                                          HiveScrobblePayload  ◀── same schema as extension
-                                                          │
-                                          local secp256k1 signing (posting key)
-                                                          │
-                                          condenser_api.broadcast_transaction
-                                                          │  on failure
-                                                   BroadcastQueue ──▶ retry w/ backoff
+Brave (playing) ──▶ Android MediaSession ─────┐
+       media notification (origin) ───────────┼──▶ RustedWaxListenerService
+       address bar (optional, url + video id) ┘        │  SessionProbe
+                                                       │  track ends (video id latched at start)
+                                               ScrobbleRules (60%, +160% songs only)
+                                                       │
+                                     enrichment (optional): watch-page category,
+                                     description credits, MusicBrainz verification
+                                                       │
+                                     MusicClassifier → kind: song / video
+                                                       │
+                                                  DedupLedger
+                                                       │
+                                       HiveScrobblePayload  ◀── same schema as extension
+                                                       │
+                                       local secp256k1 signing (posting key)
+                                                       │
+                                       condenser_api.broadcast_transaction
+                                                       │  on failure
+                                                BroadcastQueue ──▶ retry w/ backoff
 ```
 
 ## On-chain format
@@ -84,21 +88,34 @@ Identical to the extension — do not change these without changing the indexers
 - `app`: `hivescrobblesai/1.0`
 - Payload: [`HiveScrobblePayload`](https://github.com/Holozing1/hivescrobble/blob/master/src/core/scrobbler/hive/hive.types.ts)
 
-Scrobble rules, copied verbatim from `hive-scrobbler.ts#finalize`:
+Scrobble rules, from `hive-scrobbler.ts#finalize`, with one deliberate deviation:
 
-- **Music / podcast / video** — 1 tx at ≥60% played; a 2nd tx at ≥160% (double-listen), capped at 2.
+- **Music / podcast / video** — 1 tx at ≥60% played.
+- **Songs only** — a 2nd tx at ≥160% (a genuine double-listen), capped at 2. Upstream doubles every
+  kind; RustedWax caps `video` at one tx, because YouTube shorts auto-loop and were producing two
+  transactions for one sitting.
 - **Movie / episode** — 1 tx at ≥80%. *Not implemented on mobile* (see Limitations).
 - `now_playing` is never broadcast on-chain.
 
-### `kind` defaults to `song`
+### How `kind` is decided
 
-Proven-YouTube playback is written as `song` unless something says it isn't — a blocklist of
-podcast/tutorial/gameplay/review-shaped titles, YouTube's own category when the app can read it, or
-long-form with no musical signal at all. Covers, live takes, lyric videos and instrumentals are all
-music, and none of them look like `Artist - Track`; the earlier "video unless proven otherwise"
-default filed them under Videos. The trade is that the failure mode inverted — an occasional
-non-music video can now land in the music index, permanently. The Now tab shows a **kind because**
-line explaining every verdict before it goes out.
+Evidence, strongest first — a stronger layer always beats a weaker one:
+
+1. **YouTube's own category** (needs "Look videos up"): `Music` → song; Film & Animation, Gaming,
+   News, Sports, Education… → video. An *ambiguous* category (Entertainment, People & Blogs) doesn't
+   decide, but it raises the bar: only explicit evidence below can make the entry a song.
+2. **Blocklist and structure** → video: podcast/tutorial/gameplay/review-shaped titles, trailers
+   recognized structurally (`Official Final Trailer`, `Trailer 2`), clip channels (`… Movies`,
+   `… Cinema`, `… Pictures`), game playthroughs without an instrument.
+3. **Explicit music evidence** → song: music.youtube.com, a VEVO/`- Topic`/label channel, a
+   **MusicBrainz match** on the parsed artist + recording, an instrument-qualified cover or
+   playthrough, lyrics/instrumental/remix/live-performance vocabulary.
+4. **Weak evidence** — an `Artist - Track`-shaped title — is accepted only for ordinary videos of
+   unknown category, never for shorts, sub-90-second clips, or `#shorts`-tagged titles.
+5. **Default** → song, for ordinary-length watch-page videos with no signal at all.
+
+The Now tab shows **kind because**, **category** and **musicbrainz** lines explaining every verdict
+before anything goes on-chain — check them there, because on-chain is forever.
 
 ## Setup
 
@@ -108,13 +125,16 @@ line explaining every verdict before it goes out.
    before accepting it — a wrong key is rejected immediately, offline-verifiable against
    `api.openhive.network`, `hive-api.arcange.eu`, `api.hive.blog`.
 3. Grant Notification Access when prompted.
-4. Play something in Brave. The app's Recent tab shows detected tracks and broadcast tx ids.
+4. Optionally enable **Address bar access** (for `url` + lookups) — on Android 13+, allow restricted
+   settings from App info first.
+5. Play something in Brave. The **Now** tab shows the live session and the exact payload it would
+   broadcast; **History** shows what was sent, with tx ids.
 
 ### About your posting key
 
-The key is stored in `EncryptedSharedPreferences` backed by the Android Keystore and is gated behind
-biometric/device unlock. It never leaves the device — signing is local, and only the signed
-transaction is sent to a Hive node.
+The key is stored in `EncryptedSharedPreferences` backed by the Android Keystore. **There is no
+biometric gate yet** — an unlocked phone can sign. The key never leaves the device — signing is
+local, and only the signed transaction is sent to a Hive node.
 
 Be aware this is a **larger blast radius than Keychain on desktop**: a raw posting key can post,
 comment, and vote as you, with no per-operation prompt. If you want that reduced:
@@ -125,16 +145,17 @@ comment, and vote as you, with no per-operation prompt. If you want that reduced
 
 The app never asks for your active, owner, or memo key. If anything ever does, it isn't this app.
 
-## Privacy mode
+## Privacy mode — planned, not yet implemented
 
-Same scheme as the extension, per content kind (music / videos / podcasts / movies-tv). When enabled,
+**Every payload the app broadcasts today is plaintext on-chain.** Privacy mode is Phase 5 (it was
+originally Phase 4; the control/exclusivity/fidelity work preempted it — see PHASE4.md).
+
+The planned design matches the extension, per content kind (music / videos / podcasts / movies-tv):
 only `app`, `kind` and `timestamp` stay public; everything else goes into a base64
-`IV‖ciphertext+tag` AES-256-GCM blob under `private`, with `v: 1`.
-
-The AES key is derived exactly as on desktop — `SHA-256(signature bytes)` where the signature is a
-posting-key signature over the fixed challenge `zingit:privacy-key:v1`. Because Hive's ECDSA is
-deterministic (RFC 6979 + canonical grinding), the phone derives the **same key** the extension does,
-with no handoff and no Keychain. Blobs written on mobile decrypt on desktop and on zingit-web.
+`IV‖ciphertext+tag` AES-256-GCM blob under `private`, with `v: 1`. The AES key derives as on
+desktop — `SHA-256` of a posting-key signature over the fixed challenge `zingit:privacy-key:v1` —
+and because Hive's ECDSA is deterministic, the phone will derive the **same key** the extension does,
+so blobs written on mobile will decrypt on desktop and on zingit-web.
 
 ## Limitations vs the desktop extension
 
@@ -144,8 +165,9 @@ These follow from having no DOM access, not from missing work:
   media notification, bound to a session by title, or from the address bar if you enabled that. No
   evidence means no scrobble. `url` additionally needs a video id, which only the address-bar
   watcher can supply.
-- **No movie/episode scrobbles.** `videoKind` detection, Wikipedia/Wikidata enrichment, IMDb ids and
-  season/episode numbers all came from the connector layer. Media sessions expose none of it.
+- **No movie/episode scrobbles.** `videoKind` detection, IMDb ids and season/episode numbers all
+  came from the connector layer. Media sessions expose none of it. (Artist verification, which
+  desktop gets from Wikipedia/Wikidata, is covered on mobile by the MusicBrainz check instead.)
 - **No podcast disposition** unless the media session says so; most web podcasts arrive as `song`.
 - **Metadata quality depends on the site.** Whatever the page passes to the MediaSession API is what
   you get. Sites that don't set MediaSession metadata are invisible to the app.
@@ -177,9 +199,29 @@ the description of a cover. One GET to youtube.com per new video, cached, from o
 Google already knows you watched it, but it is still off-device traffic, so it's a switch you can
 turn off. It never blocks or delays a scrobble; if it fails, the on-device parse stands.
 
+The video id is **latched when the track is first identified** and kept for the track's lifetime —
+the address bar is correct at track start and routinely stale by track end (it shows the *next*
+short by then). The fetched page's own title must match what the session is playing, or the id is
+discarded: no `url` beats a wrong `url`.
+
 > This scrapes an undocumented blob out of the watch page and **will** break when YouTube changes it.
 > Failures are logged as `EXTRACTION FAILED` precisely so breakage is distinguishable from a video
 > that simply had nothing to add.
+
+### MusicBrainz verification
+
+The same switch also checks the parsed artist/track pair against [MusicBrainz](https://musicbrainz.org),
+the open music database. A match requires the artist name **and** the recording title to both agree —
+title-only matching would claim every clip named like some song. A confirmed match:
+
+- counts as **explicit music evidence** (it can qualify a short performance clip that has no music
+  words in its title), and
+- supplies the **canonical spelling** of artist and title, so entries line up with scrobbles of the
+  same recording from anywhere else.
+
+Small or unsigned artists simply aren't in the database — that's a missed upgrade, never a wrong
+one; classification proceeds as if the check hadn't run. Lookups honor MusicBrainz's 1-request/second
+etiquette and are cached (including "no match") so each track is asked about once.
 
 ## Development
 

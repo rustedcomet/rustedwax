@@ -361,6 +361,46 @@ split as artist|track by the separator heuristic (a kitten video broadcast
 with artist and title swapped). Harmless while kind=video; worth a look if it
 ever shows up on a song.
 
+## 9d. v0.5.0 — the double-listen cap and MusicBrainz
+
+Two additions driven by the same evening's chain data:
+
+**Double-listen is songs-only now.** A 56-second short auto-looped past 160%
+and broadcast twice in one block (percents 100 + 76). Upstream doubles every
+kind, but the rule exists to record a genuine second *listen*; a video is
+watched, not re-listened. `ScrobbleRules.capForKind` trims non-song decisions
+to one transaction. Deliberate deviation from upstream, documented in README.
+
+**MusicBrainz verification** (`enrich/MusicBrainzVerifier.kt`). The parser
+produces text and text lies — `artist: "Times Cover"` and `artist:
+"Shérazade"` (an uploader, not the performer) both reached the chain. The
+verifier checks the parsed artist/track pair against MusicBrainz's recording
+search; a match requires artist **and** title to both agree (title-only would
+claim every clip named like some song — "BlueBird", "Doomed" and "Film" are
+all real recordings) plus a healthy search score. A confirmed match:
+
+- is **explicit music evidence** for the classifier — it rescues the
+  "Maphra - Doomed" class of short performance clips that the short-form rule
+  otherwise files as `video`, and overrules ambiguous categories; it never
+  beats the blocklist (a trailer scoring a real song is still a trailer);
+- supplies **canonical spelling** for artist and title in the payload.
+
+Gated behind the same "Look videos up" switch (it's off-device traffic).
+Results cached including negatives; lookups rate-limited to 1/s per
+MusicBrainz etiquette; absent artists are a missed upgrade, never a wrong one.
+This is the mobile answer to upstream's Wikipedia/Wikidata layer, which
+DEVELOPMENT_PLAN originally deferred.
+
+### Ecosystem finding — first writer wins on scrobble.life
+
+The site keeps one canonical record per video id, seeded by the **first**
+scrobble's kind ("First scrobbled by @…"). A later op with the corrected kind
+attaches to the existing record instead of moving it — so one pre-fix `song`
+trailer stays listed as music for every future listener, and the desktop
+extension's under-claimed music keeps real songs pinned in `/videos`. Not
+fixable from any client; raised with the site's developer (options: majority
+or latest kind, a server-side category check, curator override).
+
 ## 10. Before enabling D4
 
 Song-by-default is irreversible per entry. Run the new classifier over the

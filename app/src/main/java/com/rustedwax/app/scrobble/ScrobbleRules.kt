@@ -1,5 +1,6 @@
 package com.rustedwax.app.scrobble
 
+import com.rustedwax.app.hive.HiveScrobblePayload
 import kotlin.math.floor
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -70,4 +71,17 @@ object ScrobbleRules {
 		}
 		return Decision(percentages)
 	}
+
+	/**
+	 * The 160% double-listen only applies to songs.
+	 *
+	 * A deliberate deviation from upstream, which doubles every kind. The rule
+	 * exists to record a genuine second listen — but YouTube shorts auto-loop,
+	 * so any short watched to 1.6× its 40 seconds produced two `video`
+	 * transactions for one sitting (observed on-chain 2026-07-24: the same
+	 * clip broadcast twice in one block at 100% and 76%). A video is watched,
+	 * not re-listened; one transaction is the honest record.
+	 */
+	fun capForKind(percentages: List<Int>, kind: String): List<Int> =
+		if (kind == HiveScrobblePayload.KIND_SONG) percentages else percentages.take(1)
 }
