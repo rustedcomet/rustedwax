@@ -12,6 +12,33 @@ class Settings(context: Context) {
 	private val prefs =
 		context.getSharedPreferences("rustedwax_settings", Context.MODE_PRIVATE)
 
+	/**
+	 * Whether the app watches media sessions at all.
+	 *
+	 * The outer of the two switches, and the stronger one: with this off the
+	 * probe is torn down, browser notifications are not read, and nothing is
+	 * observed or logged. [autoScrobble] only gates the *last* step of the
+	 * pipeline, so it can't answer "stop reading anything".
+	 *
+	 * Defaults on — a fresh install that has been granted Notification Access
+	 * is expected to be watching.
+	 */
+	var monitoringEnabled: Boolean
+		get() = prefs.getBoolean(KEY_MONITORING, true)
+		set(value) = prefs.edit().putBoolean(KEY_MONITORING, value).apply()
+
+	/**
+	 * Whether to look a video up on youtube.com to improve its metadata.
+	 *
+	 * Only reachable when the address-bar watcher has produced a video id, so
+	 * this is a no-op until that's enabled. On by default because it's the
+	 * point of having the id at all, but it is off-device traffic — one GET per
+	 * new video, from outside the browser — so it stays a visible switch.
+	 */
+	var enrichment: Boolean
+		get() = prefs.getBoolean(KEY_ENRICH, true)
+		set(value) = prefs.edit().putBoolean(KEY_ENRICH, value).apply()
+
 	/** Master switch for automatic scrobbling. Off until the user opts in. */
 	var autoScrobble: Boolean
 		get() = prefs.getBoolean(KEY_AUTO, false)
@@ -27,6 +54,8 @@ class Settings(context: Context) {
 	val thresholdPercent: Int get() = (scrobbleThreshold * 100).toInt()
 
 	private companion object {
+		const val KEY_MONITORING = "monitoringEnabled"
+		const val KEY_ENRICH = "enrichment"
 		const val KEY_AUTO = "autoScrobble"
 
 		/** Same key the extension uses. */

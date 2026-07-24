@@ -259,7 +259,11 @@ service-owned probe through `ProbeHolder` rather than owning one.
 Not carried over from the original plan: **cross-device dedup (§8)**. Desktop and phone running
 together will still double-scrobble the same listen.
 
-**Phase 4 — Privacy mode**
+**Phase 4 — Control, exclusivity, metadata fidelity** *(preempted privacy mode; see PHASE4.md)*
+Stop switch, browser-only watching with per-session hint binding, `song`-by-default classification,
+optional address-bar watcher, watch-page enrichment.
+
+**Phase 5 — Privacy mode**
 `PrivacySecret`, `PrivacyCipher`, `PrivacyEnvelope`, four per-kind toggles matching the extension's
 option keys. Gates G1, G2.
 

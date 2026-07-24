@@ -16,6 +16,10 @@ import com.rustedwax.app.hive.HiveScrobblePayload
 import com.rustedwax.app.detect.ScrobbleBuilder
 import com.rustedwax.app.detect.SessionSnapshot
 import com.rustedwax.app.detect.EventLog
+import com.rustedwax.app.enrich.FactsCache
+import com.rustedwax.app.enrich.MetadataResolver
+import com.rustedwax.app.enrich.VideoFacts
+import com.rustedwax.app.enrich.YouTubePageResolver
 import com.rustedwax.app.storage.KeyVault
 import com.rustedwax.app.storage.Settings
 
@@ -39,6 +43,7 @@ object ScrobbleEngine {
 	private lateinit var ledger: DedupLedger
 	private lateinit var queue: BroadcastQueue
 	private lateinit var settings: Settings
+	private lateinit var resolver: MetadataResolver
 	private val broadcaster = HiveBroadcaster()
 	private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 	private val broadcastLock = Mutex()
@@ -70,6 +75,7 @@ object ScrobbleEngine {
 		ledger = DedupLedger(appContext)
 		queue = BroadcastQueue(appContext)
 		settings = Settings(appContext)
+		resolver = YouTubePageResolver(FactsCache(appContext))
 		initialised = true
 		ledger.prune()
 		_queueSize.value = queue.size()
@@ -90,6 +96,12 @@ object ScrobbleEngine {
 	 */
 	fun onTrackFinalized(session: SessionSnapshot) {
 		if (!initialised) return
+		// Belt and braces. With monitoring off the probe is torn down and this
+		// can't be reached at all, but a finalize racing a Stop must lose.
+		if (!settings.monitoringEnabled) {
+			EventLog.append("engine", "monitoring stopped — not scrobbling")
+			return
+		}
 		if (!settings.autoScrobble) {
 			EventLog.append("engine", "auto-scrobble off — not scrobbling")
 			return
@@ -111,25 +123,52 @@ object ScrobbleEngine {
 			return
 		}
 
-		val basePayload = ScrobbleBuilder.from(session)
-		if (basePayload == null) {
-			EventLog.append("engine", "skipped: payload not buildable")
-			return
-		}
+		// Enrichment is a network call, so the payload can no longer be built on
+		// this thread. Everything downstream of it moves into the coroutine —
+		// including the dedup claim, which must be computed from the *corrected*
+		// title and artist or a fixed parse would look like a new track.
+		scope.launch {
+			val facts = enrich(session)
 
-		val dedupKey = DedupLedger.keyFor(
-			basePayload.title,
-			basePayload.artist,
-			session.trackStartedAtEpochSec,
-		)
-		if (!ledger.claim(dedupKey)) {
-			EventLog.append("engine", "skipped: already scrobbled [$dedupKey]")
-			return
-		}
+			val basePayload = ScrobbleBuilder.from(session, facts)
+			if (basePayload == null) {
+				EventLog.append("engine", "skipped: payload not buildable")
+				return@launch
+			}
 
-		// One tx per entry — the 160% double-listen produces two.
-		decision.percentages.forEach { percent ->
-			enqueueAndSend(basePayload.copy(percentPlayed = percent))
+			val dedupKey = DedupLedger.keyFor(
+				basePayload.title,
+				basePayload.artist,
+				session.trackStartedAtEpochSec,
+			)
+			if (!ledger.claim(dedupKey)) {
+				EventLog.append("engine", "skipped: already scrobbled [$dedupKey]")
+				return@launch
+			}
+
+			// One tx per entry — the 160% double-listen produces two.
+			decision.percentages.forEach { percent ->
+				enqueueAndSend(basePayload.copy(percentPlayed = percent))
+			}
+		}
+	}
+
+	/**
+	 * Best-effort lookup of the video's own metadata.
+	 *
+	 * Returns null on every failure path — disabled, no video id, network down,
+	 * markup changed. A scrobble is never lost because enrichment was, and the
+	 * offline parse is always a complete answer on its own.
+	 */
+	private suspend fun enrich(session: SessionSnapshot): VideoFacts? {
+		if (!settings.enrichment) return null
+		val videoId = session.confirmed?.videoId ?: run {
+			EventLog.append("enrich", "no video id — offline parse only")
+			return null
+		}
+		return runCatching { resolver.resolve(videoId) }.getOrElse {
+			EventLog.append("enrich", "resolver threw: ${it.message}")
+			null
 		}
 	}
 

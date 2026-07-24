@@ -42,6 +42,9 @@ class SessionProbe(context: Context) {
 
 	private val watches = mutableMapOf<String, Watch>()
 
+	/** Packages already logged as ignored, so the log records each one once. */
+	private val ignoredPackages = mutableSetOf<String>()
+
 	private val _sessions = MutableStateFlow<List<SessionSnapshot>>(emptyList())
 	val sessions: StateFlow<List<SessionSnapshot>> = _sessions.asStateFlow()
 
@@ -93,14 +96,28 @@ class SessionProbe(context: Context) {
 		}
 	}
 
-	fun stop() {
+	/**
+	 * Tear the probe down.
+	 *
+	 * @param finalizeTracks whether tracks still in flight get one last chance
+	 * to score. True when the *system* ends things (session gone, listener
+	 * disconnected) — the track really did end, and dropping it would lose a
+	 * legitimate scrobble. **False when the user presses Stop**: a Stop button
+	 * that writes to an immutable chain on its way out is a bad Stop button, and
+	 * without this flag `dispose()` would do exactly that for any track already
+	 * past the threshold.
+	 */
+	fun stop(finalizeTracks: Boolean = true) {
 		if (!started) return
 		NotificationHints.onHint = null
 		runCatching { sessionManager.removeOnActiveSessionsChangedListener(activeSessionsListener) }
-		watches.values.forEach { it.dispose() }
+		watches.values.forEach { it.dispose(finalizeTracks) }
 		watches.clear()
 		started = false
-		EventLog.append("probe", "stopped")
+		EventLog.append(
+			"probe",
+			if (finalizeTracks) "stopped" else "stopped — in-flight tracks discarded",
+		)
 		publish()
 	}
 
@@ -123,19 +140,44 @@ class SessionProbe(context: Context) {
 		// New.
 		for ((key, controller) in byKey) {
 			if (watches.containsKey(key)) continue
+
+			// Phase 4: anything that isn't a target browser is not watched at
+			// all. Previously every app on the device got a Watch and had its
+			// title/artist/album dumped to the log as a "control case" — useful
+			// during the spike, but it meant Spotify and every podcast player
+			// were being read by an app that only scrobbles YouTube.
+			if (controller.packageName !in YouTubeProbe.TARGET_PACKAGES) {
+				noteIgnored(controller.packageName)
+				continue
+			}
+
 			val watch = Watch(controller, labelFor(controller.packageName))
 			watches[key] = watch
-			EventLog.append(
-				"session",
-				"+ ${watch.packageName} (${watch.appLabel})" +
-					if (watch.isTarget) "  ← target" else "  [control, not scrobbled]",
-			)
+			EventLog.append("session", "+ ${watch.packageName} (${watch.appLabel})  ← target")
 			watch.logMetadata(controller.metadata, "initial")
 			watch.logPlaybackState(controller.playbackState, "initial")
 		}
 
 		publish()
 	}
+
+	/**
+	 * One line per package, ever — enough to answer "why isn't my music
+	 * showing up", without the package name reappearing on every session
+	 * change. No metadata is read from it.
+	 */
+	private fun noteIgnored(packageName: String) {
+		if (ignoredPackages.add(packageName)) {
+			EventLog.append("session", "ignored: $packageName (not a target browser)")
+		}
+	}
+
+	/**
+	 * True when the browser has exactly one media session, which is what lets
+	 * [NotificationHints.bestFor] fall back to the newest hint: with one session
+	 * there is no other tab the notification could belong to.
+	 */
+	private val soleSession: Boolean get() = watches.size == 1
 
 	private fun publish() {
 		_sessions.value = watches.values.map { it.snapshot() }
@@ -154,8 +196,23 @@ class SessionProbe(context: Context) {
 	) {
 		val packageName: String = controller.packageName
 
-		/** Brave/Chrome only. Everything else is observed but never scrobbled. */
+		/**
+		 * Always true since Phase 4 — non-browser sessions are no longer
+		 * watched at all. Kept because the payload and the UI still read it,
+		 * and because a future per-app allowlist would put it back to work.
+		 */
 		val isTarget: Boolean = packageName in YouTubeProbe.TARGET_PACKAGES
+
+		/**
+		 * Set when evidence positively names a non-YouTube site, and cleared
+		 * only on a track change.
+		 *
+		 * One-way on purpose. Identity is re-checked whenever a notification
+		 * lands, so without this a track proven to be some other site could be
+		 * rehabilitated by a YouTube hint arriving from a different tab
+		 * moments later — and then scrobbled as YouTube.
+		 */
+		private var taintedReason: String? = null
 
 		private var metadata: MediaMetadata? = controller.metadata
 		private var state: PlaybackState? = controller.playbackState
@@ -215,10 +272,11 @@ class SessionProbe(context: Context) {
 			controller.registerCallback(callback, handler)
 		}
 
-		fun dispose() {
+		fun dispose(finalize: Boolean = true) {
 			// A session disappearing is the last chance to score the track —
-			// closing the tab never produces a STOPPED state.
-			finalizeCurrent("session ended")
+			// closing the tab never produces a STOPPED state. A user-initiated
+			// Stop is the one case where we deliberately walk away from it.
+			if (finalize) finalizeCurrent("session ended")
 			runCatching { controller.unregisterCallback(callback) }
 		}
 
@@ -247,7 +305,46 @@ class SessionProbe(context: Context) {
 			playingSince = if (isPlaying(state)) SystemClock.elapsedRealtime() else 0
 			trackStartedAtEpochSec = System.currentTimeMillis() / 1000
 			finalized = false
+			taintedReason = null
 		}
+
+		/**
+		 * Identity for the given metadata, using the hint bound to *this*
+		 * session rather than whatever landed last for the package, and
+		 * applying the taint rule.
+		 */
+		private fun identityOf(md: MediaMetadata?): YouTubeProbe.Identity {
+			val hint = NotificationHints.bestFor(
+				packageName = packageName,
+				title = titleOf(md),
+				artist = artistOf(md),
+				soleSession = soleSession,
+			)
+			val id = YouTubeProbe.identify(
+				md = md,
+				hint = hint,
+				url = UrlEvidence.get(packageName),
+				soleSession = soleSession,
+			)
+			if (id is YouTubeProbe.Identity.Unconfirmed && id.provenOtherSite) {
+				if (taintedReason == null) {
+					EventLog.append("identity", "$packageName tainted for this track: ${id.reason}")
+				}
+				taintedReason = id.reason
+			}
+			return taintedReason
+				?.let { YouTubeProbe.Identity.Unconfirmed("another site was proven earlier: $it", true) }
+				?: id
+		}
+
+		/** The hint the probe is currently bound to, for the diagnostics card. */
+		private fun boundHint(md: MediaMetadata?): NotificationHints.Hint? =
+			NotificationHints.bestFor(
+				packageName = packageName,
+				title = titleOf(md),
+				artist = artistOf(md),
+				soleSession = soleSession,
+			)
 
 		/** Folds elapsed playing time into [playedMs] and restarts the clock. */
 		private fun accumulate() {
@@ -269,7 +366,7 @@ class SessionProbe(context: Context) {
 		fun reidentify() = logIdentity(metadata, "re-check after notification")
 
 		private fun logIdentity(md: MediaMetadata?, reason: String) {
-			when (val id = YouTubeProbe.identify(md, NotificationHints.get(packageName))) {
+			when (val id = identityOf(md)) {
 				is YouTubeProbe.Identity.Confirmed -> EventLog.append(
 					"identity",
 					"$packageName → YouTube ${id.videoId} " +
@@ -283,8 +380,7 @@ class SessionProbe(context: Context) {
 
 				is YouTubeProbe.Identity.Unconfirmed -> EventLog.append(
 					"identity",
-					"$packageName → not proven YouTube: ${id.reason}" +
-						if (isTarget) "  ← would be SKIPPED" else "",
+					"$packageName → not proven YouTube: ${id.reason}  ← would be SKIPPED",
 				)
 			}
 		}
@@ -302,6 +398,14 @@ class SessionProbe(context: Context) {
 			)
 		}
 
+		private fun titleOf(md: MediaMetadata?): String? =
+			MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_TITLE)
+				?: MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_DISPLAY_TITLE)
+
+		private fun artistOf(md: MediaMetadata?): String? =
+			MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_ARTIST)
+				?: MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE)
+
 		fun snapshot(): SessionSnapshot {
 			val md = metadata
 			val ps = state
@@ -312,10 +416,8 @@ class SessionProbe(context: Context) {
 				packageName = packageName,
 				appLabel = appLabel,
 				isTarget = isTarget,
-				title = MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_TITLE)
-					?: MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_DISPLAY_TITLE),
-				artist = MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_ARTIST)
-					?: MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE),
+				title = titleOf(md),
+				artist = artistOf(md),
 				album = MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_ALBUM),
 				durationMs = duration,
 				positionMs = position,
@@ -325,8 +427,8 @@ class SessionProbe(context: Context) {
 				// Percent-of-duration using real played time — the input the
 				// 60% / 160% rule in ScrobbleRules will consume in Phase 3.
 				percentPlayed = duration?.takeIf { it > 0 }?.let { played.toDouble() / it },
-				identity = YouTubeProbe.identify(md, NotificationHints.get(packageName)),
-				notificationHint = NotificationHints.get(packageName),
+				identity = identityOf(md),
+				notificationHint = boundHint(md),
 				metadataLines = MetadataDump.dump(md),
 				trackStartedAtEpochSec = trackStartedAtEpochSec,
 			)

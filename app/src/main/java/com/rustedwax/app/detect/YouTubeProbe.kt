@@ -63,8 +63,26 @@ object YouTubeProbe {
 	private val WATCH_URL =
 		Regex("""(?:youtube\.com/watch\?(?:.*&)?v=|youtu\.be/)([A-Za-z0-9_-]{11})""")
 
-	private const val YOUTUBE_HOST = "youtube.com"
 	private const val YOUTUBE_MUSIC_HOST = "music.youtube.com"
+
+	/**
+	 * Exactly the hosts that count as YouTube.
+	 *
+	 * An explicit set, not a `.youtube.com` suffix test. The suffix version
+	 * accepted anything ending in the domain, and "prove it or skip it" should
+	 * not be resolved by a wildcard. `www.` is stripped upstream in
+	 * [RustedWaxListenerService.hostOf] but listed anyway — this set is the
+	 * contract, and it shouldn't depend on a caller's normalisation.
+	 */
+	private val YOUTUBE_HOSTS = setOf(
+		"youtube.com",
+		"www.youtube.com",
+		"m.youtube.com",
+		"music.youtube.com",
+		"youtu.be",
+	)
+
+	fun isYouTubeHost(host: String?): Boolean = host?.lowercase() in YOUTUBE_HOSTS
 
 	private val URI_KEYS = listOf(
 		MediaMetadata.METADATA_KEY_ART_URI,
@@ -96,17 +114,66 @@ object YouTubeProbe {
 			override val source: String,
 		) : Identity
 
-		/** Can't prove the site. Never scrobbled. */
-		data class Unconfirmed(val reason: String) : Identity {
+		/**
+		 * Can't prove the site. Never scrobbled.
+		 *
+		 * @param provenOtherSite true when the evidence didn't merely fail to
+		 * prove YouTube but positively named a *different* site. That's a
+		 * stronger statement than "unknown", and the probe uses it to poison the
+		 * track for good — see `SessionProbe.Watch.taintedReason`. Without the
+		 * distinction, a track that was demonstrably SoundCloud could be
+		 * rehabilitated by a YouTube notification arriving from another tab.
+		 */
+		data class Unconfirmed(
+			val reason: String,
+			val provenOtherSite: Boolean = false,
+		) : Identity {
 			override val source: String get() = reason
 		}
 	}
 
 	/**
 	 * @param md the session's metadata
-	 * @param hint the most recent media notification seen for this package, if any
+	 * @param hint the notification bound to *this* session, if any
+	 * @param url what the address bar last said, if the watcher is enabled
+	 * @param soleSession whether this is the browser's only media session
 	 */
-	fun identify(md: MediaMetadata?, hint: NotificationHints.Hint? = null): Identity {
+	fun identify(
+		md: MediaMetadata?,
+		hint: NotificationHints.Hint? = null,
+		url: UrlEvidence.Evidence? = null,
+		soleSession: Boolean = false,
+	): Identity {
+		// 0 — the address bar, when it corroborates or stands alone.
+		//
+		// Deliberately not treated as proof on its own: it describes the
+		// *foreground tab*, and YouTube playing in a background tab while
+		// another site is on screen is ordinary behaviour. So a YouTube URL
+		// only decides identity when the notification agrees, or when there is
+		// exactly one session and therefore nothing to confuse it with. By the
+		// same reasoning a non-YouTube URL proves nothing here and must never
+		// taint — it may simply be a different tab from the one playing.
+		if (url != null && isYouTubeHost(url.host)) {
+			val hintAgrees = isYouTubeHost(hint?.host)
+			if (hintAgrees || (hint == null && soleSession)) {
+				val corroboration =
+					if (hintAgrees) "address bar + notification" else "address bar, sole session"
+				url.videoId?.let { id ->
+					return Identity.Confirmed(
+						videoId = id,
+						url = watchUrl(id),
+						isMusic = url.host == YOUTUBE_MUSIC_HOST,
+						source = "$corroboration → $id",
+					)
+				}
+				return Identity.SiteOnly(
+					host = url.host!!,
+					isMusic = url.host == YOUTUBE_MUSIC_HOST,
+					source = "$corroboration → ${url.host} (no video id in the bar)",
+				)
+			}
+		}
+
 		// 1 & 2 — URI evidence, which also pins the video id.
 		if (md != null) {
 			for (key in URI_KEYS) {
@@ -135,18 +202,26 @@ object YouTubeProbe {
 
 		// 3 — the notification origin. Site only, no video id.
 		val host = hint?.host
-		if (host != null && (host == YOUTUBE_HOST || host.endsWith(".$YOUTUBE_HOST"))) {
+		if (isYouTubeHost(host)) {
 			return Identity.SiteOnly(
-				host = host,
+				host = host!!,
 				isMusic = host == YOUTUBE_MUSIC_HOST,
 				source = "notification sub-text → $host",
+			)
+		}
+
+		// A named non-YouTube host is the one case that taints the track rather
+		// than merely leaving it unproven.
+		if (host != null) {
+			return Identity.Unconfirmed(
+				"notification says $host, not YouTube",
+				provenOtherSite = true,
 			)
 		}
 
 		return Identity.Unconfirmed(
 			when {
 				md == null -> "no metadata"
-				host != null -> "notification says $host, not YouTube"
 				hint != null -> "notification had no recognisable host"
 				URI_KEYS.any { MetadataDump.textOrNull(md, it) != null } ->
 					"URIs present but none are YouTube"

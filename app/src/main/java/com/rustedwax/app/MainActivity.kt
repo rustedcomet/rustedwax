@@ -23,9 +23,11 @@ import com.rustedwax.app.hive.HiveRpc
 import com.rustedwax.app.hive.HiveScrobblePayload
 import com.rustedwax.app.hive.KeyValidator
 import com.rustedwax.app.scrobble.ScrobbleEngine
+import com.rustedwax.app.detect.MonitorSwitch
 import com.rustedwax.app.detect.ProbeHolder
 import com.rustedwax.app.detect.ScrobbleBuilder
 import com.rustedwax.app.detect.SessionProbe
+import com.rustedwax.app.detect.UrlWatcherService
 import com.rustedwax.app.detect.EventLog
 import com.rustedwax.app.storage.KeyVault
 import com.rustedwax.app.storage.Settings
@@ -47,6 +49,7 @@ class MainActivity : ComponentActivity() {
 	override fun onCreate(savedInstanceState: Bundle?) {
 		super.onCreate(savedInstanceState)
 		EventLog.init(this)
+		MonitorSwitch.init(this)
 		ScrobbleEngine.init(this)
 		vault = KeyVault(this)
 		settings = Settings(this)
@@ -54,12 +57,15 @@ class MainActivity : ComponentActivity() {
 		setContent {
 			MaterialTheme {
 				val probe by ProbeHolder.probe.collectAsStateWithLifecycle()
+				val monitoring by MonitorSwitch.enabled.collectAsStateWithLifecycle()
 				val logLines by EventLog.lines.collectAsStateWithLifecycle()
 				val recent by ScrobbleEngine.recent.collectAsStateWithLifecycle()
 				val queued by ScrobbleEngine.queueSize.collectAsStateWithLifecycle()
 
 				var sessions by remember { mutableStateOf(emptyList<com.rustedwax.app.detect.SessionSnapshot>()) }
 				var hasAccess by remember { mutableStateOf(SessionProbe.hasNotificationAccess(this)) }
+				var urlWatcher by remember { mutableStateOf(UrlWatcherService.isEnabled(this)) }
+				var enrichment by remember { mutableStateOf(settings.enrichment) }
 				var account by remember { mutableStateOf(vault.account) }
 				var autoScrobble by remember { mutableStateOf(settings.autoScrobble) }
 				var busy by remember { mutableStateOf(false) }
@@ -71,6 +77,9 @@ class MainActivity : ComponentActivity() {
 				LaunchedEffect(probe) {
 					while (true) {
 						hasAccess = SessionProbe.hasNotificationAccess(this@MainActivity)
+						// Both grants are revocable from system settings while
+						// we're in the background, so neither is cached.
+						urlWatcher = UrlWatcherService.isEnabled(this@MainActivity)
 						probe?.tick()
 						sessions = probe?.sessions?.value ?: emptyList()
 						delay(1000)
@@ -93,13 +102,37 @@ class MainActivity : ComponentActivity() {
 					accountBusy = busy,
 					accountStatus = status,
 					accountStatusIsError = statusIsError,
+					monitoring = monitoring,
 					autoScrobble = autoScrobble,
 					thresholdPercent = settings.thresholdPercent,
+					urlWatcherEnabled = urlWatcher,
+					enrichment = enrichment,
 					recent = recent,
 					queuedCount = queued,
 					onGrantAccess = ::openNotificationAccessSettings,
 					onExportLog = ::exportLog,
 					onClearLog = EventLog::clear,
+					onToggleMonitoring = { enabled ->
+						MonitorSwitch.set(this@MainActivity, enabled)
+						report(
+							if (enabled) {
+								"Monitoring started."
+							} else {
+								"Monitoring stopped. Nothing is being read; " +
+									"anything already queued still sends."
+							},
+							isError = false,
+						)
+					},
+					onOpenAccessibility = ::openAccessibilitySettings,
+					onToggleEnrichment = { enabled ->
+						settings.enrichment = enabled
+						enrichment = enabled
+						EventLog.append(
+							"enrich",
+							"video lookup ${if (enabled) "on" else "off"}",
+						)
+					},
 					onToggleAutoScrobble = { enabled ->
 						if (enabled && account == null) {
 							report("Add a Hive key first — nothing can be signed.", true)
@@ -210,6 +243,23 @@ class MainActivity : ComponentActivity() {
 
 	private fun openNotificationAccessSettings() {
 		startActivity(Intent(AndroidSettings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+	}
+
+	/**
+	 * There is no intent that jumps straight to one service's toggle, so this
+	 * lands on the Accessibility list and the user picks RustedWax from it.
+	 *
+	 * On Android 13+ a sideloaded APK's accessibility toggle is greyed out
+	 * until "Allow restricted settings" is granted from App info — the toggle
+	 * looks broken rather than blocked, so the app says so up front.
+	 */
+	private fun openAccessibilitySettings() {
+		EventLog.append(
+			"url",
+			"opening Accessibility settings — on Android 13+ a sideloaded build " +
+				"needs 'Allow restricted settings' from App info first",
+		)
+		startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS))
 	}
 
 	private fun exportLog() {

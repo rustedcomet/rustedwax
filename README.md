@@ -23,13 +23,17 @@ browser being a desktop browser:
 | Per-site DOM connectors | Android `MediaSessionManager` — one universal source |
 | Hive Keychain signs the transaction | The app signs locally with your posting key |
 
-The on-chain format, the scrobble thresholds and the dedup rules follow the established ones, so
-entries written from your phone look the same on-chain as entries written from a desktop.
+The on-chain format, the scrobble thresholds and the dedup rules follow the established ones.
 
-> **v1 scope: YouTube in Brave.** A media session names the app, never the site, so the app only
-> scrobbles playback it can *prove* is YouTube. Anything it can't prove is skipped rather than
-> guessed — wrong attribution on an immutable chain is worse than a missing scrobble. More sites
-> follow once the detection story is settled.
+> **Not byte-identical to desktop any more.** Phase 4 normalizes titles to the original recording —
+> `(Live)`, `(Instrumental)` and `【Guitar Cover】` are stripped, so a cover lands on the same entry
+> as the studio track instead of scattering play counts. The extension keeps those markers. Same
+> schema, same id, same rules; the title field can differ. See [PHASE4.md](PHASE4.md) decision D7.
+
+> **v1 scope: YouTube in Brave, exclusively.** A media session names the app, never the site, so the
+> app only scrobbles playback it can *prove* is YouTube. Anything it can't prove is skipped rather
+> than guessed — wrong attribution on an immutable chain is worse than a missing scrobble. Media
+> sessions from anything that isn't a target browser are not watched at all.
 
 ---
 
@@ -44,6 +48,13 @@ entries written from your phone look the same on-chain as entries written from a
    position. The app accumulates real played time against the same thresholds as desktop.
 4. When a track ends, the app builds the same `custom_json` payload, signs it with your posting key
    on-device, and broadcasts it. If the network is down, the scrobble is queued and retried.
+
+**Stop** cuts all of that off. It tears down the session watcher, stops reading notifications and
+forgets the hints it had — nothing is observed while it's stopped, and the track playing when you
+press it is discarded rather than scrobbled on the way out. Scrobbles already earned and waiting in
+the offline queue still send. Automatic scrobbling is a separate, inner switch: turning *it* off
+leaves the app watching, which is how you check what a title would have parsed to without writing
+anything to the chain.
 
 ```
 Brave (playing) ──▶ Android MediaSession ──┐
@@ -78,6 +89,16 @@ Scrobble rules, copied verbatim from `hive-scrobbler.ts#finalize`:
 - **Music / podcast / video** — 1 tx at ≥60% played; a 2nd tx at ≥160% (double-listen), capped at 2.
 - **Movie / episode** — 1 tx at ≥80%. *Not implemented on mobile* (see Limitations).
 - `now_playing` is never broadcast on-chain.
+
+### `kind` defaults to `song`
+
+Proven-YouTube playback is written as `song` unless something says it isn't — a blocklist of
+podcast/tutorial/gameplay/review-shaped titles, YouTube's own category when the app can read it, or
+long-form with no musical signal at all. Covers, live takes, lyric videos and instrumentals are all
+music, and none of them look like `Artist - Track`; the earlier "video unless proven otherwise"
+default filed them under Videos. The trade is that the failure mode inverted — an occasional
+non-music video can now land in the music index, permanently. The Now tab shows a **kind because**
+line explaining every verdict before it goes out.
 
 ## Setup
 
@@ -119,9 +140,10 @@ with no handoff and no Keychain. Blobs written on mobile decrypt on desktop and 
 
 These follow from having no DOM access, not from missing work:
 
-- **Only what can be proven.** `url` and `platform` come from a YouTube video id recovered out of the
-  artwork URI (`i.ytimg.com/vi/<videoId>/…`) or a literal watch URL in the metadata. No evidence
-  means no scrobble.
+- **Only what can be proven.** `platform` requires the origin to be established — from the browser's
+  media notification, bound to a session by title, or from the address bar if you enabled that. No
+  evidence means no scrobble. `url` additionally needs a video id, which only the address-bar
+  watcher can supply.
 - **No movie/episode scrobbles.** `videoKind` detection, Wikipedia/Wikidata enrichment, IMDb ids and
   season/episode numbers all came from the connector layer. Media sessions expose none of it.
 - **No podcast disposition** unless the media session says so; most web podcasts arrive as `song`.
@@ -129,10 +151,35 @@ These follow from having no DOM access, not from missing work:
   you get. Sites that don't set MediaSession metadata are invisible to the app.
 - **No guest (Google) ingest path.** Mobile is Hive-only by design.
 
-## Bonus over desktop
+## Address bar access (optional)
 
-Because it listens at the OS level, the app also sees **native apps** — Spotify, YouTube Music, Poweramp,
-podcast players — which the extension can never reach. Off by default; enable per-app in settings.
+Off by default. The media notification tells the app the origin but never which video, so without
+this there is no `url` on any scrobble and no way to look a video up.
+
+Enabling it lets the app read the address bar in Brave and Chrome, which gives the exact site and —
+when the browser exposes the full URL rather than just the host — the video id. The service is
+pinned to those browser packages in its config, so the **system** prevents it seeing any other app;
+that isn't a promise made by app code. It reads one thing: the URL bar.
+
+Two caveats worth knowing before you turn it on:
+
+- The address bar describes the **foreground tab**, which isn't always the tab that's playing. So a
+  YouTube URL only settles identity when the notification agrees or there's a single session, and a
+  non-YouTube URL is never treated as evidence against a session — it may just be another tab.
+- On Android 13+ a sideloaded APK's accessibility toggle is greyed out until you allow it: **App
+  info → ⋮ → Allow restricted settings**. It looks broken rather than blocked.
+
+### Looking videos up
+
+With a video id available, the app can fetch the video's own page to read YouTube's category — a far
+better answer to song-vs-video than any title heuristic — and to find the original artist credited in
+the description of a cover. One GET to youtube.com per new video, cached, from outside the browser.
+Google already knows you watched it, but it is still off-device traffic, so it's a switch you can
+turn off. It never blocks or delays a scrobble; if it fails, the on-device parse stands.
+
+> This scrapes an undocumented blob out of the watch page and **will** break when YouTube changes it.
+> Failures are logged as `EXTRACTION FAILED` precisely so breakage is distinguishable from a video
+> that simply had nothing to add.
 
 ## Development
 

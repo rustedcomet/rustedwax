@@ -5,6 +5,11 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
 import com.rustedwax.app.scrobble.ScrobbleEngine
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
  * Notification listener — and, since Phase 3, the host for detection itself.
@@ -31,41 +36,99 @@ import com.rustedwax.app.scrobble.ScrobbleEngine
  *
  * Scope discipline: only notifications from [YouTubeProbe.TARGET_PACKAGES] are
  * inspected. Every other app's notifications are ignored on the first line of
- * the callback and never read, stored, or logged.
+ * the callback and never read, stored, or logged. When [MonitorSwitch] is off,
+ * not even those are looked at.
  */
 class RustedWaxListenerService : NotificationListenerService() {
 
 	private var probe: SessionProbe? = null
+
+	/** Lives exactly as long as the listener binding does. */
+	private var scope: CoroutineScope? = null
 
 	override fun onListenerConnected() {
 		Log.i(TAG, "Notification listener connected — media sessions readable")
 		EventLog.init(applicationContext)
 		EventLog.append("listener", "connected")
 
+		MonitorSwitch.init(applicationContext)
 		ScrobbleEngine.init(applicationContext)
 
-		// Rebuilt on every connect: the system can tear this service down and
-		// bring it back at will, and a stale probe would hold dead controllers.
-		probe?.stop()
-		probe = SessionProbe(applicationContext).also { p ->
-			p.onTrackFinalized = ScrobbleEngine::onTrackFinalized
-			p.start()
-			ProbeHolder.set(p)
+		// A reconnect without an intervening disconnect is allowed, and the probe
+		// it left behind holds dead controllers. Drop it before rebuilding —
+		// finalizing, because this is the system recycling us mid-playback, not
+		// the user asking us to stop.
+		scope?.cancel()
+		probe?.stop(finalizeTracks = true)
+		probe = null
+		ProbeHolder.set(null)
+
+		// The probe follows the switch rather than the binding: the system can
+		// reconnect this service at any time, and it must not resurrect
+		// monitoring the user turned off. Collecting a StateFlow delivers the
+		// current value immediately, so this also handles the initial state.
+		scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).also { s ->
+			s.launch {
+				MonitorSwitch.enabled.collect { on ->
+					if (on) startProbe() else stopProbe()
+				}
+			}
 		}
 
-		// Anything stranded by an earlier offline spell gets another go.
+		// Anything stranded by an earlier offline spell gets another go. Runs
+		// even while stopped: those scrobbles were earned before Stop, and
+		// holding them hostage only drifts their timestamps further.
 		ScrobbleEngine.flushQueue()
 	}
 
 	override fun onListenerDisconnected() {
 		Log.w(TAG, "Notification listener disconnected")
 		EventLog.append("listener", "disconnected")
-		probe?.stop()
+		scope?.cancel()
+		scope = null
+		// System teardown, not a user Stop — a track in flight really is ending,
+		// so it gets its last chance to score.
+		probe?.stop(finalizeTracks = true)
 		probe = null
 		ProbeHolder.set(null)
 	}
 
+	/**
+	 * Rebuilt from scratch every time: the system can tear this service down
+	 * and bring it back at will, and a stale probe would hold dead controllers.
+	 */
+	private fun startProbe() {
+		if (probe != null) return
+		probe = SessionProbe(applicationContext).also { p ->
+			p.onTrackFinalized = ScrobbleEngine::onTrackFinalized
+			p.start()
+			ProbeHolder.set(p)
+		}
+	}
+
+	/** The user pressed Stop. Nothing in flight is scrobbled on the way out. */
+	private fun stopProbe() {
+		val wasRunning = probe != null
+		probe?.stop(finalizeTracks = false)
+		probe = null
+		ProbeHolder.set(null)
+		// Evidence harvested before Stop must not survive to explain a session
+		// seen after the next Start.
+		NotificationHints.clearAll()
+		EventLog.append(
+			"monitor",
+			if (wasRunning) {
+				"monitoring stopped — nothing is being read"
+			} else {
+				// Reached on every reconnect while stopped. Worth a line: it's
+				// the answer to "why is the app not seeing anything".
+				"monitoring is off — probe not started"
+			},
+		)
+	}
+
 	override fun onNotificationPosted(sbn: StatusBarNotification?) {
+		if (!MonitorSwitch.isEnabled) return
 		val pkg = sbn?.packageName ?: return
 		if (pkg !in YouTubeProbe.TARGET_PACKAGES) return
 
@@ -90,9 +153,13 @@ class RustedWaxListenerService : NotificationListenerService() {
 
 	override fun onNotificationRemoved(sbn: StatusBarNotification?) {
 		val pkg = sbn?.packageName ?: return
-		if (pkg in YouTubeProbe.TARGET_PACKAGES) {
-			NotificationHints.clear(pkg)
-		}
+		if (pkg !in YouTubeProbe.TARGET_PACKAGES) return
+		// Remove only the hint this notification produced. Clearing the whole
+		// package here used to erase a second tab's evidence along with it, so
+		// closing one tab silently killed the other tab's scrobble.
+		val title = sbn.notification?.extras
+			?.getCharSequence(Notification.EXTRA_TITLE)?.toString()
+		NotificationHints.remove(pkg, title)
 	}
 
 	/**

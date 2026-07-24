@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 	<string name="app_name">RustedWax</string>
+
+	<string name="accessibility_summary">Reads the address bar in Brave and Chrome only</string>
+	<string name="accessibility_description">Optional. Lets RustedWax read the address bar in Brave and Chrome so it knows exactly which site is playing, and which video. Without it the app infers the site from the browser\'s media notification, which cannot tell one tab from another and never yields a video link.\n\nThis service is restricted to those browsers by the system — it cannot see any other app. Nothing is read except the address bar, and nothing leaves the device except the video lookup you can switch off separately.</string>
 </resources>
