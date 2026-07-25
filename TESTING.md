@@ -1,6 +1,6 @@
-# Testing RustedWax v0.5.4
+# Testing RustedWax v0.5.5
 
-`dist/rustedwax-0.5.4.apk` — detection, key handling, automatic scrobbling
+`dist/rustedwax-0.5.5.apk` — detection, key handling, automatic scrobbling
 (Phase 3), plus the Phase 4 layer: the Stop switch, YouTube-only exclusivity,
 evidence-based `kind` classification, the optional address-bar watcher,
 watch-page enrichment, and MusicBrainz verification.
@@ -24,7 +24,7 @@ authority and give the app that key. Then revoking it later costs you nothing.
 ## Install
 
 ```bash
-~/Library/Android/sdk/platform-tools/adb install -r dist/rustedwax-0.5.4.apk
+~/Library/Android/sdk/platform-tools/adb install -r dist/rustedwax-0.5.5.apk
 ```
 
 ## 1. Key validation (no chain writes)
@@ -196,7 +196,7 @@ title-parsing, 10 threshold/double-listen, 8 notification-hint binding, 7
 address-bar corroboration, 7 dedup-key, 6 watch-page extraction, 6 MusicBrainz
 matching.
 
-## Known gaps in v0.5.4
+## Known gaps in v0.5.5
 
 - **Desktop and phone together will double-scrobble.** Dedup is per-device; the
   cross-device check is not implemented. If you run the extension and the app on

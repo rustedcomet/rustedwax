@@ -12,8 +12,8 @@ android {
 		applicationId = "com.rustedwax.app"
 		minSdk = 26
 		targetSdk = 35
-		versionCode = 13
-		versionName = "0.5.4"
+		versionCode = 14
+		versionName = "0.5.5"
 	}
 
 	buildTypes {
@@ -37,6 +37,9 @@ android {
 
 	buildFeatures {
 		compose = true
+		// Off by default in AGP 8. Needed so the MusicBrainz User-Agent can
+		// report the real version instead of a hardcoded one that drifts.
+		buildConfig = true
 	}
 }
 

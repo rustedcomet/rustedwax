@@ -1,6 +1,7 @@
 package com.rustedwax.app.enrich
 
 import android.content.Context
+import com.rustedwax.app.BuildConfig
 import com.rustedwax.app.detect.EventLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -174,8 +175,19 @@ class MusicBrainzVerifier(context: Context) {
 		private const val TIMEOUT_MS = 4_000L
 		private const val MIN_INTERVAL_MS = 1_100L
 		private const val MIN_SCORE = 80
-		private const val USER_AGENT =
-			"RustedWax/0.5 (personal Android scrobbler for the Hive scrobble format)"
+
+		/**
+		 * MusicBrainz requires a User-Agent carrying the application name, its
+		 * version, and **contact information** — a URL or email they can reach
+		 * if the client misbehaves; generic or uninformative agents get
+		 * blocked. The previous value described the app instead of naming a
+		 * contact, and hardcoded "0.5" while the app moved on to 0.5.4.
+		 *
+		 * Format per their guidelines: `Name/Version ( contact )`.
+		 */
+		private val USER_AGENT =
+			"RustedWax/${BuildConfig.VERSION_NAME} " +
+				"( https://github.com/rustedcomet/rustedwax )"
 
 		private val rateLimit = Mutex()
 
