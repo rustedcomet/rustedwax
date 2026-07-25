@@ -190,13 +190,32 @@ class MainActivity : ComponentActivity() {
 							?.let { ScrobbleEngine.cachedFacts(it.videoId) }
 						val mb = ScrobbleEngine.cachedMusicMatch(session, facts)
 						val payload = ScrobbleBuilder.from(session, facts, mb)
-						if (payload == null) {
-							report("Nothing broadcastable in that session yet.", isError = true)
-						} else {
-							busy = true
-							broadcast(payload) { msg, err ->
-								busy = false
-								report(msg, err)
+						val startedAt = session.trackStartedAtEpochSec
+						when {
+							payload == null ->
+								report("Nothing broadcastable in that session yet.", isError = true)
+
+							// Shares the automatic path's ledger, so this button is
+							// idempotent and the later automatic finalize of the same
+							// track is blocked instead of duplicating it.
+							!ScrobbleEngine.claimManual(payload, startedAt) ->
+								report(
+									"Already scrobbled — \"${payload.title}\" is in the " +
+										"ledger for this listen. Nothing sent.",
+									isError = true,
+								)
+
+							else -> {
+								busy = true
+								broadcast(payload) { msg, err ->
+									busy = false
+									// No queue on this path, so a failed send must give
+									// the claim back or the listen is stuck.
+									if (err) {
+										ScrobbleEngine.releaseManualClaim(payload, startedAt)
+									}
+									report(msg, err)
+								}
 							}
 						}
 					},

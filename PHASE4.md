@@ -490,6 +490,49 @@ channel page rather than a watch URL), and a genuinely disagreeing bar is still
 refused. Both leave `platform` without `url`. Closing that gap needs the
 Phase 7 item — resolving the id by title+channel search.
 
+## 9g. v0.5.4 — the manual button now shares the ledger
+
+Field report: duplicated entries. The chain showed pairs with **byte-identical
+payloads except `percent_played`** — same title, artist, track-start timestamp,
+duration and url:
+
+| Pair | Gap | Percents |
+| --- | --- | --- |
+| Hades Is Unleashed | 3 s | 69 → 70 |
+| Gods Full Fight & Final Scene | 3 s | 59 → 60 |
+| Against The Kraken | 5.6 min | 29 → 95 |
+| Arya Stark Fights Brienne | 75 s | 66 → 100 |
+
+Not the double-listen rule (capped at one tx for `video` since v0.5.0) and not
+a dedup-key defect — `keyFor` is hour-bucketed on title+artist, so all four
+pairs share a key. The cause: **the Now card's *Broadcast this scrobble* button
+never consulted the ledger.** `MainActivity.broadcast()` goes straight to
+signing, bypassing both `ScrobbleRules` and `DedupLedger`, which is also why
+percents below the 60% threshold (0–52%) appear on-chain at all — the automatic
+path mathematically cannot emit them.
+
+Two shapes followed from that. A manual send left no claim, so the automatic
+finalize minutes later saw a free key and broadcast the same listen again
+(29% → 95%). And the button stayed **enabled during a send**, so two taps a
+second apart both went through (69% → 70%, the Now card's percent ticking
+between them).
+
+Fixes:
+
+- `ScrobbleEngine.claimManual` / `releaseManualClaim` — the manual path claims
+  the same ledger key before sending, so it is idempotent *and* blocks the
+  later automatic finalize. Claimed before the send so concurrent taps can't
+  both pass; released on failure, because unlike the automatic path there is no
+  `BroadcastQueue` to fall back on and a network error would otherwise strand
+  the listen permanently.
+- Already-claimed taps are **refused with a message** rather than duplicating.
+- The button is disabled mid-send (`Sending…`).
+- `DedupLedger.release`, and `DedupLedgerTest` pinning what must and must not
+  collide — the key is now a contract shared by two code paths.
+
+Deliberately unchanged: the button still ignores the 60% threshold. Manual
+override is its entire purpose, and the percent is on screen when it's pressed.
+
 ### Ecosystem finding — first writer wins on scrobble.life
 
 The site keeps one canonical record per video id, seeded by the **first**

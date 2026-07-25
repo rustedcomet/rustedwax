@@ -158,7 +158,13 @@ fun MainScreen(
 			}
 
 			when (tab) {
-				0 -> SessionList(sessions, monitoring, account != null, onBroadcastSession)
+				0 -> SessionList(
+					sessions = sessions,
+					monitoring = monitoring,
+					canBroadcast = account != null,
+					busy = accountBusy,
+					onBroadcast = onBroadcastSession,
+				)
 				1 -> AccountTab(
 					account = account,
 					busy = accountBusy,
@@ -384,6 +390,7 @@ private fun SessionList(
 	sessions: List<SessionSnapshot>,
 	monitoring: Boolean,
 	canBroadcast: Boolean,
+	busy: Boolean,
 	onBroadcast: (SessionSnapshot) -> Unit,
 ) {
 	if (!monitoring) {
@@ -406,7 +413,7 @@ private fun SessionList(
 	}
 	LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
 		items(sessions, key = { it.packageName + it.title }) { s ->
-			SessionCard(s, canBroadcast, onBroadcast)
+			SessionCard(s, canBroadcast, busy, onBroadcast)
 		}
 	}
 }
@@ -415,6 +422,7 @@ private fun SessionList(
 private fun SessionCard(
 	s: SessionSnapshot,
 	canBroadcast: Boolean,
+	busy: Boolean,
 	onBroadcast: (SessionSnapshot) -> Unit,
 ) {
 	Card(Modifier.fillMaxWidth()) {
@@ -495,10 +503,19 @@ private fun SessionCard(
 				)
 				Spacer(Modifier.height(8.dp))
 				Button(
+					// Disabled mid-send: it used to stay live, and two taps a
+					// second apart put the same listen on-chain twice at 69%
+					// and 70%.
 					onClick = { onBroadcast(s) },
-					enabled = canBroadcast && s.isTarget,
+					enabled = canBroadcast && s.isTarget && !busy,
 				) {
-					Text(if (canBroadcast) "Broadcast this scrobble" else "Add a key first")
+					Text(
+						when {
+							!canBroadcast -> "Add a key first"
+							busy -> "Sending…"
+							else -> "Broadcast this scrobble"
+						},
+					)
 				}
 			}
 

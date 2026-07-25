@@ -35,6 +35,20 @@ class DedupLedger(context: Context) {
 	@Synchronized
 	fun contains(key: String): Boolean = prefs.contains(PREFIX + key)
 
+	/**
+	 * Give a claim back.
+	 *
+	 * Only for the manual-broadcast path, which claims *before* sending so two
+	 * quick taps can't both get through, and must undo that if the send fails —
+	 * otherwise a network error would permanently block retrying the listen.
+	 * The automatic path never releases: a failed send there goes to
+	 * [BroadcastQueue], so the listen is still owed.
+	 */
+	@Synchronized
+	fun release(key: String) {
+		prefs.edit().remove(PREFIX + key).apply()
+	}
+
 	/** Drop entries older than 6 hours, matching upstream's prune window. */
 	@Synchronized
 	fun prune() {

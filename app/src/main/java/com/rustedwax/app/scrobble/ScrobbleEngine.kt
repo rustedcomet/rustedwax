@@ -297,6 +297,40 @@ object ScrobbleEngine {
 		}
 	}
 
+	/**
+	 * Claim a listen on behalf of the Now card's **Broadcast this scrobble**
+	 * button, so the two paths share one ledger.
+	 *
+	 * Until v0.5.4 the manual button bypassed the ledger entirely, which
+	 * produced the duplicate pairs seen on-chain: a manual send left no claim,
+	 * so the automatic finalize minutes later saw a free key and broadcast the
+	 * same listen again (e.g. 29% manual, then 95% automatic). It also let two
+	 * quick taps through, one second apart.
+	 *
+	 * Claimed *before* sending so concurrent taps can't both pass; the caller
+	 * must [releaseManualClaim] if the send fails, since the manual path has no
+	 * queue to fall back on.
+	 *
+	 * @return false when this listen is already in the ledger
+	 */
+	fun claimManual(payload: HiveScrobblePayload, startedAtEpochSec: Long): Boolean {
+		if (!initialised) return true
+		val key = DedupLedger.keyFor(payload.title, payload.artist, startedAtEpochSec)
+		val claimed = ledger.claim(key)
+		EventLog.append(
+			"engine",
+			if (claimed) "manual broadcast claimed [$key]" else "manual broadcast blocked [$key]",
+		)
+		return claimed
+	}
+
+	/** Undo a [claimManual] whose broadcast failed, so it can be retried. */
+	fun releaseManualClaim(payload: HiveScrobblePayload, startedAtEpochSec: Long) {
+		if (!initialised) return
+		ledger.release(DedupLedger.keyFor(payload.title, payload.artist, startedAtEpochSec))
+		EventLog.append("engine", "manual claim released after a failed send")
+	}
+
 	/** Retry anything waiting in the queue. Safe to call often. */
 	fun flushQueue() {
 		if (!initialised) return
