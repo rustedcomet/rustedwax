@@ -156,8 +156,15 @@ object YouTubeProbe {
 		// same reasoning a non-YouTube URL proves nothing here and must never
 		// taint — it may simply be a different tab from the one playing.
 		if (url != null && isYouTubeHost(url.host)) {
-			val hintAgrees = isYouTubeHost(hint?.host)
-			if (hintAgrees || (hint == null && soleSession)) {
+			val hintHost = hint?.host
+			val hintAgrees = isYouTubeHost(hintHost)
+			// A hint that names a *different* site contradicts the bar and must
+			// veto it. A hint with no recognisable host is absence of
+			// information, not disagreement — treating it as a veto discarded
+			// perfectly good video ids whenever Chromium's sub-text wasn't
+			// parseable, costing the payload its `url` for no reason.
+			val hintContradicts = hintHost != null && !hintAgrees
+			if (hintAgrees || (!hintContradicts && soleSession)) {
 				val corroboration =
 					if (hintAgrees) "address bar + notification" else "address bar, sole session"
 				url.videoId?.let { id ->

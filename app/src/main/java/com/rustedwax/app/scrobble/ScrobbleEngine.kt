@@ -151,6 +151,16 @@ object ScrobbleEngine {
 				return@launch
 			}
 
+			// A missing url is the one payload gap that can't be reconstructed
+			// later, so it says why on its way out rather than leaving an
+			// unexplained entry on-chain.
+			if (basePayload.url == null) {
+				EventLog.append(
+					"engine",
+					"broadcasting WITHOUT url — identity was ${session.identity.source}",
+				)
+			}
+
 			val dedupKey = DedupLedger.keyFor(
 				basePayload.title,
 				basePayload.artist,

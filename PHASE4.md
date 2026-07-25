@@ -444,6 +444,52 @@ offline verdict is final — so `Season <n> Ep <n>` and `SxxExx` now decide
 `video` with no category at all. Bare `EP <n>` is deliberately not matched:
 in music, EP is a release format, and "EP 2" names real records.
 
+## 9f. v0.5.3 — the URL path never re-ran identity
+
+Field report: three entries with no hyperlink. Reading the chain back showed
+**20 of 133** scrobbles carried no `url`, split into two unrelated causes.
+
+**Twelve were manual broadcasts.** Their `percent_played` values (0–52%) are
+below the 60% threshold, which the automatic path cannot emit — so they came
+from the Now card's *Broadcast this scrobble* button, which reads
+`session.confirmed?.url` at tap time and bypasses both `ScrobbleRules` and
+`DedupLedger`. (That bypass is also the source of the duplicate pairs reported
+separately — same button, no ledger claim.)
+
+**The rest were the real bug.** `NotificationHints.put` has notified the probe
+since v0.1.2, because PHASE0 measured hints landing ~300 ms *after* the
+metadata callback that first judges the track. The address-bar watcher shipped
+in v0.4.0 with the same race and **no such wiring**: `UrlEvidence.put` stored
+the evidence and told nobody. The only thing re-running identity afterwards was
+`MainActivity`'s 1-second `tick()` → `publish()` → `snapshot()` → `identityOf`.
+
+So `url` silently depended on the app being open. Every no-url automatic
+scrobble in the sample was recorded while browsing with RustedWax in the
+background, where the sole remaining triggers are media callbacks — and a video
+playing straight through fires very few.
+
+Fixes:
+
+- **`UrlEvidence.onEvidence`**, wired to `reidentify()` exactly as hints are.
+  The latch is now established whenever the bar resolves a video id, whether or
+  not the UI is alive. `reidentify(trigger)` names which source woke it.
+- **A hostless hint no longer vetoes the bar.** `identify` required
+  `isYouTubeHost(hint.host)` to confirm, so a hint whose sub-text wasn't a
+  parseable host — `host = null` — blocked confirmation even with a video id in
+  hand. Absence of information is not disagreement; only a hint naming a
+  *different* site contradicts. Pinned by `YouTubeProbeTest`.
+- **A missing `url` explains itself**: `broadcasting WITHOUT url — identity was
+  …` at broadcast time, so the next occurrence is diagnosable from the log
+  instead of from the chain.
+
+`YouTubeProbeTest` is new and needs no Robolectric — route 0 is evaluated
+before the metadata routes, so `md = null` exercises it.
+
+Still not guaranteed: Chromium's omnibox sometimes shows only a host (a feed or
+channel page rather than a watch URL), and a genuinely disagreeing bar is still
+refused. Both leave `platform` without `url`. Closing that gap needs the
+Phase 7 item — resolving the id by title+channel search.
+
 ### Ecosystem finding — first writer wins on scrobble.life
 
 The site keeps one canonical record per video id, seeded by the **first**

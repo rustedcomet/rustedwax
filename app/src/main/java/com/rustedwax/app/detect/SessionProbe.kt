@@ -103,7 +103,19 @@ class SessionProbe(context: Context) {
 			handler.post {
 				watches.values
 					.filter { it.packageName == pkg }
-					.forEach { it.reidentify() }
+					.forEach { it.reidentify("notification") }
+				publish()
+			}
+		}
+		// The address bar lands late for the same reason, and until v0.5.3
+		// nothing re-ran identity when it did — so a video id that arrived a
+		// moment after track start was only ever picked up by the UI's tick,
+		// making `url` depend on the app being open. Same wiring as hints.
+		UrlEvidence.onEvidence = { pkg ->
+			handler.post {
+				watches.values
+					.filter { it.packageName == pkg }
+					.forEach { it.reidentify("address bar") }
 				publish()
 			}
 		}
@@ -138,6 +150,7 @@ class SessionProbe(context: Context) {
 	fun stop(finalizeTracks: Boolean = true) {
 		if (!started) return
 		NotificationHints.onHint = null
+		UrlEvidence.onEvidence = null
 		runCatching { sessionManager.removeOnActiveSessionsChangedListener(activeSessionsListener) }
 		watches.values.forEach { it.dispose(finalizeTracks) }
 		watches.clear()
@@ -449,7 +462,7 @@ class SessionProbe(context: Context) {
 		}
 
 		/** Re-run identity after a late-arriving notification hint. */
-		fun reidentify() = logIdentity(metadata, "re-check after notification")
+		fun reidentify(trigger: String) = logIdentity(metadata, "re-check after $trigger")
 
 		private fun logIdentity(md: MediaMetadata?, reason: String) {
 			when (val id = identityOf(md)) {

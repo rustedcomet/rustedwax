@@ -49,6 +49,23 @@ object UrlEvidence {
 		if (!value) byPackage.clear()
 	}
 
+	/**
+	 * Notified when the address bar changes, so the probe can re-evaluate an
+	 * identity it already decided.
+	 *
+	 * Not optional plumbing. The accessibility event lands *after* the media
+	 * session's metadata callback — the same ~300 ms race PHASE0 measured for
+	 * notification hints — so the first identity verdict for a track is made
+	 * before the URL is known. Hints have had this wiring since v0.1.2; the URL
+	 * path shipped in v0.4.0 without it, and the only thing re-running identity
+	 * afterwards was the UI's 1-second tick. That made `url` depend on whether
+	 * the app happened to be open: 20 of 133 field scrobbles went on-chain with
+	 * no `url` and no category, and every one of them was scrobbled while
+	 * browsing with RustedWax in the background.
+	 */
+	@Volatile
+	var onEvidence: ((packageName: String) -> Unit)? = null
+
 	fun put(packageName: String, evidence: Evidence) {
 		val previous = byPackage.put(packageName, evidence)
 		if (previous == null ||
@@ -60,6 +77,7 @@ object UrlEvidence {
 				"$packageName → host=${evidence.host ?: "?"} " +
 					"video=${evidence.videoId ?: "—"}  (\"${evidence.raw}\")",
 			)
+			onEvidence?.invoke(packageName)
 		}
 	}
 
