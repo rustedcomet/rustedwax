@@ -67,7 +67,17 @@ object UrlEvidence {
 	var onEvidence: ((packageName: String) -> Unit)? = null
 
 	fun put(packageName: String, evidence: Evidence) {
-		val previous = byPackage.put(packageName, evidence)
+		val previous = byPackage[packageName]
+		// Chromium collapses the omnibox to the bare host as the toolbar hides,
+		// which used to overwrite a video id captured seconds earlier with "no
+		// id" for the same page — losing evidence rather than gaining any. A
+		// host-only reading of the same host is a redraw, not navigation.
+		if (previous?.videoId != null && evidence.videoId == null &&
+			previous.host == evidence.host
+		) {
+			return
+		}
+		byPackage[packageName] = evidence
 		if (previous == null ||
 			previous.host != evidence.host ||
 			previous.videoId != evidence.videoId

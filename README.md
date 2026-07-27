@@ -213,6 +213,12 @@ the address bar is correct at track start and routinely stale by track end (it s
 short by then). The fetched page's own title must match what the session is playing, or the id is
 discarded: no `url` beats a wrong `url`.
 
+When the bar never names the video at all — a playlist advancing behind a hidden toolbar fires no
+accessibility event, so it can stay silent for tens of minutes — the app falls back to **searching
+YouTube** for the session's title and channel. That match requires the title, the channel *and* the
+duration to agree, because search results routinely contain a same-titled, same-length cover by a
+different artist. Anything less certain leaves `url` unset.
+
 > This scrapes an undocumented blob out of the watch page and **will** break when YouTube changes it.
 > Failures are logged as `EXTRACTION FAILED` precisely so breakage is distinguishable from a video
 > that simply had nothing to add.

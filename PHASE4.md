@@ -533,6 +533,73 @@ Fixes:
 Deliberately unchanged: the button still ignores the 60% threshold. Manual
 override is its entire purpose, and the percent is on screen when it's pressed.
 
+## 9h. v0.6.0 — the address bar goes silent; search recovers the id
+
+An exported device log finally explained the missing `url`s, and the cause was
+neither of the two theories that preceded it.
+
+Around one album playlist:
+
+```
+17:42:50  [url] host=m.youtube.com video=—  ("m.youtube.com")
+          ← 13 minutes with no [url] line at all
+17:51:43  [enrich] no video id — offline parse only   → Doomed,      no url
+17:55:43  [enrich] no video id — offline parse only   → Happy Song,  no url
+17:55:56  [url] video=Ow_qI_F2ZJI ("…watch?v=…&list=…&index=3")
+17:58:55  broadcasting: Throne … url ✓
+18:02:50  [enrich] no video id — offline parse only   → True Friends, no url
+18:07:09  [enrich] no video id — offline parse only   → Follow You,   no url
+18:08:54  [url] video=k48k3BUdcXQ ("…&list=…&index=6")
+```
+
+The bar jumped from `index=3` to `index=6` — it is not lagging by a track, it
+**stops reporting entirely**. A playlist advancing via the History API changes
+nothing on screen that fires an accessibility event once the toolbar has
+scrolled away, the browser is backgrounded, or the screen is off. Gaps of 15,
+35 and 40 minutes appear in the same session; 15 of 60 broadcasts had no `url`,
+including four of six tracks in that playlist.
+
+That rules out polling as the fix (there is often no foreground window to poll)
+and rules out the v0.5.3 re-identify wiring helping (it only runs when the bar
+reports, and the bar never did). It also confirms the upstream extension does
+**not** share this problem: `src/connectors/youtube.ts` reads the id from
+`ytd-watch-flexy[video-id]` in the DOM and only falls back to the URL on
+mobile, with a comment noting `location.href` "could miss the video URL".
+
+**Fix — `enrich/VideoIdResolver.kt`.** When no id was latched, search YouTube
+for the session's title + channel and match the results. This needs no event,
+no foreground window and no screen, so it covers exactly what the bar cannot.
+
+Matching is strict because the id is *inferred*. The measured results for the
+reported track:
+
+| id | length | owner | title |
+| --- | --- | --- | --- |
+| `CZFTfYYql4k` | 4:35 | Bring Me The Horizon | Doomed |
+| `DIEI2YLYg6o` | 4:36 | Maphra - Topic | Doomed |
+
+Both are titled exactly "Doomed" within two seconds of each other — the second
+is a **different artist's cover**. Title alone or duration alone picks the
+wrong video. So a match requires title **and** channel **and** duration
+(±5 s — search displays 4:35 for a 274 s video), and anything less resolves to
+nothing, leaving the payload without a `url` exactly as before. Channels are
+compared through `TitleParser.cleanChannel`, because search lists the owner as
+"Bring Me The Horizon" while the session and watch page say "… - Topic".
+
+Verified against the watch pages: `CZFTfYYql4k` is 274 s by "Bring Me The
+Horizon - Topic" — an exact match for what the session reported.
+
+Also fixed: a host-only omnibox reading used to **overwrite** a video id
+captured seconds earlier for the same host. The latch protected the current
+track, but the next track inherited the degraded evidence. A host-only reading
+of the same host is a redraw, not navigation, and is now ignored.
+
+Parsing lives in the pure `SearchResultsParser`, which walks the JSON tree for
+video-shaped nodes rather than following a fixed renderer path — the nesting
+differs between shells and is reorganised freely, while the item shape is
+stable. `SearchResultsParserTest` pins the matching against a fixture trimmed
+from the real page, including the cover that must be rejected.
+
 ### Ecosystem finding — first writer wins on scrobble.life
 
 The site keeps one canonical record per video id, seeded by the **first**

@@ -21,6 +21,7 @@ import com.rustedwax.app.enrich.FactsCache
 import com.rustedwax.app.enrich.MetadataResolver
 import com.rustedwax.app.enrich.MusicBrainzVerifier
 import com.rustedwax.app.enrich.VideoFacts
+import com.rustedwax.app.enrich.VideoIdResolver
 import com.rustedwax.app.enrich.YouTubePageResolver
 import com.rustedwax.app.storage.KeyVault
 import com.rustedwax.app.storage.Settings
@@ -48,6 +49,7 @@ object ScrobbleEngine {
 	private lateinit var resolver: MetadataResolver
 	private lateinit var factsCache: FactsCache
 	private lateinit var musicBrainz: MusicBrainzVerifier
+	private val idResolver = VideoIdResolver()
 	private val broadcaster = HiveBroadcaster()
 
 	/**
@@ -142,10 +144,14 @@ object ScrobbleEngine {
 		// including the dedup claim, which must be computed from the *corrected*
 		// title and artist or a fixed parse would look like a new track.
 		scope.launch {
-			val facts = enrich(session)
+			// The address bar is the exact source when it spoke; searching is
+			// the fallback for when it never did (a playlist advancing behind a
+			// hidden toolbar fires no accessibility event at all).
+			val videoId = session.confirmed?.videoId ?: resolveVideoId(session)
+			val facts = enrich(videoId)
 			val mb = verifyMusic(session, facts)
 
-			val basePayload = ScrobbleBuilder.from(session, facts, mb)
+			val basePayload = ScrobbleBuilder.from(session, facts, mb, videoId)
 			if (basePayload == null) {
 				EventLog.append("engine", "skipped: payload not buildable")
 				return@launch
@@ -285,14 +291,32 @@ object ScrobbleEngine {
 	 * markup changed. A scrobble is never lost because enrichment was, and the
 	 * offline parse is always a complete answer on its own.
 	 */
-	private suspend fun enrich(session: SessionSnapshot): VideoFacts? {
+	private suspend fun enrich(videoId: String?): VideoFacts? {
 		if (!settings.enrichment) return null
-		val videoId = session.confirmed?.videoId ?: run {
+		if (videoId == null) {
 			EventLog.append("enrich", "no video id — offline parse only")
 			return null
 		}
 		return runCatching { resolver.resolve(videoId) }.getOrElse {
 			EventLog.append("enrich", "resolver threw: ${it.message}")
+			null
+		}
+	}
+
+	/**
+	 * Search-based recovery of a video id the address bar never supplied.
+	 *
+	 * Gated behind the same "Look videos up" switch — it is off-device traffic
+	 * — and fails closed, so the payload simply keeps no `url` when the match
+	 * isn't certain.
+	 */
+	private suspend fun resolveVideoId(session: SessionSnapshot): String? {
+		if (!settings.enrichment) return null
+		val title = session.title ?: return null
+		return runCatching {
+			idResolver.resolve(title, session.artist, session.durationMs?.div(1000))
+		}.getOrElse {
+			EventLog.append("resolve", "resolver threw: ${it.message}")
 			null
 		}
 	}

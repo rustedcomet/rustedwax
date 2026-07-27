@@ -36,10 +36,16 @@ object ScrobbleBuilder {
 	data class Parsed(val artist: String?, val track: String)
 
 	/** Null when the session isn't broadcastable — the caller shows why. */
+	/**
+	 * @param videoId the id to build `url` from. Defaults to the session's own
+	 * confirmed id; the engine passes a search-resolved one when the address
+	 * bar never named the video.
+	 */
 	fun from(
 		session: SessionSnapshot,
 		facts: VideoFacts? = null,
 		mb: MusicBrainzVerifier.Match? = null,
+		videoId: String? = session.confirmed?.videoId,
 	): HiveScrobblePayload? {
 		if (!session.payloadViable) return null
 		val sessionTitle = session.title ?: return null
@@ -83,7 +89,7 @@ object ScrobbleBuilder {
 			percentPlayed = session.percentPlayed
 				?.let { (it * 100).toInt().coerceIn(0, 100) },
 			platform = "youtube",
-			url = session.confirmed?.url,
+			url = videoId?.let { "https://www.youtube.com/watch?v=$it" },
 		)
 	}
 
