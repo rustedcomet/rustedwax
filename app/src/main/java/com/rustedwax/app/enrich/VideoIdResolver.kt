@@ -32,6 +32,63 @@ import java.net.URLEncoder
  */
 class VideoIdResolver {
 
+	/** Playlist contents, fetched once per playlist and reused for every track in it. */
+	private val playlistCache = java.util.concurrent.ConcurrentHashMap<
+		String, List<SearchResultsParser.Candidate>,
+		>()
+
+	/**
+	 * The exact entry from the playlist being played, when there is one.
+	 *
+	 * Tried before [resolve] because it is *exact* where search is merely
+	 * plausible: for the reported playlist, search resolves "Doomed" to
+	 * `CZFTfYYql4k` while the playlist actually holds `5Oc0ja19_GU` — same
+	 * song, same artist, same length, different upload. One fetch then serves
+	 * every remaining track in that playlist for free.
+	 */
+	suspend fun resolveFromPlaylist(
+		playlistId: String,
+		title: String,
+		channel: String?,
+		durationSec: Long?,
+	): String? {
+		if (title.isBlank() || durationSec == null) return null
+
+		val entries = playlistCache[playlistId] ?: run {
+			val html = fetchUrl(PLAYLIST_URL + playlistId) ?: run {
+				EventLog.append("resolve", "playlist fetch failed for $playlistId")
+				return null
+			}
+			val blob = WatchPageParser.extractJson(html, INITIAL_DATA)
+			if (blob == null) {
+				EventLog.append(
+					"resolve",
+					"EXTRACTION FAILED — $INITIAL_DATA not found in playlist $playlistId " +
+						"(${html.length} bytes). YouTube markup may have changed.",
+				)
+				return null
+			}
+			val parsed = runCatching { PlaylistPageParser.entries(blob) }.getOrElse {
+				EventLog.append("resolve", "EXTRACTION FAILED — playlist parse: ${it.message}")
+				return null
+			}
+			EventLog.append("resolve", "playlist $playlistId → ${parsed.size} entries cached")
+			playlistCache[playlistId] = parsed
+			parsed
+		}
+
+		val hit = PlaylistPageParser.match(entries, title, channel, durationSec)
+		if (hit == null) {
+			EventLog.append(
+				"resolve",
+				"\"$title\" not found among ${entries.size} playlist entries — trying search",
+			)
+			return null
+		}
+		EventLog.append("resolve", "resolved \"$title\" → ${hit.videoId} from playlist $playlistId")
+		return hit.videoId
+	}
+
 	/** Null whenever the video cannot be identified beyond doubt. */
 	suspend fun resolve(title: String, channel: String?, durationSec: Long?): String? {
 		if (title.isBlank() || channel.isNullOrBlank() || durationSec == null) {
@@ -71,9 +128,12 @@ class VideoIdResolver {
 		return match.videoId
 	}
 
-	private suspend fun fetch(query: String): String? = withContext(Dispatchers.IO) {
+	private suspend fun fetch(query: String): String? =
+		fetchUrl(SEARCH_URL + URLEncoder.encode(query, "UTF-8"))
+
+	private suspend fun fetchUrl(target: String): String? = withContext(Dispatchers.IO) {
 		runCatching {
-			val url = URL(SEARCH_URL + URLEncoder.encode(query, "UTF-8"))
+			val url = URL(target)
 			val connection = url.openConnection() as HttpURLConnection
 			try {
 				connection.apply {
@@ -95,6 +155,7 @@ class VideoIdResolver {
 
 	private companion object {
 		const val SEARCH_URL = "https://www.youtube.com/results?search_query="
+		const val PLAYLIST_URL = "https://www.youtube.com/playlist?list="
 		const val INITIAL_DATA = "ytInitialData"
 		const val TIMEOUT_MS = 5_000
 		const val USER_AGENT =

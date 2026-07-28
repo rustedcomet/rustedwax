@@ -163,6 +163,7 @@ fun MainScreen(
 					monitoring = monitoring,
 					canBroadcast = account != null,
 					busy = accountBusy,
+					lookupsOn = enrichment && urlWatcherEnabled,
 					onBroadcast = onBroadcastSession,
 				)
 				1 -> AccountTab(
@@ -391,6 +392,7 @@ private fun SessionList(
 	monitoring: Boolean,
 	canBroadcast: Boolean,
 	busy: Boolean,
+	lookupsOn: Boolean,
 	onBroadcast: (SessionSnapshot) -> Unit,
 ) {
 	if (!monitoring) {
@@ -413,7 +415,7 @@ private fun SessionList(
 	}
 	LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
 		items(sessions, key = { it.packageName + it.title }) { s ->
-			SessionCard(s, canBroadcast, busy, onBroadcast)
+			SessionCard(s, canBroadcast, busy, lookupsOn, onBroadcast)
 		}
 	}
 }
@@ -423,6 +425,7 @@ private fun SessionCard(
 	s: SessionSnapshot,
 	canBroadcast: Boolean,
 	busy: Boolean,
+	lookupsOn: Boolean,
 	onBroadcast: (SessionSnapshot) -> Unit,
 ) {
 	Card(Modifier.fillMaxWidth()) {
@@ -454,7 +457,18 @@ private fun SessionCard(
 
 				is YouTubeProbe.Identity.SiteOnly -> {
 					Field("site", id.host)
-					Field("url", "— (no video id available)")
+					// The card used to say "no video id available" flatly, which
+					// read as "this will have no link" — but the engine also
+					// resolves an id at broadcast time, so tracks did get links
+					// the card had already written off. Say what's actually true.
+					Field(
+						"url",
+						if (lookupsOn) {
+							"— not in the address bar; looked up at broadcast"
+						} else {
+							"— not in the address bar (enable lookups to recover it)"
+						},
+					)
 					Field("proven by", id.source)
 				}
 

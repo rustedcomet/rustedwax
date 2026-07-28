@@ -74,6 +74,7 @@ class UrlWatcherService : AccessibilityService() {
 				host = hostOf(raw),
 				videoId = VIDEO_ID.find(raw)?.groupValues?.get(1),
 				isShort = raw.contains("/shorts/", ignoreCase = true),
+				playlistId = PLAYLIST_ID.find(raw)?.groupValues?.get(1),
 				raw = raw,
 			),
 		)
@@ -125,6 +126,9 @@ class UrlWatcherService : AccessibilityService() {
 
 		private val VIDEO_ID =
 			Regex("""(?:[?&]v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})""")
+
+		/** `list=` — the playlist is what still identifies tracks once the bar goes quiet. */
+		private val PLAYLIST_ID = Regex("""[?&]list=([A-Za-z0-9_-]{2,})""")
 
 		private val HOST =
 			Regex("""(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})""", RegexOption.IGNORE_CASE)

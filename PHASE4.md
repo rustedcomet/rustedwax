@@ -600,6 +600,56 @@ differs between shells and is reorganised freely, while the item shape is
 stable. `SearchResultsParserTest` pins the matching against a fixture trimmed
 from the real page, including the cover that must be rejected.
 
+## 9i. v0.6.1 — the playlist is the exact source; the card stops lying
+
+Two follow-ups from testing 0.6.0.
+
+**The Now card contradicted the broadcast.** It rendered the *latch* state and
+said "— (no video id available)", but the engine also resolves an id at
+broadcast time, so tracks were getting links the card had already written off
+("The Black" did; the card said it wouldn't). The card now says the id is not
+in the address bar and that it is looked up at broadcast — or, when lookups are
+off, that enabling them would recover it.
+
+**Search resolves a plausible upload, not necessarily the played one.**
+Measured on the playlist from the field logs
+(`PLmGqppZSJ9nXHUioh-WAy7ne8I3nP4FOR`):
+
+| source | id for "Doomed" | length | channel |
+| --- | --- | --- | --- |
+| search | `CZFTfYYql4k` | 274 s | Bring Me The Horizon - Topic |
+| the playlist itself | `5Oc0ja19_GU` | 4:35 | Bring Me The Horizon |
+
+Same song, same artist, same length — **different uploads**. No amount of
+title/channel/duration strictness separates them, so the search fallback was
+writing a link to a video the user had not played. The playlist page names the
+exact entry, and one fetch covers every track in it: all four tracks that lost
+their `url` in that session (Doomed, Happy Song, True Friends, Follow You) are
+in that single response.
+
+So `resolveVideoId` now tries the playlist first and only falls back to search.
+The playlist id is captured from `list=` in the address bar and kept for **3
+hours** — far longer than the 5-minute evidence window — because a playlist is
+context for a whole sitting, while the bar stops naming individual videos
+within seconds.
+
+**Markup note.** Playlist pages no longer use `playlistVideoRenderer`; they
+render through `lockupViewModel` (`contentId`, title at
+`metadata.lockupMetadataViewModel.title.content`, channel in the first
+`metadataRows` entry, duration in a thumbnail badge). Two implementation traps
+found while building it:
+
+- The generic "object with `videoId` and `title`" walker that works for search
+  finds **nothing** on a playlist page — different field names entirely.
+- Taking "the first string under metadata" as the title is unsound:
+  `JSONObject.keys()` has no defined order, so it returned the channel roughly
+  as often as the title. The title is now read by its own key; only
+  `metadataRows` is a JSON array, and arrays *are* ordered, so the channel is
+  safe to take as its first row.
+
+The parser was validated against the live page, not only the fixture — all
+nine entries extract correctly.
+
 ### Ecosystem finding — first writer wins on scrobble.life
 
 The site keeps one canonical record per video id, seeded by the **first**

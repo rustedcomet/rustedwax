@@ -25,6 +25,8 @@ object UrlEvidence {
 		val videoId: String?,
 		/** True when the bar showed a `/shorts/` path — shorts are classified more strictly. */
 		val isShort: Boolean = false,
+		/** `list=` from the bar, when playback came from a playlist. */
+		val playlistId: String? = null,
 		/** Exactly what the address bar contained, for the log. */
 		val raw: String,
 		val atMillis: Long = System.currentTimeMillis(),
@@ -38,6 +40,19 @@ object UrlEvidence {
 	private const val FRESH_MS = 5L * 60 * 1000
 
 	private val byPackage = ConcurrentHashMap<String, Evidence>()
+
+	/**
+	 * Last playlist seen per package, kept far longer than [FRESH_MS].
+	 *
+	 * A playlist is context, not a position: it stays true for the whole
+	 * sitting even though the bar stops naming individual videos within
+	 * seconds. Field logs showed the bar silent for 40 minutes while a
+	 * playlist kept advancing, so the ordinary freshness window would throw
+	 * away the one piece of evidence that can still identify those tracks.
+	 */
+	private val playlistByPackage = ConcurrentHashMap<String, Pair<String, Long>>()
+
+	private const val PLAYLIST_FRESH_MS = 3L * 60 * 60 * 1000
 
 	/** Set when the watcher service is connected, purely so the UI can say so. */
 	@Volatile
@@ -78,6 +93,7 @@ object UrlEvidence {
 			return
 		}
 		byPackage[packageName] = evidence
+		evidence.playlistId?.let { playlistByPackage[packageName] = it to evidence.atMillis }
 		if (previous == null ||
 			previous.host != evidence.host ||
 			previous.videoId != evidence.videoId
@@ -94,5 +110,14 @@ object UrlEvidence {
 	fun get(packageName: String, now: Long = System.currentTimeMillis()): Evidence? =
 		byPackage[packageName]?.takeIf { now - it.atMillis <= FRESH_MS }
 
-	fun clearAll() = byPackage.clear()
+	/** The playlist playback is coming from, if the bar named one recently enough. */
+	fun playlistId(packageName: String, now: Long = System.currentTimeMillis()): String? =
+		playlistByPackage[packageName]
+			?.takeIf { now - it.second <= PLAYLIST_FRESH_MS }
+			?.first
+
+	fun clearAll() {
+		byPackage.clear()
+		playlistByPackage.clear()
+	}
 }

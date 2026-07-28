@@ -16,6 +16,7 @@ import com.rustedwax.app.hive.HiveScrobblePayload
 import com.rustedwax.app.detect.ScrobbleBuilder
 import com.rustedwax.app.detect.SessionSnapshot
 import com.rustedwax.app.detect.TitleParser
+import com.rustedwax.app.detect.UrlEvidence
 import com.rustedwax.app.detect.EventLog
 import com.rustedwax.app.enrich.FactsCache
 import com.rustedwax.app.enrich.MetadataResolver
@@ -313,8 +314,13 @@ object ScrobbleEngine {
 	private suspend fun resolveVideoId(session: SessionSnapshot): String? {
 		if (!settings.enrichment) return null
 		val title = session.title ?: return null
+		val durationSec = session.durationMs?.div(1000)
 		return runCatching {
-			idResolver.resolve(title, session.artist, session.durationMs?.div(1000))
+			// The playlist is exact where search is only plausible, and after
+			// the first fetch it costs nothing for the rest of the playlist.
+			UrlEvidence.playlistId(session.packageName)?.let { list ->
+				idResolver.resolveFromPlaylist(list, title, session.artist, durationSec)
+			} ?: idResolver.resolve(title, session.artist, durationSec)
 		}.getOrElse {
 			EventLog.append("resolve", "resolver threw: ${it.message}")
 			null
