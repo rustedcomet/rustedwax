@@ -84,19 +84,16 @@ object PlaylistPageParser {
 		if (durationSec == null || durationSec <= 0) return null
 		val wantTitle = normalize(title)
 		if (wantTitle.isEmpty()) return null
-		val wantChannel = channel
-			?.let { TitleParser.cleanChannel(it) }
-			?.let(::normalize)
-			?.takeIf { it.isNotEmpty() }
+		// Whitespace-insensitive for the same reason search is: VEVO channels
+		// are one word ("systemofadownVEVO") where listings show three
+		// ("System Of A Down").
+		val wantChannel = SearchResultsParser.channelKey(channel)
 
 		return entries.firstOrNull { e ->
 			val len = e.lengthSeconds ?: return@firstOrNull false
 			if (normalize(e.title) != wantTitle) return@firstOrNull false
 			if (kotlin.math.abs(len - durationSec) > DURATION_TOLERANCE_SEC) return@firstOrNull false
-			val entryChannel = e.channel
-				?.let { TitleParser.cleanChannel(it) }
-				?.let(::normalize)
-				?.takeIf { it.isNotEmpty() }
+			val entryChannel = SearchResultsParser.channelKey(e.channel)
 			entryChannel == null || wantChannel == null || entryChannel == wantChannel
 		}
 	}

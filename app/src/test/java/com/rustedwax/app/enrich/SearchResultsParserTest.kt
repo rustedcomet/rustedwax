@@ -1,6 +1,7 @@
 package com.rustedwax.app.enrich
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -121,6 +122,51 @@ class SearchResultsParserTest {
 				channel = null,
 				durationSec = 274,
 			),
+		)
+	}
+
+	/**
+	 * VEVO channels are written as one word. The media session reports
+	 * `systemofadownVEVO`; search lists the owner as `System Of A Down`.
+	 * Stripping the suffix left `systemofadown`, which never equalled
+	 * `system of a down` — so every VEVO track failed to resolve. Three of the
+	 * four missing `url`s in the 2026-07-28 session were this, and each time
+	 * the right video was the *first* result, exact title, one second off.
+	 */
+	@Test
+	fun `a VEVO channel matches its spaced-out search listing`() {
+		val body = """{"contents":{"sectionListRenderer":{"contents":[{"itemSectionRenderer":
+			{"contents":[{"videoRenderer":{"videoId":"CSvFpBOe8eY",
+			"title":{"runs":[{"text":"System Of A Down - Chop Suey! (Official HD Video)"}]},
+			"ownerText":{"runs":[{"text":"System Of A Down"}]},
+			"lengthText":{"simpleText":"3:29"}}}]}}]}}}""".trimIndent()
+		val match = SearchResultsParser.bestMatch(
+			SearchResultsParser.candidates(body),
+			title = "System Of A Down - Chop Suey! (Official HD Video)",
+			channel = "systemofadownVEVO",
+			durationSec = 208,
+		)
+		assertEquals("CSvFpBOe8eY", match?.videoId)
+	}
+
+	@Test
+	fun `channel keys ignore spacing and known suffixes`() {
+		assertEquals(
+			SearchResultsParser.channelKey("System Of A Down"),
+			SearchResultsParser.channelKey("systemofadownVEVO"),
+		)
+		assertEquals(
+			SearchResultsParser.channelKey("The Verve"),
+			SearchResultsParser.channelKey("TheVerveVEVO"),
+		)
+		assertEquals(
+			SearchResultsParser.channelKey("Linkin Park"),
+			SearchResultsParser.channelKey("Linkin Park - Topic"),
+		)
+		// Different artists must still differ.
+		assertNotEquals(
+			SearchResultsParser.channelKey("Bon Jovi"),
+			SearchResultsParser.channelKey("Bon Iver"),
 		)
 	}
 

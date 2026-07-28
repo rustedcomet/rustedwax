@@ -733,6 +733,53 @@ now sit **below** the contextual tier and above the category, so
 
 Caught by an existing test, not on the chain.
 
+## 9k. v0.7.1 — two resolver bugs the session log exposed
+
+The exported log for the 2026-07-28 session, with the `[resolve]` tracing added
+in v0.6.0, made both remaining failures legible.
+
+**Overall: 58 of 62 broadcasts carried a `url`.** The playlist path behaved
+exactly as designed — a 90-entry playlist was fetched once and then resolved
+four tracks from cache for free.
+
+### VEVO channels could never match (3 of the 4 misses)
+
+```
+23:56:39  "System Of A Down - Chop Suey! (Official HD Video)" not found among 90 entries — trying search
+23:56:40  no confident match … / "systemofadownVEVO" (208s) among 20 results — leaving url unset
+```
+
+The correct video was the **first result**: `CSvFpBOe8eY`, exact title, 3:29
+against the session's 208 s. It was rejected on the channel.
+
+VEVO channel names are one word. `TitleParser.cleanChannel("systemofadownVEVO")`
+strips the suffix and leaves `systemofadown`; search lists the owner as
+`System Of A Down`, normalising to `system of a down`. Those never compare
+equal, so **every VEVO track failed to resolve** — `systemofadownVEVO`,
+`TheVerveVEVO` and `BonJoviVEVO` are three of the four misses in the session.
+
+Fixed by comparing channels with whitespace removed (`SearchResultsParser.channelKey`,
+shared with the playlist matcher). Spaces carry no meaning in a channel name;
+different artists still differ.
+
+The fourth miss — "With You" from `Linkin Park - Topic` — is the honest recall
+limit: that upload simply wasn't among the 18 results.
+
+### Mix and private playlists wasted a fetch each
+
+```
+12:45:31  playlist RD7niq-GjUipw → 0 entries cached
+13:35:19  playlist RDMzilxvJS2OI → 0 entries cached
+14:29:01  playlist RDz3BMeR6IXUQ → 0 entries cached
+12:29:50  playlist fetch failed for RDl69Cq38GgZ4
+```
+
+`RD…` is a YouTube Mix — auto-generated, personalised, endless — and has no
+fetchable page of entries. Each attempt downloaded roughly a megabyte, parsed
+zero entries and fell through to search anyway. `LL` and `WL` (Liked, Watch
+Later) are private and behave the same. All three prefixes now skip straight to
+search.
+
 ### Ecosystem finding — first writer wins on scrobble.life
 
 The site keeps one canonical record per video id, seeded by the **first**

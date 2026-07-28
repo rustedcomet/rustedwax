@@ -54,6 +54,17 @@ class VideoIdResolver {
 	): String? {
 		if (title.isBlank() || durationSec == null) return null
 
+		// Mixes and private lists have no fetchable page of entries. `RD…` is a
+		// YouTube Mix/radio — auto-generated, personalised and endless — while
+		// `LL`/`WL` are the private Liked and Watch Later lists. Field logs
+		// showed three of these fetched in one session, each returning zero
+		// entries after downloading about a megabyte, then falling through to
+		// search anyway. Go straight to search.
+		if (UNFETCHABLE_PREFIXES.any { playlistId.startsWith(it, ignoreCase = true) }) {
+			EventLog.append("resolve", "$playlistId is a mix or private list — using search")
+			return null
+		}
+
 		val entries = playlistCache[playlistId] ?: run {
 			val html = fetchUrl(PLAYLIST_URL + playlistId) ?: run {
 				EventLog.append("resolve", "playlist fetch failed for $playlistId")
@@ -156,6 +167,9 @@ class VideoIdResolver {
 	private companion object {
 		const val SEARCH_URL = "https://www.youtube.com/results?search_query="
 		const val PLAYLIST_URL = "https://www.youtube.com/playlist?list="
+
+		/** Mixes (`RD…`) and the private Liked / Watch Later lists. */
+		val UNFETCHABLE_PREFIXES = listOf("RD", "LL", "WL")
 		const val INITIAL_DATA = "ytInitialData"
 		const val TIMEOUT_MS = 5_000
 		const val USER_AGENT =
