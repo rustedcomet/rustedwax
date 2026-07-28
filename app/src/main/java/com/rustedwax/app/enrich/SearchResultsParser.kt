@@ -85,16 +85,33 @@ object SearchResultsParser {
 	): Candidate? {
 		if (durationSec == null || durationSec <= 0) return null
 		val wantTitle = normalize(title)
-		val wantChannel = channel?.let { normalize(TitleParser.cleanChannel(it).orEmpty()) }
-		if (wantTitle.isEmpty() || wantChannel.isNullOrEmpty()) return null
+		val wantChannel = channelKey(channel)
+		if (wantTitle.isEmpty() || wantChannel == null) return null
 
 		return candidates.firstOrNull { c ->
 			val len = c.lengthSeconds ?: return@firstOrNull false
 			normalize(c.title) == wantTitle &&
-				normalize(TitleParser.cleanChannel(c.channel.orEmpty()).orEmpty()) == wantChannel &&
+				channelKey(c.channel) == wantChannel &&
 				kotlin.math.abs(len - durationSec) <= DURATION_TOLERANCE_SEC
 		}
 	}
+
+	/**
+	 * Channel names compared with whitespace removed.
+	 *
+	 * VEVO channels are written as one word — the media session reports
+	 * `systemofadownVEVO`, while search lists the owner as `System Of A Down`.
+	 * Stripping the suffix leaves `systemofadown`, which never equalled
+	 * `system of a down`, so **every VEVO track failed to resolve**: three of
+	 * the four missing `url`s in the 2026-07-28 session were this, and in each
+	 * case the correct video was the *first* search result with an exact title
+	 * and a duration one second off. Spaces carry no meaning in a channel
+	 * name, so they are dropped on both sides.
+	 */
+	fun channelKey(channel: String?): String? = channel
+		?.let { TitleParser.cleanChannel(it) }
+		?.let { normalize(it).replace(" ", "") }
+		?.takeIf { it.isNotEmpty() }
 
 	/** `4:35` → 275, `1:02:33` → 3753. */
 	fun parseClock(value: String): Long? {
