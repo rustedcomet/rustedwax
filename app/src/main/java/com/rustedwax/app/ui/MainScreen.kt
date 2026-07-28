@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -64,13 +65,19 @@ fun MainScreen(
 	accountBusy: Boolean,
 	accountStatus: String?,
 	accountStatusIsError: Boolean,
+	monitoring: Boolean,
 	autoScrobble: Boolean,
 	thresholdPercent: Int,
+	urlWatcherEnabled: Boolean,
+	enrichment: Boolean,
 	recent: List<ScrobbleEngine.ScrobbleRecord>,
 	queuedCount: Int,
 	onGrantAccess: () -> Unit,
 	onExportLog: () -> Unit,
 	onClearLog: () -> Unit,
+	onToggleMonitoring: (Boolean) -> Unit,
+	onOpenAccessibility: () -> Unit,
+	onToggleEnrichment: (Boolean) -> Unit,
 	onToggleAutoScrobble: (Boolean) -> Unit,
 	onRetryQueue: () -> Unit,
 	onValidateAndSave: (String, String) -> Unit,
@@ -93,8 +100,10 @@ fun MainScreen(
 		) {
 			if (!hasAccess) {
 				AccessBanner(onGrantAccess)
-			} else if (!serviceRunning) {
-				// Grant held but the system hasn't (re)bound the listener.
+			} else if (monitoring && !serviceRunning) {
+				// Grant held, monitoring wanted, but the system hasn't (re)bound
+				// the listener. Only an error while monitoring is *on* — a user
+				// Stop produces the same null probe and is not a fault.
 				Text(
 					"Waiting for Android to start the listener service — toggle " +
 						"Notification Access off and on if this persists.",
@@ -105,10 +114,16 @@ fun MainScreen(
 			}
 
 			ScrobbleControls(
+				monitoring = monitoring,
 				autoScrobble = autoScrobble,
 				thresholdPercent = thresholdPercent,
 				hasKey = account != null,
 				queuedCount = queuedCount,
+				urlWatcherEnabled = urlWatcherEnabled,
+				enrichment = enrichment,
+				onToggleMonitoring = onToggleMonitoring,
+				onOpenAccessibility = onOpenAccessibility,
+				onToggleEnrichment = onToggleEnrichment,
 				onToggle = onToggleAutoScrobble,
 				onRetryQueue = onRetryQueue,
 			)
@@ -143,7 +158,14 @@ fun MainScreen(
 			}
 
 			when (tab) {
-				0 -> SessionList(sessions, account != null, onBroadcastSession)
+				0 -> SessionList(
+					sessions = sessions,
+					monitoring = monitoring,
+					canBroadcast = account != null,
+					busy = accountBusy,
+					lookupsOn = enrichment && urlWatcherEnabled,
+					onBroadcast = onBroadcastSession,
+				)
 				1 -> AccountTab(
 					account = account,
 					busy = accountBusy,
@@ -161,13 +183,26 @@ fun MainScreen(
 	}
 }
 
-/** The Phase 3 controls: the master switch, threshold, and queue state. */
+/**
+ * Two nested switches, and the nesting is the point.
+ *
+ * **Monitoring** is the outer one: off means the probe is gone and nothing is
+ * read at all. **Automatic scrobbling** is the inner one, and only gates the
+ * final broadcast — it still leaves the app watching, which is what makes the
+ * Now tab useful for diagnosing why something parsed the way it did.
+ */
 @Composable
 private fun ScrobbleControls(
+	monitoring: Boolean,
 	autoScrobble: Boolean,
 	thresholdPercent: Int,
 	hasKey: Boolean,
 	queuedCount: Int,
+	urlWatcherEnabled: Boolean,
+	enrichment: Boolean,
+	onToggleMonitoring: (Boolean) -> Unit,
+	onOpenAccessibility: () -> Unit,
+	onToggleEnrichment: (Boolean) -> Unit,
 	onToggle: (Boolean) -> Unit,
 	onRetryQueue: () -> Unit,
 ) {
@@ -179,9 +214,45 @@ private fun ScrobbleControls(
 		Column(Modifier.padding(12.dp)) {
 			Row(verticalAlignment = Alignment.CenterVertically) {
 				Column(Modifier.weight(1f)) {
+					Text("Monitoring", style = MaterialTheme.typography.titleSmall)
+					Text(
+						if (monitoring) {
+							"Watching YouTube playback in Brave"
+						} else {
+							"Stopped — no sessions or notifications are being read"
+						},
+						style = MaterialTheme.typography.bodySmall,
+						color = if (monitoring) {
+							MaterialTheme.colorScheme.onSurface
+						} else {
+							MaterialTheme.colorScheme.error
+						},
+					)
+				}
+				Button(
+					onClick = { onToggleMonitoring(!monitoring) },
+					colors = if (monitoring) {
+						ButtonDefaults.buttonColors(
+							containerColor = MaterialTheme.colorScheme.error,
+						)
+					} else {
+						ButtonDefaults.buttonColors()
+					},
+				) {
+					Text(if (monitoring) "Stop" else "Start")
+				}
+			}
+
+			Spacer(Modifier.height(8.dp))
+			HorizontalDivider()
+			Spacer(Modifier.height(8.dp))
+
+			Row(verticalAlignment = Alignment.CenterVertically) {
+				Column(Modifier.weight(1f)) {
 					Text("Automatic scrobbling", style = MaterialTheme.typography.titleSmall)
 					Text(
 						when {
+							!monitoring -> "Paused while monitoring is stopped"
 							!hasKey -> "Add a Hive key to enable"
 							autoScrobble -> "On — scrobbles at $thresholdPercent% played"
 							else -> "Off — nothing is broadcast automatically"
@@ -189,8 +260,53 @@ private fun ScrobbleControls(
 						style = MaterialTheme.typography.bodySmall,
 					)
 				}
-				Switch(checked = autoScrobble, onCheckedChange = onToggle, enabled = hasKey)
+				Switch(
+					checked = autoScrobble && monitoring,
+					onCheckedChange = onToggle,
+					enabled = hasKey && monitoring,
+				)
 			}
+			Spacer(Modifier.height(8.dp))
+			HorizontalDivider()
+			Spacer(Modifier.height(8.dp))
+
+			Row(verticalAlignment = Alignment.CenterVertically) {
+				Column(Modifier.weight(1f)) {
+					Text("Address bar access", style = MaterialTheme.typography.titleSmall)
+					Text(
+						if (urlWatcherEnabled) {
+							"On — exact site and video link"
+						} else {
+							"Off — site inferred from the media notification, no video link"
+						},
+						style = MaterialTheme.typography.bodySmall,
+					)
+				}
+				OutlinedButton(onClick = onOpenAccessibility) {
+					Text(if (urlWatcherEnabled) "Manage" else "Enable")
+				}
+			}
+
+			Spacer(Modifier.height(8.dp))
+			Row(verticalAlignment = Alignment.CenterVertically) {
+				Column(Modifier.weight(1f)) {
+					Text("Look videos up", style = MaterialTheme.typography.titleSmall)
+					Text(
+						when {
+							!urlWatcherEnabled -> "Needs address bar access"
+							enrichment -> "On — fetches the video page for artist and category"
+							else -> "Off — titles are parsed on-device only"
+						},
+						style = MaterialTheme.typography.bodySmall,
+					)
+				}
+				Switch(
+					checked = enrichment && urlWatcherEnabled,
+					onCheckedChange = onToggleEnrichment,
+					enabled = urlWatcherEnabled,
+				)
+			}
+
 			if (queuedCount > 0) {
 				Spacer(Modifier.height(8.dp))
 				Row(verticalAlignment = Alignment.CenterVertically) {
@@ -273,9 +389,21 @@ private fun AccessBanner(onGrantAccess: () -> Unit) {
 @Composable
 private fun SessionList(
 	sessions: List<SessionSnapshot>,
+	monitoring: Boolean,
 	canBroadcast: Boolean,
+	busy: Boolean,
+	lookupsOn: Boolean,
 	onBroadcast: (SessionSnapshot) -> Unit,
 ) {
+	if (!monitoring) {
+		Text(
+			"Monitoring is stopped.\n\nNo media sessions are being watched and no " +
+				"notifications are being read. Press Start above to resume.",
+			style = MaterialTheme.typography.bodyMedium,
+			modifier = Modifier.padding(top = 24.dp),
+		)
+		return
+	}
 	if (sessions.isEmpty()) {
 		Text(
 			"No active media sessions.\n\nOpen youtube.com in Brave, play a video, " +
@@ -287,7 +415,7 @@ private fun SessionList(
 	}
 	LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
 		items(sessions, key = { it.packageName + it.title }) { s ->
-			SessionCard(s, canBroadcast, onBroadcast)
+			SessionCard(s, canBroadcast, busy, lookupsOn, onBroadcast)
 		}
 	}
 }
@@ -296,6 +424,8 @@ private fun SessionList(
 private fun SessionCard(
 	s: SessionSnapshot,
 	canBroadcast: Boolean,
+	busy: Boolean,
+	lookupsOn: Boolean,
 	onBroadcast: (SessionSnapshot) -> Unit,
 ) {
 	Card(Modifier.fillMaxWidth()) {
@@ -327,7 +457,18 @@ private fun SessionCard(
 
 				is YouTubeProbe.Identity.SiteOnly -> {
 					Field("site", id.host)
-					Field("url", "— (no video id available)")
+					// The card used to say "no video id available" flatly, which
+					// read as "this will have no link" — but the engine also
+					// resolves an id at broadcast time, so tracks did get links
+					// the card had already written off. Say what's actually true.
+					Field(
+						"url",
+						if (lookupsOn) {
+							"— not in the address bar; looked up at broadcast"
+						} else {
+							"— not in the address bar (enable lookups to recover it)"
+						},
+					)
 					Field("proven by", id.source)
 				}
 
@@ -350,7 +491,11 @@ private fun SessionCard(
 			}
 
 			// What would actually be written to the chain, after title parsing.
-			ScrobbleBuilder.from(s)?.let { payload ->
+			// Prefetched facts come from the cache so the preview and the
+			// broadcast run on identical inputs — no network from the UI.
+			val facts = s.confirmed?.let { ScrobbleEngine.cachedFacts(it.videoId) }
+			val mb = ScrobbleEngine.cachedMusicMatch(s, facts)
+			ScrobbleBuilder.from(s, facts, mb)?.let { payload ->
 				Spacer(Modifier.height(8.dp))
 				HorizontalDivider()
 				Spacer(Modifier.height(8.dp))
@@ -358,12 +503,33 @@ private fun SessionCard(
 				Field("artist", payload.artist)
 				Field("title", payload.title)
 				Field("kind", payload.kind)
+				// Why this is song or video — the part most worth checking
+				// before it's on a chain that can't be edited.
+				Field("kind because", ScrobbleBuilder.kindReason(s, facts, mb))
+				Field("category", facts?.category ?: "— (not fetched yet)")
+				Field(
+					"musicbrainz",
+					when {
+						mb == null -> "— (not checked yet)"
+						mb.found -> "✓ ${mb.artist} — ${mb.title}"
+						else -> "no match"
+					},
+				)
 				Spacer(Modifier.height(8.dp))
 				Button(
+					// Disabled mid-send: it used to stay live, and two taps a
+					// second apart put the same listen on-chain twice at 69%
+					// and 70%.
 					onClick = { onBroadcast(s) },
-					enabled = canBroadcast && s.isTarget,
+					enabled = canBroadcast && s.isTarget && !busy,
 				) {
-					Text(if (canBroadcast) "Broadcast this scrobble" else "Add a key first")
+					Text(
+						when {
+							!canBroadcast -> "Add a key first"
+							busy -> "Sending…"
+							else -> "Broadcast this scrobble"
+						},
+					)
 				}
 			}
 
@@ -387,7 +553,10 @@ private fun SessionCard(
 @Composable
 private fun Verdict(s: SessionSnapshot) {
 	val (label, color) = when {
-		!s.isTarget -> "control" to Color.Gray
+		// Unreachable since Phase 4 stopped watching non-browser sessions.
+		// Kept as a visible tripwire: if this ever renders, the package filter
+		// in SessionProbe.syncControllers has a hole.
+		!s.isTarget -> "SHOULD NOT BE WATCHED" to Color(0xFFC62828)
 		s.payloadViable && s.confirmed != null -> "payload OK" to Color(0xFF2E7D32)
 		s.payloadViable -> "payload OK (no url)" to Color(0xFF558B2F)
 		!s.isYouTube -> "not proven YouTube" to Color(0xFFC62828)

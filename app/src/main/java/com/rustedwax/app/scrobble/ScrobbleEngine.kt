@@ -15,7 +15,15 @@ import com.rustedwax.app.hive.HiveRpc
 import com.rustedwax.app.hive.HiveScrobblePayload
 import com.rustedwax.app.detect.ScrobbleBuilder
 import com.rustedwax.app.detect.SessionSnapshot
+import com.rustedwax.app.detect.TitleParser
+import com.rustedwax.app.detect.UrlEvidence
 import com.rustedwax.app.detect.EventLog
+import com.rustedwax.app.enrich.FactsCache
+import com.rustedwax.app.enrich.MetadataResolver
+import com.rustedwax.app.enrich.MusicBrainzVerifier
+import com.rustedwax.app.enrich.VideoFacts
+import com.rustedwax.app.enrich.VideoIdResolver
+import com.rustedwax.app.enrich.YouTubePageResolver
 import com.rustedwax.app.storage.KeyVault
 import com.rustedwax.app.storage.Settings
 
@@ -39,7 +47,19 @@ object ScrobbleEngine {
 	private lateinit var ledger: DedupLedger
 	private lateinit var queue: BroadcastQueue
 	private lateinit var settings: Settings
+	private lateinit var resolver: MetadataResolver
+	private lateinit var factsCache: FactsCache
+	private lateinit var musicBrainz: MusicBrainzVerifier
+	private val idResolver = VideoIdResolver()
 	private val broadcaster = HiveBroadcaster()
+
+	/**
+	 * Video ids a prefetch has already been launched for this session. Never
+	 * cleared on failure: a video that couldn't be resolved once (offline,
+	 * markup drift) shouldn't be re-fetched every second by the UI tick that
+	 * triggers identity checks.
+	 */
+	private val prefetched = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 	private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 	private val broadcastLock = Mutex()
 
@@ -70,6 +90,9 @@ object ScrobbleEngine {
 		ledger = DedupLedger(appContext)
 		queue = BroadcastQueue(appContext)
 		settings = Settings(appContext)
+		factsCache = FactsCache(appContext)
+		resolver = YouTubePageResolver(factsCache)
+		musicBrainz = MusicBrainzVerifier(appContext)
 		initialised = true
 		ledger.prune()
 		_queueSize.value = queue.size()
@@ -90,6 +113,12 @@ object ScrobbleEngine {
 	 */
 	fun onTrackFinalized(session: SessionSnapshot) {
 		if (!initialised) return
+		// Belt and braces. With monitoring off the probe is torn down and this
+		// can't be reached at all, but a finalize racing a Stop must lose.
+		if (!settings.monitoringEnabled) {
+			EventLog.append("engine", "monitoring stopped — not scrobbling")
+			return
+		}
 		if (!settings.autoScrobble) {
 			EventLog.append("engine", "auto-scrobble off — not scrobbling")
 			return
@@ -111,26 +140,225 @@ object ScrobbleEngine {
 			return
 		}
 
-		val basePayload = ScrobbleBuilder.from(session)
-		if (basePayload == null) {
-			EventLog.append("engine", "skipped: payload not buildable")
-			return
-		}
+		// Enrichment is a network call, so the payload can no longer be built on
+		// this thread. Everything downstream of it moves into the coroutine —
+		// including the dedup claim, which must be computed from the *corrected*
+		// title and artist or a fixed parse would look like a new track.
+		scope.launch {
+			// The address bar is the exact source when it spoke; searching is
+			// the fallback for when it never did (a playlist advancing behind a
+			// hidden toolbar fires no accessibility event at all).
+			val videoId = session.confirmed?.videoId ?: resolveVideoId(session)
+			val facts = enrich(videoId)
+			val mb = verifyMusic(session, facts)
 
-		val dedupKey = DedupLedger.keyFor(
-			basePayload.title,
-			basePayload.artist,
-			session.trackStartedAtEpochSec,
+			val basePayload = ScrobbleBuilder.from(session, facts, mb, videoId)
+			if (basePayload == null) {
+				EventLog.append("engine", "skipped: payload not buildable")
+				return@launch
+			}
+
+			// A missing url is the one payload gap that can't be reconstructed
+			// later, so it says why on its way out rather than leaving an
+			// unexplained entry on-chain.
+			if (basePayload.url == null) {
+				EventLog.append(
+					"engine",
+					"broadcasting WITHOUT url — identity was ${session.identity.source}",
+				)
+			}
+
+			val dedupKey = DedupLedger.keyFor(
+				basePayload.title,
+				basePayload.artist,
+				session.trackStartedAtEpochSec,
+			)
+			if (!ledger.claim(dedupKey)) {
+				EventLog.append("engine", "skipped: already scrobbled [$dedupKey]")
+				return@launch
+			}
+
+			// One tx per entry — the 160% double-listen produces two, songs only.
+			val percentages = ScrobbleRules.capForKind(decision.percentages, basePayload.kind)
+			if (percentages.size < decision.percentages.size) {
+				EventLog.append(
+					"engine",
+					"double-listen capped to one tx (kind=${basePayload.kind})",
+				)
+			}
+			percentages.forEach { percent ->
+				enqueueAndSend(basePayload.copy(percentPlayed = percent))
+			}
+		}
+	}
+
+	/**
+	 * The artist/track pairs worth asking MusicBrainz about, most likely
+	 * first: the parsed pair, then the *swapped* pair. The swap exists because
+	 * `Title | Channel`-shaped uploads split backwards (observed on-chain:
+	 * artist "Michael Jackson MTV Awards 1995…" title "Remastered HD") — when
+	 * the reversed pair is the real recording, MusicBrainz says so, and its
+	 * canonical fields land in the payload the right way round.
+	 */
+	private fun mbCandidates(credits: ScrobbleBuilder.Parsed): List<Pair<String, String>> {
+		val artist = credits.artist?.takeIf { it.isNotBlank() } ?: return emptyList()
+		val out = mutableListOf(artist to credits.track)
+		if (!credits.track.equals(artist, ignoreCase = true)) {
+			out += credits.track to artist
+		}
+		return out
+	}
+
+	/**
+	 * Best-effort MusicBrainz confirmation of the artist/track the payload
+	 * would carry. Null when disabled, unparseable, or the network couldn't
+	 * answer — every path degrades to the pre-MusicBrainz behaviour.
+	 */
+	private suspend fun verifyMusic(
+		session: SessionSnapshot,
+		facts: VideoFacts?,
+	): MusicBrainzVerifier.Match? {
+		if (!settings.enrichment) return null
+		val credits = ScrobbleBuilder.creditsOf(session, facts) ?: return null
+		var last: MusicBrainzVerifier.Match? = null
+		for ((artist, track) in mbCandidates(credits)) {
+			val match = runCatching { musicBrainz.verify(artist, track) }.getOrElse {
+				EventLog.append("musicbrainz", "verifier threw: ${it.message}")
+				null
+			}
+			if (match?.found == true) return match
+			last = match ?: last
+		}
+		return last
+	}
+
+	/** Cache-only MusicBrainz verdict for the Now-tab preview. */
+	fun cachedMusicMatch(
+		session: SessionSnapshot,
+		facts: VideoFacts?,
+	): MusicBrainzVerifier.Match? {
+		if (!initialised || !settings.enrichment) return null
+		val credits = ScrobbleBuilder.creditsOf(session, facts) ?: return null
+		var last: MusicBrainzVerifier.Match? = null
+		for ((artist, track) in mbCandidates(credits)) {
+			val match = musicBrainz.cached(artist, track)
+			if (match?.found == true) return match
+			last = match ?: last
+		}
+		return last
+	}
+
+	/**
+	 * Start resolving a video's facts the moment it's identified, instead of
+	 * at finalize minutes later.
+	 *
+	 * Two reasons this matters beyond latency. The broadcast path stops
+	 * depending on a live network at the exact moment a track ends. And the
+	 * Now-tab preview reads the same cache via [cachedFacts], so the kind it
+	 * shows is the kind that will be broadcast — during the field test the
+	 * preview classified from the title alone while enrichment later said
+	 * otherwise, and the mismatch made the filter look arbitrary.
+	 */
+	fun prefetch(videoId: String) {
+		if (!initialised || !settings.enrichment) return
+		if (!prefetched.add(videoId)) return
+		scope.launch {
+			val facts = runCatching { resolver.resolve(videoId) }
+				.onFailure { EventLog.append("enrich", "prefetch failed: ${it.message}") }
+				.getOrNull() ?: return@launch
+			// Chain the MusicBrainz check so the Now card's verdict is warm by
+			// the time anyone looks. Same credits derivation as the payload.
+			val rawTitle = facts.title ?: return@launch
+			val parsed = TitleParser.parse(rawTitle, facts.author)
+			val credits = ScrobbleBuilder.Parsed(
+				artist = facts.originalArtist ?: parsed.artist,
+				track = facts.originalTitle?.let { TitleParser.clean(it) } ?: parsed.track,
+			)
+			for ((artist, track) in mbCandidates(credits)) {
+				val match = runCatching { musicBrainz.verify(artist, track) }.getOrNull()
+				if (match?.found == true) break
+			}
+		}
+	}
+
+	/** Already-resolved facts, memory/disk only — never the network. */
+	fun cachedFacts(videoId: String): VideoFacts? =
+		if (initialised) factsCache.get(videoId) else null
+
+	/**
+	 * Best-effort lookup of the video's own metadata.
+	 *
+	 * Returns null on every failure path — disabled, no video id, network down,
+	 * markup changed. A scrobble is never lost because enrichment was, and the
+	 * offline parse is always a complete answer on its own.
+	 */
+	private suspend fun enrich(videoId: String?): VideoFacts? {
+		if (!settings.enrichment) return null
+		if (videoId == null) {
+			EventLog.append("enrich", "no video id — offline parse only")
+			return null
+		}
+		return runCatching { resolver.resolve(videoId) }.getOrElse {
+			EventLog.append("enrich", "resolver threw: ${it.message}")
+			null
+		}
+	}
+
+	/**
+	 * Search-based recovery of a video id the address bar never supplied.
+	 *
+	 * Gated behind the same "Look videos up" switch — it is off-device traffic
+	 * — and fails closed, so the payload simply keeps no `url` when the match
+	 * isn't certain.
+	 */
+	private suspend fun resolveVideoId(session: SessionSnapshot): String? {
+		if (!settings.enrichment) return null
+		val title = session.title ?: return null
+		val durationSec = session.durationMs?.div(1000)
+		return runCatching {
+			// The playlist is exact where search is only plausible, and after
+			// the first fetch it costs nothing for the rest of the playlist.
+			UrlEvidence.playlistId(session.packageName)?.let { list ->
+				idResolver.resolveFromPlaylist(list, title, session.artist, durationSec)
+			} ?: idResolver.resolve(title, session.artist, durationSec)
+		}.getOrElse {
+			EventLog.append("resolve", "resolver threw: ${it.message}")
+			null
+		}
+	}
+
+	/**
+	 * Claim a listen on behalf of the Now card's **Broadcast this scrobble**
+	 * button, so the two paths share one ledger.
+	 *
+	 * Until v0.5.4 the manual button bypassed the ledger entirely, which
+	 * produced the duplicate pairs seen on-chain: a manual send left no claim,
+	 * so the automatic finalize minutes later saw a free key and broadcast the
+	 * same listen again (e.g. 29% manual, then 95% automatic). It also let two
+	 * quick taps through, one second apart.
+	 *
+	 * Claimed *before* sending so concurrent taps can't both pass; the caller
+	 * must [releaseManualClaim] if the send fails, since the manual path has no
+	 * queue to fall back on.
+	 *
+	 * @return false when this listen is already in the ledger
+	 */
+	fun claimManual(payload: HiveScrobblePayload, startedAtEpochSec: Long): Boolean {
+		if (!initialised) return true
+		val key = DedupLedger.keyFor(payload.title, payload.artist, startedAtEpochSec)
+		val claimed = ledger.claim(key)
+		EventLog.append(
+			"engine",
+			if (claimed) "manual broadcast claimed [$key]" else "manual broadcast blocked [$key]",
 		)
-		if (!ledger.claim(dedupKey)) {
-			EventLog.append("engine", "skipped: already scrobbled [$dedupKey]")
-			return
-		}
+		return claimed
+	}
 
-		// One tx per entry — the 160% double-listen produces two.
-		decision.percentages.forEach { percent ->
-			enqueueAndSend(basePayload.copy(percentPlayed = percent))
-		}
+	/** Undo a [claimManual] whose broadcast failed, so it can be retried. */
+	fun releaseManualClaim(payload: HiveScrobblePayload, startedAtEpochSec: Long) {
+		if (!initialised) return
+		ledger.release(DedupLedger.keyFor(payload.title, payload.artist, startedAtEpochSec))
+		EventLog.append("engine", "manual claim released after a failed send")
 	}
 
 	/** Retry anything waiting in the queue. Safe to call often. */

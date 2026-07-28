@@ -1,0 +1,120 @@
+package com.rustedwax.app.enrich
+
+import org.json.JSONObject
+
+/**
+ * Pulls facts out of a YouTube watch page. Pure — no network, no Android.
+ *
+ * Separated from [YouTubePageResolver] deliberately. This is the part decision
+ * D8 called fragile, so it is also the part that has to be testable without a
+ * device: a checked-in page fixture turns "YouTube changed its markup" from a
+ * silent production regression into a failing unit test.
+ */
+object WatchPageParser {
+
+	/**
+	 * Pulls one `var name = {…};` object out of the page by matching braces.
+	 *
+	 * Brace counting rather than a regex because the object is megabytes of
+	 * nested JSON containing every bracket character there is, and it is
+	 * followed on the same line by more script. Quote- and escape-aware, or the
+	 * first `}` inside a description would truncate it.
+	 */
+	fun extractJson(html: String, name: String): String? {
+		val marker = html.indexOf(name)
+		if (marker < 0) return null
+		val start = html.indexOf('{', marker)
+		if (start < 0) return null
+
+		var depth = 0
+		var inString = false
+		var escaped = false
+		for (i in start until html.length) {
+			val c = html[i]
+			when {
+				escaped -> escaped = false
+				c == '\\' && inString -> escaped = true
+				c == '"' -> inString = !inString
+				inString -> Unit
+				c == '{' -> depth++
+				c == '}' -> {
+					depth--
+					if (depth == 0) return html.substring(start, i + 1)
+				}
+			}
+		}
+		return null
+	}
+
+	/** @throws org.json.JSONException if the blob isn't the shape we expect */
+	fun parsePlayerResponse(videoId: String, json: String): VideoFacts {
+		val root = JSONObject(json)
+		val details = root.optJSONObject("videoDetails")
+		val micro = root.optJSONObject("microformat")
+			?.optJSONObject("playerMicroformatRenderer")
+
+		val credits = mineDescription(details?.optString("shortDescription").orEmpty())
+
+		return VideoFacts(
+			videoId = videoId,
+			title = details?.optString("title")?.ifBlank { null },
+			author = details?.optString("author")?.ifBlank { null },
+			category = micro?.optString("category")?.ifBlank { null },
+			originalArtist = credits?.first,
+			originalTitle = credits?.second,
+		)
+	}
+
+	/**
+	 * Looks for the original artist in the description. Returns
+	 * `artist to title`, either of which may be null.
+	 *
+	 * Two shapes are worth the trouble. Auto-generated Topic descriptions open
+	 * with `Provided to YouTube by …` and then `Song · Artist`. Cover uploads
+	 * are hand-written and tend to credit the original in a line of its own.
+	 *
+	 * Everything else is left alone: guessing an artist out of free prose would
+	 * write confident nonsense to a chain that can't be edited.
+	 */
+	fun mineDescription(description: String): Pair<String?, String?>? {
+		if (description.isBlank()) return null
+
+		AUTO_CREDIT.find(description)?.let { m ->
+			val song = m.groupValues[1].trim().ifEmpty { null }
+			val artist = m.groupValues[2].trim().ifEmpty { null }
+			if (artist != null) return artist to song
+		}
+		ORIGINAL_ARTIST_AND_TITLE.find(description)?.let { m ->
+			val artist = m.groupValues[1].trim().ifEmpty { null }
+			val song = m.groupValues[2].trim().ifEmpty { null }
+			if (artist != null) return artist to song
+		}
+		for (pattern in ORIGINAL_ARTIST_ONLY) {
+			pattern.find(description)?.let { m ->
+				val artist = m.groupValues[1].trim().trim('"', '\'', '.', '-', '–').trim()
+				if (artist.isNotEmpty() && artist.length <= 60) return artist to null
+			}
+		}
+		return null
+	}
+
+	/** `Song · Artist` under a `Provided to YouTube by …` header. */
+	private val AUTO_CREDIT = Regex(
+		"""Provided to YouTube by[^\n]*\n+([^\n·]+)·([^\n·]+)""",
+		RegexOption.IGNORE_CASE,
+	)
+
+	/** `Original: Artist - Title`, `Song: Artist – Title`. */
+	private val ORIGINAL_ARTIST_AND_TITLE = Regex(
+		"""(?:^|\n)[ \t]*(?:original song|original|song)[ \t]*[:\-][ \t]*""" +
+			"""([^\n\-–]{1,60}?)[ \t]*[\-–][ \t]*([^\n]{1,80})""",
+		RegexOption.IGNORE_CASE,
+	)
+
+	private val ORIGINAL_ARTIST_ONLY = listOf(
+		Regex("""original (?:song |track )?by[ \t]+([^\n,.(]{1,60})""", RegexOption.IGNORE_CASE),
+		Regex("""originally by[ \t]+([^\n,.(]{1,60})""", RegexOption.IGNORE_CASE),
+		Regex("""(?:^|\n)[ \t]*artist[ \t]*[:\-][ \t]*([^\n]{1,60})""", RegexOption.IGNORE_CASE),
+		Regex("""(?:^|\n)[ \t]*band[ \t]*[:\-][ \t]*([^\n]{1,60})""", RegexOption.IGNORE_CASE),
+	)
+}

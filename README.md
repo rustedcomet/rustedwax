@@ -23,13 +23,17 @@ browser being a desktop browser:
 | Per-site DOM connectors | Android `MediaSessionManager` — one universal source |
 | Hive Keychain signs the transaction | The app signs locally with your posting key |
 
-The on-chain format, the scrobble thresholds and the dedup rules follow the established ones, so
-entries written from your phone look the same on-chain as entries written from a desktop.
+The on-chain format, the scrobble thresholds and the dedup rules follow the established ones.
 
-> **v1 scope: YouTube in Brave.** A media session names the app, never the site, so the app only
-> scrobbles playback it can *prove* is YouTube. Anything it can't prove is skipped rather than
-> guessed — wrong attribution on an immutable chain is worse than a missing scrobble. More sites
-> follow once the detection story is settled.
+> **Not byte-identical to desktop any more.** Phase 4 normalizes titles to the original recording —
+> `(Live)`, `(Instrumental)` and `【Guitar Cover】` are stripped, so a cover lands on the same entry
+> as the studio track instead of scattering play counts. The extension keeps those markers. Same
+> schema, same id, same rules; the title field can differ. See [PHASE4.md](PHASE4.md) decision D7.
+
+> **v1 scope: YouTube in Brave, exclusively.** A media session names the app, never the site, so the
+> app only scrobbles playback it can *prove* is YouTube. Anything it can't prove is skipped rather
+> than guessed — wrong attribution on an immutable chain is worse than a missing scrobble. Media
+> sessions from anything that isn't a target browser are not watched at all.
 
 ---
 
@@ -45,23 +49,34 @@ entries written from your phone look the same on-chain as entries written from a
 4. When a track ends, the app builds the same `custom_json` payload, signs it with your posting key
    on-device, and broadcasts it. If the network is down, the scrobble is queued and retried.
 
+**Stop** cuts all of that off. It tears down the session watcher, stops reading notifications and
+forgets the hints it had — nothing is observed while it's stopped, and the track playing when you
+press it is discarded rather than scrobbled on the way out. Scrobbles already earned and waiting in
+the offline queue still send. Automatic scrobbling is a separate, inner switch: turning *it* off
+leaves the app watching, which is how you check what a title would have parsed to without writing
+anything to the chain.
+
 ```
-Brave (playing) ──▶ Android MediaSession ──┐
-                                           ├──▶ RustedWaxNotificationListenerService
-       media notification (origin) ────────┘              │
-                                                   PlaybackTracker
-                                                          │  track ends
-                                                   ScrobbleRules (60% / 160%)
-                                                          │
-                                                   DedupLedger
-                                                          │
-                                          HiveScrobblePayload  ◀── same schema as extension
-                                                          │
-                                          local secp256k1 signing (posting key)
-                                                          │
-                                          condenser_api.broadcast_transaction
-                                                          │  on failure
-                                                   BroadcastQueue ──▶ retry w/ backoff
+Brave (playing) ──▶ Android MediaSession ─────┐
+       media notification (origin) ───────────┼──▶ RustedWaxListenerService
+       address bar (optional, url + video id) ┘        │  SessionProbe
+                                                       │  track ends (video id latched at start)
+                                               ScrobbleRules (60%, +160% songs only)
+                                                       │
+                                     enrichment (optional): watch-page category,
+                                     description credits, MusicBrainz verification
+                                                       │
+                                     MusicClassifier → kind: song / video
+                                                       │
+                                                  DedupLedger
+                                                       │
+                                       HiveScrobblePayload  ◀── same schema as extension
+                                                       │
+                                       local secp256k1 signing (posting key)
+                                                       │
+                                       condenser_api.broadcast_transaction
+                                                       │  on failure
+                                                BroadcastQueue ──▶ retry w/ backoff
 ```
 
 ## On-chain format
@@ -73,11 +88,43 @@ Identical to the extension — do not change these without changing the indexers
 - `app`: `hivescrobblesai/1.0`
 - Payload: [`HiveScrobblePayload`](https://github.com/Holozing1/hivescrobble/blob/master/src/core/scrobbler/hive/hive.types.ts)
 
-Scrobble rules, copied verbatim from `hive-scrobbler.ts#finalize`:
+Scrobble rules, from `hive-scrobbler.ts#finalize`, with one deliberate deviation:
 
-- **Music / podcast / video** — 1 tx at ≥60% played; a 2nd tx at ≥160% (double-listen), capped at 2.
+- **Music / podcast / video** — 1 tx at ≥60% played.
+- **Songs only** — a 2nd tx at ≥160% (a genuine double-listen), capped at 2. Upstream doubles every
+  kind; RustedWax caps `video` at one tx, because YouTube shorts auto-loop and were producing two
+  transactions for one sitting.
 - **Movie / episode** — 1 tx at ≥80%. *Not implemented on mobile* (see Limitations).
 - `now_playing` is never broadcast on-chain.
+
+### How `kind` is decided
+
+Evidence, strongest first — a stronger layer always beats a weaker one:
+
+1. **Format evidence** → video, beating everything including the category (field data showed
+   tutorials and music-news bulletins categorized *Music* by their uploaders): podcast / tutorial /
+   how-to / gameplay / review titles, trailers recognized structurally (`Official Final Trailer`,
+   `Trailer 2`), music-news headlines (`… Releases New Single …`), TV episode numbering
+   (`Season 6 Ep 19`, `S06E19` — but not music's `EP 2`), clip channels (`… Movies`, `… Cinema`,
+   `… Pictures`), game playthroughs without an instrument.
+2. **YouTube's `Music` category** (needs "Look videos up") → song.
+3. **Hard music evidence** → song, strong enough to overrule a non-music category:
+   music.youtube.com, a **MusicBrainz match** on the artist + recording, an instrument-qualified
+   cover or playthrough.
+4. **A decisive non-music category** → video: Film & Animation, Gaming, News, Sports, Education…
+5. **Commentary words that are also song titles** (`reaction`) → video — below MusicBrainz on
+   purpose, so "Chain Reaction" the song is rescued while reaction videos are caught.
+6. **Music vocabulary** → song: VEVO/`- Topic`/label channels, lyrics / instrumental / remix /
+   live-performance / official-audio wording.
+7. **Weak evidence** — an `Artist - Track`-shaped title — is accepted only for ordinary videos of
+   unknown category, never for shorts, sub-90-second clips, or `#shorts`-tagged titles, and never
+   when a known category said not-music.
+8. **No evidence at all** → **video**. (Revised from the original song-default: two days of field
+   data showed every default-song hit was a news clip, movie scene or vlog. Real music virtually
+   always carries a signal above — and MusicBrainz is the safety net for untagged uploads.)
+
+The Now tab shows **kind because**, **category** and **musicbrainz** lines explaining every verdict
+before anything goes on-chain — check them there, because on-chain is forever.
 
 ## Setup
 
@@ -87,13 +134,16 @@ Scrobble rules, copied verbatim from `hive-scrobbler.ts#finalize`:
    before accepting it — a wrong key is rejected immediately, offline-verifiable against
    `api.openhive.network`, `hive-api.arcange.eu`, `api.hive.blog`.
 3. Grant Notification Access when prompted.
-4. Play something in Brave. The app's Recent tab shows detected tracks and broadcast tx ids.
+4. Optionally enable **Address bar access** (for `url` + lookups) — on Android 13+, allow restricted
+   settings from App info first.
+5. Play something in Brave. The **Now** tab shows the live session and the exact payload it would
+   broadcast; **History** shows what was sent, with tx ids.
 
 ### About your posting key
 
-The key is stored in `EncryptedSharedPreferences` backed by the Android Keystore and is gated behind
-biometric/device unlock. It never leaves the device — signing is local, and only the signed
-transaction is sent to a Hive node.
+The key is stored in `EncryptedSharedPreferences` backed by the Android Keystore. **There is no
+biometric gate yet** — an unlocked phone can sign. The key never leaves the device — signing is
+local, and only the signed transaction is sent to a Hive node.
 
 Be aware this is a **larger blast radius than Keychain on desktop**: a raw posting key can post,
 comment, and vote as you, with no per-operation prompt. If you want that reduced:
@@ -104,35 +154,89 @@ comment, and vote as you, with no per-operation prompt. If you want that reduced
 
 The app never asks for your active, owner, or memo key. If anything ever does, it isn't this app.
 
-## Privacy mode
+## Privacy mode — planned, not yet implemented
 
-Same scheme as the extension, per content kind (music / videos / podcasts / movies-tv). When enabled,
+**Every payload the app broadcasts today is plaintext on-chain.** Privacy mode is Phase 5 (it was
+originally Phase 4; the control/exclusivity/fidelity work preempted it — see PHASE4.md).
+
+The planned design matches the extension, per content kind (music / videos / podcasts / movies-tv):
 only `app`, `kind` and `timestamp` stay public; everything else goes into a base64
-`IV‖ciphertext+tag` AES-256-GCM blob under `private`, with `v: 1`.
-
-The AES key is derived exactly as on desktop — `SHA-256(signature bytes)` where the signature is a
-posting-key signature over the fixed challenge `zingit:privacy-key:v1`. Because Hive's ECDSA is
-deterministic (RFC 6979 + canonical grinding), the phone derives the **same key** the extension does,
-with no handoff and no Keychain. Blobs written on mobile decrypt on desktop and on zingit-web.
+`IV‖ciphertext+tag` AES-256-GCM blob under `private`, with `v: 1`. The AES key derives as on
+desktop — `SHA-256` of a posting-key signature over the fixed challenge `zingit:privacy-key:v1` —
+and because Hive's ECDSA is deterministic, the phone will derive the **same key** the extension does,
+so blobs written on mobile will decrypt on desktop and on zingit-web.
 
 ## Limitations vs the desktop extension
 
 These follow from having no DOM access, not from missing work:
 
-- **Only what can be proven.** `url` and `platform` come from a YouTube video id recovered out of the
-  artwork URI (`i.ytimg.com/vi/<videoId>/…`) or a literal watch URL in the metadata. No evidence
-  means no scrobble.
-- **No movie/episode scrobbles.** `videoKind` detection, Wikipedia/Wikidata enrichment, IMDb ids and
-  season/episode numbers all came from the connector layer. Media sessions expose none of it.
+- **Only what can be proven.** `platform` requires the origin to be established — from the browser's
+  media notification, bound to a session by title, or from the address bar if you enabled that. No
+  evidence means no scrobble. `url` additionally needs a video id, which only the address-bar
+  watcher can supply.
+- **No movie/episode scrobbles.** `videoKind` detection, IMDb ids and season/episode numbers all
+  came from the connector layer. Media sessions expose none of it. (Artist verification, which
+  desktop gets from Wikipedia/Wikidata, is covered on mobile by the MusicBrainz check instead.)
 - **No podcast disposition** unless the media session says so; most web podcasts arrive as `song`.
 - **Metadata quality depends on the site.** Whatever the page passes to the MediaSession API is what
   you get. Sites that don't set MediaSession metadata are invisible to the app.
 - **No guest (Google) ingest path.** Mobile is Hive-only by design.
 
-## Bonus over desktop
+## Address bar access (optional)
 
-Because it listens at the OS level, the app also sees **native apps** — Spotify, YouTube Music, Poweramp,
-podcast players — which the extension can never reach. Off by default; enable per-app in settings.
+Off by default. The media notification tells the app the origin but never which video, so without
+this there is no `url` on any scrobble and no way to look a video up.
+
+Enabling it lets the app read the address bar in Brave and Chrome, which gives the exact site and —
+when the browser exposes the full URL rather than just the host — the video id. The service is
+pinned to those browser packages in its config, so the **system** prevents it seeing any other app;
+that isn't a promise made by app code. It reads one thing: the URL bar.
+
+Two caveats worth knowing before you turn it on:
+
+- The address bar describes the **foreground tab**, which isn't always the tab that's playing. So a
+  YouTube URL only settles identity when the notification agrees or there's a single session, and a
+  non-YouTube URL is never treated as evidence against a session — it may just be another tab.
+- On Android 13+ a sideloaded APK's accessibility toggle is greyed out until you allow it: **App
+  info → ⋮ → Allow restricted settings**. It looks broken rather than blocked.
+
+### Looking videos up
+
+With a video id available, the app can fetch the video's own page to read YouTube's category — a far
+better answer to song-vs-video than any title heuristic — and to find the original artist credited in
+the description of a cover. One GET to youtube.com per new video, cached, from outside the browser.
+Google already knows you watched it, but it is still off-device traffic, so it's a switch you can
+turn off. It never blocks or delays a scrobble; if it fails, the on-device parse stands.
+
+The video id is **latched when the track is first identified** and kept for the track's lifetime —
+the address bar is correct at track start and routinely stale by track end (it shows the *next*
+short by then). The fetched page's own title must match what the session is playing, or the id is
+discarded: no `url` beats a wrong `url`.
+
+When the bar never names the video at all — a playlist advancing behind a hidden toolbar fires no
+accessibility event, so it can stay silent for tens of minutes — the app falls back to **searching
+YouTube** for the session's title and channel. That match requires the title, the channel *and* the
+duration to agree, because search results routinely contain a same-titled, same-length cover by a
+different artist. Anything less certain leaves `url` unset.
+
+> This scrapes an undocumented blob out of the watch page and **will** break when YouTube changes it.
+> Failures are logged as `EXTRACTION FAILED` precisely so breakage is distinguishable from a video
+> that simply had nothing to add.
+
+### MusicBrainz verification
+
+The same switch also checks the parsed artist/track pair against [MusicBrainz](https://musicbrainz.org),
+the open music database. A match requires the artist name **and** the recording title to both agree —
+title-only matching would claim every clip named like some song. A confirmed match:
+
+- counts as **explicit music evidence** (it can qualify a short performance clip that has no music
+  words in its title), and
+- supplies the **canonical spelling** of artist and title, so entries line up with scrobbles of the
+  same recording from anywhere else.
+
+Small or unsigned artists simply aren't in the database — that's a missed upgrade, never a wrong
+one; classification proceeds as if the check hadn't run. Lookups honor MusicBrainz's 1-request/second
+etiquette and are cached (including "no match") so each track is asked about once.
 
 ## Development
 

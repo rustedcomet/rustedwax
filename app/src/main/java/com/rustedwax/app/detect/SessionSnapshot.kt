@@ -10,7 +10,10 @@ package com.rustedwax.app.detect
 data class SessionSnapshot(
 	val packageName: String,
 	val appLabel: String,
-	/** True for Brave — the only source v1 scrobbles. Others are control cases. */
+	/**
+	 * True for the target browsers. Always true since Phase 4 — anything else
+	 * is no longer watched at all, rather than watched and skipped.
+	 */
 	val isTarget: Boolean,
 	val title: String?,
 	val artist: String?,

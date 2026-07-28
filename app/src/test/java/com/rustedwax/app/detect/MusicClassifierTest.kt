@@ -1,0 +1,379 @@
+package com.rustedwax.app.detect
+
+import com.rustedwax.app.hive.HiveScrobblePayload
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+/**
+ * Phase 4 decision D4 flipped the default to `song`, so these tests carry more
+ * weight than most: an over-claimed kind is permanent on-chain, and the
+ * blocklist is the only thing standing between "default to music" and a
+ * tutorial in the music index.
+ */
+class MusicClassifierTest {
+
+	private fun kindOf(
+		title: String,
+		channel: String? = null,
+		durationMs: Long? = 4 * 60 * 1000L,
+		siteSaysMusic: Boolean = false,
+		category: String? = null,
+		isShort: Boolean = false,
+		mbMatch: Boolean = false,
+	) = MusicClassifier
+		.classify(title, channel, durationMs, siteSaysMusic, category, isShort, mbMatch)
+		.kind
+
+	private val song = HiveScrobblePayload.KIND_SONG
+	private val video = HiveScrobblePayload.KIND_VIDEO
+
+	/** The bug this phase exists to fix. */
+	@Test
+	fun `the reported guitar cover is music`() {
+		assertEquals(
+			song,
+			kindOf(
+				"【Bring Me The Horizon】I Used to Make Out With Medusa " +
+					"(Instrumental) 2023【Guitar Cover】＋Screen Tabs",
+				"OLD MOON CHILD",
+			),
+		)
+	}
+
+	@Test
+	fun `covers live takes and lyric videos are all music`() {
+		assertEquals(song, kindOf("Creep (Acoustic Cover)", "Some Person"))
+		assertEquals(song, kindOf("Bohemian Rhapsody - Live at Wembley", "QueenOfficial"))
+		assertEquals(song, kindOf("Duality (Lyrics)", "LyricChannel"))
+		assertEquals(song, kindOf("Toxicity — Drum Cover", "Drummer Dan"))
+	}
+
+	@Test
+	fun `youtube's Music category wins when the format rules don't object`() {
+		assertEquals(song, kindOf("Some Sunday Upload", "Chan", category = "Music"))
+		// A VEVO suffix is vocabulary-tier; the uploader's Gaming category outranks it.
+		assertEquals(video, kindOf("Anything", "SomeVEVO", category = "Gaming"))
+	}
+
+	/**
+	 * Field data 2026-07-24 evening: the category is wrong in BOTH directions.
+	 * "How to Throat Sing like in DUNE!" (a tutorial) and a Manson news
+	 * bulletin are both categorized Music by their uploaders. Format evidence
+	 * in the title now outranks the category.
+	 */
+	@Test
+	fun `format evidence beats a Music category`() {
+		assertEquals(video, kindOf(
+			"How to Throat Sing like in DUNE!", "Brandon Acker", category = "Music"))
+		assertEquals(video, kindOf(
+			"Marilyn Manson Releases Heavy New Single ‘Front Toward Enemy’ " +
+				"Ahead of Upcoming Album",
+			"Rock Celebrities", category = "Music", durationMs = 47_000L))
+		// The reverse rescue: hard music evidence beats a non-music category —
+		// an instrument cover filed under Education is still that song.
+		assertEquals(song, kindOf(
+			"Duality (Drum Cover)", "Some Academy", category = "Education"))
+	}
+
+	@Test
+	fun `the blocklist keeps non-music out`() {
+		assertEquals(video, kindOf("How to fix a sink", "DIY Channel"))
+		assertEquals(video, kindOf("Guitar Tutorial - Beginner Chords", "GuitarLessons"))
+		assertEquals(video, kindOf("Episode 42: the interview", "Some Show"))
+		assertEquals(video, kindOf("Cyberpunk 2077 Review", "Reviewer"))
+	}
+
+	/**
+	 * Blocklist runs before the positive signals on purpose — otherwise the
+	 * word "guitar" in "Guitar Tutorial" rescues it as music.
+	 */
+	@Test
+	fun `blocklist beats a music-sounding word in the same title`() {
+		assertEquals(video, kindOf("Bass Cover Tutorial", "Teacher"))
+	}
+
+	@Test
+	fun `channel blocklist only applies to the channel`() {
+		// "News" in a song title must not *block* it — with positive evidence
+		// it's a song; without, it falls to the plain default, not the blocklist.
+		assertEquals(song, kindOf("Bad News", "Some Band", mbMatch = true))
+		assertEquals("no music evidence",
+			MusicClassifier.classify("Bad News", "Some Band", 4 * 60 * 1000L, false).reason)
+		// …but a news channel is not a band.
+		assertEquals(video, kindOf("Bad News", "BBC News"))
+	}
+
+	@Test
+	fun `long form with no music signal is a video`() {
+		assertEquals(
+			video,
+			kindOf("Three hours of something", "Chan", durationMs = 3 * 60 * 60 * 1000L),
+		)
+		// …but long *and* musical stays music: DJ sets and full albums are long.
+		assertEquals(
+			song,
+			kindOf("Full Album - Greatest Hits", "Band", durationMs = 3 * 60 * 60 * 1000L),
+		)
+	}
+
+	/**
+	 * D4 revised in v0.5.1: two days of field data showed every default-song
+	 * hit was a news clip, movie scene or vlog. With category, MusicBrainz and
+	 * the vocabulary layers supplying the positive path for real music, the
+	 * last-resort default is now video.
+	 */
+	@Test
+	fun `no evidence at all defaults to video`() {
+		val r = MusicClassifier.classify(
+			"Some upload with no signals at all", "A Channel", 4 * 60 * 1000L, false)
+		assertEquals(video, r.kind)
+		assertEquals("no music evidence", r.reason)
+	}
+
+	/**
+	 * The 2026-07-24 field sample: eleven film clips, trailers and shorts that
+	 * went on-chain as `song`. Titles, channels and categories are the real
+	 * values fetched from each video's watch page. Every one must be `video`.
+	 */
+	@Test
+	fun `the field sample of misclassified film content is video`() {
+		// Film & Animation — the category alone must decide these.
+		assertEquals(video, kindOf(
+			"COYOTE VS. ACME Official Final Trailer (2026) John Cena",
+			"ONE Media", category = "Film & Animation"))
+		assertEquals(video, kindOf(
+			"THE END OF OAK STREET Official Final Trailer (2026)",
+			"ONE Media", category = "Film & Animation"))
+		assertEquals(video, kindOf(
+			"Top Movie Scene | Giant Spider Attack | Kong: Skull Island",
+			"VISIONREEL PRODUCTIONS", category = "Film & Animation"))
+		assertEquals(video, kindOf(
+			"You Don't Like Real Girls | Blade Runner 2049 [Open Matte]",
+			"Natalizio Filmes", category = "Film & Animation"))
+		// Ambiguous categories — known-but-not-music demands explicit evidence,
+		// and a pipe or dash in the title is not explicit evidence.
+		assertEquals(video, kindOf(
+			"You and who? | 🎬 Notting Hill (1999)",
+			"Universal Pictures", category = "Entertainment"))
+		assertEquals(video, kindOf(
+			"The weapon is meant as a gift -- It is a Crysknife  | DUNE 2021 |",
+			"Groovy Movie Dog", category = "Entertainment"))
+		assertEquals(video, kindOf(
+			"Gsxr1000r police chase x Rolling in the deep",
+			"Awahys", category = "Entertainment"))
+		assertEquals(video, kindOf(
+			"The surgeon (Short Film)",
+			"AidAVisioN", category = "People & Blogs"))
+		assertEquals(video, kindOf(
+			"Connie Doherty - Showreel",
+			"Connie Doherty", category = "People & Blogs"))
+		assertEquals(video, kindOf(
+			"Cozy Kitchen Ghibli Vibes💖",
+			"Cozy Minamy", category = "People & Blogs"))
+		assertEquals(video, kindOf(
+			"One of the Coldest Scenes in Western Movies - \"How good are ya\"",
+			"Cinema Crunch", category = "People & Blogs", isShort = true))
+	}
+
+	/** The same sample with enrichment OFF — the structural fallbacks. */
+	@Test
+	fun `the field sample degrades sanely without a category`() {
+		// "Official Final Trailer" slipped past the exact phrase "official
+		// trailer"; the structural rule reads context + trailer.
+		assertEquals(video, kindOf(
+			"COYOTE VS. ACME Official Final Trailer (2026) John Cena", "ONE Media"))
+		// Clip channels advertise themselves in the name.
+		assertEquals(video, kindOf("Some scene compilation", "Movie Trailers Source"))
+		assertEquals(video, kindOf("Some scene compilation", "Cinema Crunch"))
+		assertEquals(video, kindOf("Random clip", "Universal Pictures"))
+		// Film vocabulary in the title.
+		assertEquals(video, kindOf(
+			"Top Movie Scene | Giant Spider Attack | Kong: Skull Island", "Somebody"))
+		assertEquals(video, kindOf("The surgeon (Short Film)", "AidAVisioN"))
+		assertEquals(video, kindOf("Connie Doherty - Showreel", "Connie Doherty"))
+	}
+
+	/**
+	 * An ambiguous category requires explicit evidence — but explicit evidence
+	 * does win. Fan-uploaded covers commonly sit in Entertainment or People &
+	 * Blogs, and they must not be lost to the stricter rule.
+	 */
+	@Test
+	fun `explicit music evidence overrules an ambiguous category`() {
+		assertEquals(song, kindOf(
+			"Creep (Acoustic Cover)", "Some Person", category = "Entertainment"))
+		assertEquals(song, kindOf(
+			"Duality (Lyrics)", "LyricChannel", category = "People & Blogs"))
+		assertEquals(song, kindOf(
+			"Anything at all", "Radiohead - Topic", category = "Entertainment"))
+	}
+
+	/**
+	 * Shorts are browsed by the dozen and titled like clip captions, so weak
+	 * evidence (a dash, the bare default) is not accepted for them.
+	 */
+	@Test
+	fun `shorts need explicit music evidence`() {
+		assertEquals(video, kindOf("Epic Moment - Best Scene Ever", "Clips", isShort = true))
+		assertEquals(video, kindOf("Some random caption", "Uploader", isShort = true))
+		// Explicit evidence still qualifies a short as music.
+		assertEquals(song, kindOf("Zombie 【Guitar Cover】", "OLD MOON CHILD", isShort = true))
+		// Same bar for anything under 90 seconds, shorts URL or not.
+		assertEquals(video, kindOf("Funny Dog - Compilation", "Dogs", durationMs = 45_000L))
+		assertEquals(song, kindOf("Riff (Official Audio)", "Band", durationMs = 45_000L))
+	}
+
+	/**
+	 * The reported false positive. "Cover" as a bare substring used to force
+	 * song; a magazine cover is not a music cover.
+	 */
+	@Test
+	fun `a magazine cover is not a music cover`() {
+		assertEquals(
+			video,
+			kindOf(
+				"President Trump Says His Time Magazine Cover Photo Is 'Super Bad'",
+				"Some News Outlet",
+			),
+		)
+	}
+
+	@Test
+	fun `other non-musical cover contexts are videos`() {
+		assertEquals(video, kindOf("Album Cover Art Reveal", "Design Channel"))
+		assertEquals(video, kindOf("How I Shot the Cover Photo", "Photographer"))
+		assertEquals(video, kindOf("Undercover Boss - Full Episode", "TV Network"))
+	}
+
+	/** The genuine covers must still read as music after the tightening. */
+	@Test
+	fun `real music covers still classify as song`() {
+		assertEquals(song, kindOf("Creep (Acoustic Cover)", "Some Person"))
+		assertEquals(song, kindOf("Toxicity — Drum Cover", "Drummer Dan"))
+		assertEquals(song, kindOf("Wonderwall - Cover by Jane Doe", "Jane Doe"))
+		assertEquals(song, kindOf("My cover of Zombie", "Singer"))
+		assertEquals(song, kindOf("Nothing Else Matters 【Guitar Cover】", "OLD MOON CHILD"))
+	}
+
+	/**
+	 * Real songs whose titles contain commentary/format words. Under the
+	 * video-by-default ladder they need *positive* evidence to land as song —
+	 * a category, a MusicBrainz match, or music vocabulary. That's the
+	 * documented trade: the safety net moved from "default to song" to
+	 * "MusicBrainz knows the recording".
+	 */
+	@Test
+	fun `real songs with ambiguous words are rescued by positive evidence`() {
+		assertEquals(song, kindOf("Chain Reaction", "Diana Ross", mbMatch = true))
+		assertEquals(song, kindOf("Chain Reaction", "Diana Ross", category = "Music"))
+		assertEquals(song, kindOf("Trailer Trash (Official Video)", "Modest Mouse"))
+		assertEquals(song, kindOf("Hearing Damage", "Thom Yorke", mbMatch = true))
+		// Without any positive evidence they fall to video — the accepted cost.
+		assertEquals(video, kindOf("Chain Reaction", "Diana Ross"))
+	}
+
+	/**
+	 * The sitcom compilation that showed "song" until its Comedy category
+	 * arrived: "Season 6 Ep 19" wasn't recognized offline, and the ` - ` then
+	 * read as an artist separator. Episode numbering must decide it with no
+	 * category at all — this is the verdict that stands when the id is lost.
+	 */
+	@Test
+	fun `episode numbering is a video even offline`() {
+		assertEquals(video, kindOf(
+			"The Big Bang Theory Season 6 Ep 19 - Best Scenes", "XxGanishxX"))
+		assertEquals(video, kindOf("Breaking Bad S02E05 - Full Recap", "Clips4U"))
+		assertEquals(video, kindOf("The Office Season 3 Episode 12", "SomeFan"))
+		// …and with the category present the verdict is the same, not fought over.
+		assertEquals(video, kindOf(
+			"The Big Bang Theory Season 6 Ep 19 - Best Scenes", "XxGanishxX",
+			category = "Comedy"))
+	}
+
+	/**
+	 * "EP" is a release format in music — "EP 2" names real records. Episode
+	 * matching requires the season context or the SxxExx shape, so music EPs
+	 * fall through to the music evidence they carry.
+	 */
+	@Test
+	fun `music EPs are not TV episodes`() {
+		assertEquals(song, kindOf("Bloom EP (Full Album)", "Some Band"))
+		assertEquals(song, kindOf("Whirlwind EP 2 (Official Audio)", "Some Band"))
+	}
+
+	/** The actual non-music formats those words describe are caught outright. */
+	@Test
+	fun `reaction videos trailers and hearings are still videos`() {
+		assertEquals(video, kindOf("My Reaction Video to the Finale", "Reactor"))
+		assertEquals(video, kindOf("Reacts to the new trailer", "Streamer"))
+		assertEquals(video, kindOf("Dune Part Two - Official Trailer", "Warner Bros"))
+		assertEquals(video, kindOf("Senate Hearing on AI - Full", "C-SPAN"))
+		// Bare "reaction" is contextual: it loses to MusicBrainz/category but
+		// beats a pipe-split title that merely looks like Artist - Track.
+		assertEquals(video, kindOf(
+			"Marilyn Manson \"Exit Wound\" REACTION | Old School Fan Hears " +
+				"Chapter 2 First Single.",
+			"Some Reactor", durationMs = 11 * 60 * 1000L))
+	}
+
+	/**
+	 * "playthrough" is gaming as often as it is music, so it now needs an
+	 * instrument qualifier — the same rule as "cover".
+	 */
+	@Test
+	fun `playthrough needs an instrument to count as music`() {
+		assertEquals(video, kindOf("Elden Ring Playthrough Part 1", "Gamer"))
+		assertEquals(song, kindOf("Master of Puppets - Guitar Playthrough", "Guitarist"))
+		assertEquals(song, kindOf("Enter Sandman 【Drum Playthrough】", "Drummer"))
+	}
+
+	/**
+	 * Broadcast 2026-07-24T17:35 as `video`: a 42-second performance clip of
+	 * a real song, whose only offline signal was the weak artist-separator
+	 * shape the short-form rule refuses. A MusicBrainz confirmation is
+	 * explicit evidence, so it rescues exactly this case.
+	 */
+	@Test
+	fun `a MusicBrainz match rescues a short performance clip`() {
+		assertEquals(video, kindOf("Maphra - Doomed", durationMs = 42_000L))
+		assertEquals(song, kindOf("Maphra - Doomed", durationMs = 42_000L, mbMatch = true))
+		// It also overrules an ambiguous category…
+		assertEquals(song, kindOf(
+			"Some Artist - Some Song", category = "Entertainment", mbMatch = true))
+		// …but never the blocklist: kind is about the video, not the song it
+		// contains, and a trailer scoring a real song is still a trailer.
+		assertEquals(video, kindOf(
+			"MOVIE Official Trailer (2026)", category = null, mbMatch = true))
+	}
+
+	/**
+	 * Broadcast 2026-07-24T17:27 as `song` on the D4 default: the video id
+	 * (and with it the Education category) was lost by finalize time, and
+	 * nothing else fired. The uploader-declared #shorts tag is evidence that
+	 * survives losing the URL.
+	 */
+	@Test
+	fun `a #shorts tag in the title is short-form even with no url evidence`() {
+		assertEquals(video, kindOf(
+			"Kya Yajooj Majooj Ki Deewar Abhi Bhi Mojood Hai? #shorts",
+			"Times Cover", durationMs = 2 * 60 * 1000L))
+		// Explicit music evidence still wins for a tagged short.
+		assertEquals(song, kindOf("Riff (Guitar Cover) #shorts", "Someone"))
+	}
+
+	/**
+	 * Word boundaries: a music word buried inside a larger word is not a match.
+	 * "discover" is not "cover"; "preview" is not "review".
+	 */
+	@Test
+	fun `does not match music or block words inside larger words`() {
+		// "discover" must not trip the cover rule — it falls to the default,
+		// crucially not *because* of "cover".
+		assertEquals("no music evidence",
+			MusicClassifier.classify("Discover Weekly", "A Channel", 4 * 60 * 1000L, false, null).reason)
+		// "preview" must not trip the "review" blocklist — the default fires,
+		// not the blocklist.
+		assertEquals("no music evidence",
+			MusicClassifier.classify("World Premiere Preview", "A Band", 4 * 60 * 1000L, false, null).reason)
+	}
+}
