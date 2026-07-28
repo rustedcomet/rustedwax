@@ -101,24 +101,29 @@ Scrobble rules, from `hive-scrobbler.ts#finalize`, with one deliberate deviation
 
 Evidence, strongest first — a stronger layer always beats a weaker one:
 
-1. **Format evidence** → video, beating everything including the category (field data showed
-   tutorials and music-news bulletins categorized *Music* by their uploaders): podcast / tutorial /
-   how-to / gameplay / review titles, trailers recognized structurally (`Official Final Trailer`,
-   `Trailer 2`), music-news headlines (`… Releases New Single …`), TV episode numbering
-   (`Season 6 Ep 19`, `S06E19` — but not music's `EP 2`), clip channels (`… Movies`, `… Cinema`,
-   `… Pictures`), game playthroughs without an instrument.
+0. **Auto-generated provenance** → song, above every title rule: music.youtube.com, a `- Topic`
+   channel, or a description beginning *"Provided to YouTube by …"*. These are distributor feeds —
+   the title is catalogue metadata, not a human description — so title heuristics don't apply.
+   It's why a game soundtrack's track called `Tutorial` or `Trailer 2` stays music.
+1. **Format evidence** → video, beating even the category (uploaders do categorize tutorials and
+   music-news bulletins as *Music*): podcast / how-to / gameplay / review titles, `Official
+   Trailer`, music-news headlines (`… Releases New Single …`), TV episode numbering
+   (`Season 6 Ep 19` — but not music's `EP 2`), clip channels (`… Movies`, `… Cinema`),
+   game playthroughs without an instrument.
 2. **YouTube's `Music` category** (needs "Look videos up") → song.
-3. **Hard music evidence** → song, strong enough to overrule a non-music category:
-   music.youtube.com, a **MusicBrainz match** on the artist + recording, an instrument-qualified
-   cover or playthrough.
-4. **A decisive non-music category** → video: Film & Animation, Gaming, News, Sports, Education…
-5. **Commentary words that are also song titles** (`reaction`) → video — below MusicBrainz on
-   purpose, so "Chain Reaction" the song is rescued while reaction videos are caught.
-6. **Music vocabulary** → song: VEVO/`- Topic`/label channels, lyrics / instrumental / remix /
+3. **A MusicBrainz match** on artist + recording → song.
+4. **Commentary words that are also song titles** (`reaction`, `tutorial`, `interview`, `episode`,
+   `Trailer 2`) → video — below provenance and MusicBrainz on purpose, so "Chain Reaction" and a
+   soundtrack's "Tutorial" are rescued while the video formats are caught.
+5. **Cover / playthrough vocabulary** → song, when instrument-qualified. Below the words above,
+   because "Bass Cover Tutorial" is a tutorial about a cover, not a cover.
+6. **A decisive non-music category** → video: Film & Animation, Gaming, News, Sports, Education…
+   then **music vocabulary** → song: VEVO/label channels, lyrics / instrumental / remix /
    live-performance / official-audio wording.
 7. **Weak evidence** — an `Artist - Track`-shaped title — is accepted only for ordinary videos of
-   unknown category, never for shorts, sub-90-second clips, or `#shorts`-tagged titles, and never
-   when a known category said not-music.
+   unknown category, never for shorts, sub-90-second clips, `#shorts`-tagged titles, three-part
+   clip captions (`Blade II | Sewers of the Damned | ClipZone…`), and never when a known category
+   said not-music.
 8. **No evidence at all** → **video**. (Revised from the original song-default: two days of field
    data showed every default-song hit was a news clip, movie scene or vlog. Real music virtually
    always carries a signal above — and MusicBrainz is the safety net for untagged uploads.)
