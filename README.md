@@ -214,10 +214,21 @@ short by then). The fetched page's own title must match what the session is play
 discarded: no `url` beats a wrong `url`.
 
 When the bar never names the video at all — a playlist advancing behind a hidden toolbar fires no
-accessibility event, so it can stay silent for tens of minutes — the app falls back to **searching
-YouTube** for the session's title and channel. That match requires the title, the channel *and* the
-duration to agree, because search results routinely contain a same-titled, same-length cover by a
-different artist. Anything less certain leaves `url` unset.
+accessibility event, so it can stay silent for tens of minutes — the app recovers the id two more
+ways, in order:
+
+1. **The playlist listing.** If the bar ever mentioned a `list=`, the app remembers that playlist for
+   three hours and fetches its page once. That listing names every track with its exact video id,
+   title, channel and length, so the entry being played is identified precisely — and every
+   remaining track in the playlist is then free.
+2. **A YouTube search** for the session's title and channel, when there's no playlist or the track
+   isn't in the part of it that loaded.
+
+The playlist is tried first because it is *exact* where search is only plausible: searching for one
+tested track returned a different upload of the same song by the same artist at the same length,
+which no amount of matching strictness can separate. Either way the match must agree on title,
+duration and channel; anything less certain leaves `url` unset, because a blank link is recoverable
+and a wrong one is not.
 
 > This scrapes an undocumented blob out of the watch page and **will** break when YouTube changes it.
 > Failures are logged as `EXTRACTION FAILED` precisely so breakage is distinguishable from a video

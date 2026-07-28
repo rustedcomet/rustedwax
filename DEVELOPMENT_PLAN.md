@@ -260,12 +260,14 @@ service-owned probe through `ProbeHolder` rather than owning one.
 Not carried over from the original plan: **cross-device dedup (§8)**. Desktop and phone running
 together will still double-scrobble the same listen.
 
-**Phase 4 — Control, exclusivity, metadata fidelity** — *done (v0.4.0–v0.5.2; see PHASE4.md)*
+**Phase 4 — Control, exclusivity, metadata fidelity** — *done (v0.4.0–v0.6.1; see PHASE4.md)*
 Stop switch, browser-only watching with per-session hint binding, evidence-layered kind
 classification (format evidence > category Music > hard music evidence > non-music category >
 contextual words > music vocabulary > weak title shapes > video-by-default), optional address-bar
 watcher with track-lifetime id latching, watch-page enrichment, MusicBrainz artist/recording
-verification, song-only double-listen.
+verification, song-only double-listen, and three-stage video-id recovery — address bar, then the
+playlist listing, then a title+channel+duration search — because the bar goes silent for tens of
+minutes whenever a playlist advances behind a hidden toolbar.
 
 **Phase 5 — Privacy mode**
 `PrivacySecret`, `PrivacyCipher`, `PrivacyEnvelope`, four per-kind toggles matching the extension's
@@ -288,9 +290,12 @@ browser shorts are already in. Also to measure: ad handling inside the session, 
 Shorts publish a session at all. No new permissions; the notification-access grant covers it.
 
 **Phase 7 — Stretch**
-Platform/URL inference table, cross-device dedup v2, video-id resolution by title+channel search
-(for sessions where the address bar never yields one), a personal correction list, and — only if
+Platform/URL inference table, cross-device dedup v2, a personal correction list, and — only if
 Phase 0 shows enough signal — a `movie`/`episode` path.
+
+*Video-id resolution by title+channel search left this list in v0.6.0, and playlist-based
+resolution followed in v0.6.1. Both shipped as part of Phase 4 rather than as stretch work, because
+field logs showed a missing `url` was the common case for playlist listening, not an edge case.*
 
 ---
 
