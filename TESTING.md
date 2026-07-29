@@ -1,6 +1,6 @@
-# Testing RustedWax v0.7.1
+# Testing RustedWax v0.7.2
 
-`dist/rustedwax-0.7.1.apk` — detection, key handling, automatic scrobbling
+`dist/rustedwax-0.7.2.apk` — detection, key handling, automatic scrobbling
 (Phase 3), plus the Phase 4 layer: the Stop switch, YouTube-only exclusivity,
 evidence-based `kind` classification, the optional address-bar watcher,
 watch-page enrichment, and MusicBrainz verification.
@@ -24,7 +24,7 @@ authority and give the app that key. Then revoking it later costs you nothing.
 ## Install
 
 ```bash
-~/Library/Android/sdk/platform-tools/adb install -r dist/rustedwax-0.7.1.apk
+~/Library/Android/sdk/platform-tools/adb install -r dist/rustedwax-0.7.2.apk
 ```
 
 ## 1. Key validation (no chain writes)
@@ -154,7 +154,7 @@ What to try:
 | Replay a song immediately | Second one blocked — Log says "already scrobbled" |
 | Play with the app closed | Still scrobbles; detection lives in the listener service |
 | Turn on airplane mode, play a song through | Scrobble is queued, "N waiting to send" appears; turn networking back on and hit **Retry now** |
-| A pre-roll ad | Ignored — Log says "shorter than 30s (probably an ad)" |
+| A pre-roll ad, or any clip under 30s | Ignored — Log says "under the 30s minimum — too short to count as a listen". This includes short YouTube Shorts, deliberately: a ten-second snippet isn't a listen of the song |
 | Press **Stop** mid-track past 60% | Nothing broadcast, nothing in History — Stop never scrobbles on the way out |
 | Press **Start** again | Monitoring resumes without touching Notification Access |
 | YouTube in one tab + another audio site in another | Each session keeps its own origin; closing one tab doesn't kill the other's scrobble |
@@ -198,7 +198,7 @@ address-bar corroboration, 10 search-based and 8 playlist-based id resolution,
 watch-page extraction, 6 MusicBrainz
 matching.
 
-## Known gaps in v0.7.1
+## Known gaps in v0.7.2
 
 - **Desktop and phone together will double-scrobble.** Dedup is per-device; the
   cross-device check is not implemented. If you run the extension and the app on

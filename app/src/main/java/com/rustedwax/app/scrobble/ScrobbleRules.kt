@@ -24,10 +24,21 @@ object ScrobbleRules {
 	const val DEFAULT_THRESHOLD = 0.6
 
 	/**
-	 * Tracks shorter than this are ignored. Not in upstream — it's here because
-	 * YouTube pre-roll ads publish their own media session with the *video's*
-	 * title and a ~6 s duration (observed in PHASE0 run 1), which would
-	 * otherwise scrobble the song on every ad.
+	 * Tracks shorter than this are ignored. Not in upstream — it was added
+	 * because YouTube pre-roll ads publish their own media session with the
+	 * *video's* title and a ~6 s duration (observed in PHASE0 run 1), which
+	 * would otherwise scrobble the song on every ad.
+	 *
+	 * It now does double duty. A 2026-07-28 shorts-heavy session tripped it 21
+	 * times, and every title was genuine content rather than an ad — including
+	 * a 10 s guitar clip watched through twice (12 s played of 10 s). Those are
+	 * skipped deliberately: a ten-second snippet isn't a listen of the song,
+	 * and admitting them would fill a music logbook with fragments.
+	 *
+	 * Kept as a plain floor rather than exempting `/shorts/`, which the app can
+	 * now detect. The floor is about *length being too short to count*, and
+	 * blocking ads is a side benefit — so the message says that instead of
+	 * calling a real short an ad.
 	 */
 	const val MIN_DURATION_SECONDS = 30L
 
@@ -51,7 +62,8 @@ object ScrobbleRules {
 		if (durationMs < MIN_DURATION_SECONDS * 1000) {
 			return Decision(
 				emptyList(),
-				"track shorter than ${MIN_DURATION_SECONDS}s (probably an ad)",
+				"track is ${durationMs / 1000}s, under the ${MIN_DURATION_SECONDS}s minimum " +
+					"— too short to count as a listen (also blocks pre-roll ads)",
 			)
 		}
 
