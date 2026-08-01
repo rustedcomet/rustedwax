@@ -37,6 +37,11 @@ class HiveBroadcaster(private val rpc: HiveRpc = HiveRpc()) {
 		key: HiveKey,
 		payloadJson: String,
 	): HiveRpc.BroadcastResult {
+		if (!HiveScrobblePayload.serializedHasRequiredYouTubeUrl(payloadJson)) {
+			return HiveRpc.BroadcastResult.Rejected(
+				"refusing YouTube scrobble without a canonical video hyperlink",
+			)
+		}
 		val props = try {
 			rpc.getDynamicGlobalProperties()
 		} catch (e: Exception) {
@@ -59,14 +64,15 @@ class HiveBroadcaster(private val rpc: HiveRpc = HiveRpc()) {
 		)
 
 		val signature = key.sign(TxSerializer.digest(tx))
-		val result = rpc.broadcast(toJson(tx, signature))
-		// The node returns an empty result on success, so fill in the id we
-		// can derive ourselves — otherwise the user has nothing to look up.
-		return if (result is HiveRpc.BroadcastResult.Success && result.txId == null) {
-			result.copy(txId = TxSerializer.transactionId(tx))
-		} else {
-			result
-		}
+		// The node returns an empty result on success, so the id has to be derived
+		// locally — and it is passed *in* rather than filled in afterwards, because
+		// it's what the confirmation step looks the transaction up by. Before
+		// v0.8.4 this was stitched on after the fact, which is how five
+		// transactions that never existed got reported with ids.
+		return rpc.broadcast(
+			signedTx = toJson(tx, signature),
+			expectedTxId = TxSerializer.transactionId(tx),
+		)
 	}
 
 	/** JSON form of the signed transaction, as `broadcast_transaction` expects. */

@@ -21,9 +21,9 @@ import android.media.MediaMetadata
  *
  * **Phase 0 measured that Chromium provides neither 1 nor 2** — it publishes
  * artwork as an embedded bitmap and leaves every URI key unset (PHASE0.md, Q3).
- * So route 3 is expected to be the one that actually fires, and it costs us the
- * `url` field: we can say "this is YouTube" but not "this is *this video*".
- * That is a payload with `platform` and no `url`, which is a supported shape.
+ * So route 3 is expected to be the one that actually fires. It proves the site
+ * but cannot build a payload until the exact id is supplied by browser evidence
+ * or recovered by the playlist/search/watch-page resolver.
  */
 object YouTubeProbe {
 
@@ -106,9 +106,9 @@ object YouTubeProbe {
 		) : Identity
 
 		/**
-		 * Proven to be YouTube, but the specific video is unknown — the
-		 * expected outcome for Chromium browsers. Payload gets `platform` but
-		 * no `url`.
+		 * Proven to be YouTube, but the specific video is unknown — the expected
+		 * intermediate outcome for Chromium browsers. Finalization must recover
+		 * an id or refuse the scrobble; SiteOnly is not broadcastable by itself.
 		 */
 		data class SiteOnly(
 			val host: String,

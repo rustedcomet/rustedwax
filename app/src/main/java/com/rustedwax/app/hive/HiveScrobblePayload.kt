@@ -1,5 +1,6 @@
 package com.rustedwax.app.hive
 
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -30,6 +31,10 @@ data class HiveScrobblePayload(
 	val url: String? = null,
 	val app: String = APP_NAME,
 ) {
+	/** YouTube listens are invalid without the canonical link the indexer renders. */
+	val hasRequiredYouTubeUrl: Boolean
+		get() = platform != PLATFORM_YOUTUBE || url?.let(YOUTUBE_WATCH_URL::matches) == true
+
 	/**
 	 * Compact JSON, key order matching the extension's assignment order so
 	 * on-chain payloads from phone and desktop look identical.
@@ -59,6 +64,16 @@ data class HiveScrobblePayload(
 	}
 
 	companion object {
+		/**
+		 * Applies the same hyperlink invariant to serialized retry-queue entries,
+		 * including entries created by an older build that allowed a missing URL.
+		 */
+		fun serializedHasRequiredYouTubeUrl(json: String): Boolean = runCatching {
+			val payload = JSONObject(json)
+			if (payload.optString("platform") != PLATFORM_YOUTUBE) return@runCatching true
+			YOUTUBE_WATCH_URL.matches(payload.optString("url"))
+		}.getOrDefault(false)
+
 		/**
 		 * JSON string escaping matching JavaScript's `JSON.stringify`.
 		 *
@@ -99,6 +114,9 @@ data class HiveScrobblePayload(
 		const val KIND_SONG = "song"
 		const val KIND_VIDEO = "video"
 		const val KIND_PODCAST = "podcast"
+		const val PLATFORM_YOUTUBE = "youtube"
+		private val YOUTUBE_WATCH_URL =
+			Regex("""^https://www\.youtube\.com/watch\?v=[A-Za-z0-9_-]{11}$""")
 
 		/** ISO-8601 UTC, matching `new Date(...).toISOString()` in the extension. */
 		fun isoTimestamp(epochSeconds: Long): String {

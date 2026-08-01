@@ -1,9 +1,13 @@
 package com.rustedwax.app.scrobble
 
 import android.content.Context
+import com.rustedwax.app.detect.EventLog
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * Durable queue of scrobbles waiting to reach the chain.
@@ -32,6 +36,8 @@ class BroadcastQueue(context: Context) {
 		val json: String,
 		/** Human-readable, for the UI list. */
 		val label: String,
+		val percentPlayed: Int?,
+		val videoId: String?,
 		val attempts: Int,
 		val nextAttemptAtMs: Long,
 		val lastError: String?,
@@ -44,18 +50,26 @@ class BroadcastQueue(context: Context) {
 	fun size(): Int = read().size
 
 	@Synchronized
-	fun add(username: String, json: String, label: String) {
+	fun add(
+		username: String,
+		json: String,
+		label: String,
+		percentPlayed: Int?,
+		videoId: String?,
+	): Boolean {
 		val entries = read().toMutableList()
 		entries += Entry(
 			id = System.currentTimeMillis() + entries.size,
 			username = username,
 			json = json,
 			label = label,
+			percentPlayed = percentPlayed,
+			videoId = videoId,
 			attempts = 0,
 			nextAttemptAtMs = 0,
 			lastError = null,
 		)
-		write(entries)
+		return write(entries)
 	}
 
 	/** Entries whose backoff has elapsed. */
@@ -64,9 +78,9 @@ class BroadcastQueue(context: Context) {
 		read().filter { it.nextAttemptAtMs <= nowMs }
 
 	@Synchronized
-	fun remove(id: Long) {
-		write(read().filterNot { it.id == id })
-	}
+	fun remove(id: Long): Boolean = write(read().filterNot { it.id == id })
+
+	enum class FailureOutcome { RETAINED, DROPPED, NOT_FOUND, STORAGE_ERROR }
 
 	/**
 	 * Record a failed attempt and back off: 1, 2, 4 … minutes, capped at an
@@ -74,16 +88,15 @@ class BroadcastQueue(context: Context) {
 	 * scrobble can't retry forever.
 	 */
 	@Synchronized
-	fun recordFailure(id: Long, error: String): Boolean {
+	fun recordFailure(id: Long, error: String): FailureOutcome {
 		val entries = read().toMutableList()
 		val idx = entries.indexOfFirst { it.id == id }
-		if (idx < 0) return false
+		if (idx < 0) return FailureOutcome.NOT_FOUND
 		val entry = entries[idx]
 		val attempts = entry.attempts + 1
 		if (attempts >= MAX_ATTEMPTS) {
 			entries.removeAt(idx)
-			write(entries)
-			return false
+			return if (write(entries)) FailureOutcome.DROPPED else FailureOutcome.STORAGE_ERROR
 		}
 		val backoff = minOf(MAX_BACKOFF_MS, BASE_BACKOFF_MS shl (attempts - 1))
 		entries[idx] = entry.copy(
@@ -91,13 +104,14 @@ class BroadcastQueue(context: Context) {
 			nextAttemptAtMs = System.currentTimeMillis() + backoff,
 			lastError = error,
 		)
-		write(entries)
-		return true
+		return if (write(entries)) FailureOutcome.RETAINED else FailureOutcome.STORAGE_ERROR
 	}
 
 	@Synchronized
 	fun clear() {
-		runCatching { file.delete() }
+		runCatching { file.delete() }.onFailure {
+			EventLog.append("queue", "STORAGE ERROR clearing retry queue: ${it.message}")
+		}
 	}
 
 	// ── storage ────────────────────────────────────────────────────────
@@ -113,15 +127,32 @@ class BroadcastQueue(context: Context) {
 					username = o.getString("username"),
 					json = o.getString("json"),
 					label = o.optString("label"),
+					percentPlayed = o.optInt("percentPlayed").takeIf {
+						o.has("percentPlayed")
+					},
+					videoId = o.optString("videoId").takeIf { it.isNotBlank() },
 					attempts = o.optInt("attempts"),
 					nextAttemptAtMs = o.optLong("nextAttemptAtMs"),
 					lastError = o.optString("lastError").takeIf { it.isNotBlank() },
 				)
 			}
-		}.getOrDefault(emptyList())
+		}.getOrElse { error ->
+			val backup = File(file.parentFile, "${file.name}.corrupt-${System.currentTimeMillis()}")
+			val recovered = runCatching { file.renameTo(backup) }.getOrDefault(false)
+			EventLog.append(
+				"queue",
+				"STORAGE ERROR reading retry queue: ${error.message}. " +
+					if (recovered) {
+						"Corrupt file preserved as ${backup.name}"
+					} else {
+						"Corrupt file could not be preserved"
+					},
+			)
+			emptyList()
+		}
 	}
 
-	private fun write(entries: List<Entry>) {
+	private fun write(entries: List<Entry>): Boolean {
 		val array = JSONArray()
 		entries.forEach { e ->
 			array.put(
@@ -130,12 +161,35 @@ class BroadcastQueue(context: Context) {
 					.put("username", e.username)
 					.put("json", e.json)
 					.put("label", e.label)
+					.putOpt("percentPlayed", e.percentPlayed)
+					.putOpt("videoId", e.videoId)
 					.put("attempts", e.attempts)
 					.put("nextAttemptAtMs", e.nextAttemptAtMs)
 					.put("lastError", e.lastError ?: ""),
 			)
 		}
-		runCatching { file.writeText(array.toString()) }
+		return runCatching {
+			val temp = File(file.parentFile, "${file.name}.tmp")
+			temp.writeText(array.toString())
+			try {
+				Files.move(
+					temp.toPath(),
+					file.toPath(),
+					StandardCopyOption.REPLACE_EXISTING,
+					StandardCopyOption.ATOMIC_MOVE,
+				)
+			} catch (_: AtomicMoveNotSupportedException) {
+				Files.move(
+					temp.toPath(),
+					file.toPath(),
+					StandardCopyOption.REPLACE_EXISTING,
+				)
+			}
+			true
+		}.getOrElse { error ->
+			EventLog.append("queue", "STORAGE ERROR writing retry queue: ${error.message}")
+			false
+		}
 	}
 
 	private companion object {

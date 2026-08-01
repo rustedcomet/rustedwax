@@ -28,6 +28,13 @@ package com.rustedwax.app.detect
  *    failure anyway.
  *  - `(Remix)` is kept. A remix is a distinct work, usually by a different
  *    artist, so folding it into the original would be wrong rather than tidy.
+ *
+ * ## Trailing hashtags are stripped too
+ *
+ * Short-form titles are largely tag runs, and leaving them in the title makes
+ * the same clip dedup as a different listen every time its tags change. See
+ * [TRAILING_HASHTAGS], and [isHashtagOnly] for the case where the tags are all
+ * there is.
  */
 object TitleParser {
 
@@ -105,6 +112,65 @@ object TitleParser {
 	/** A bare year, as cover uploads tend to append (`… Medusa 2023`). */
 	private val TRAILING_YEAR = Regex("""\s+\(?\[?(?:19|20)\d{2}\)?\]?\s*$""")
 
+	/**
+	 * A trailing run of hashtags, plus whatever emoji or punctuation trails it.
+	 *
+	 * Short-form titles are mostly tags. From the 2026-07-29 session, on-chain
+	 * verbatim: `katter — #guitar #dubstep #djdubstep #fnaf #fivenightsatfreddy`
+	 * and `Rony González — #plena#panama 🇵🇦`.
+	 *
+	 * Two costs, and the second is the one that matters. The entries read as
+	 * spam — and because the tag run is part of the title, the same clip
+	 * reposted with different tags dedups as a different listen and lands twice
+	 * on a chain that can't be edited.
+	 *
+	 * Only a *trailing* run is stripped. A hashtag mid-sentence is doing work
+	 * ("Song Title #2 of the series"), and no table can tell those apart.
+	 * `[\p{L}\p{N}_]` rather than `\w` so non-Latin tags are recognised — the
+	 * session was full of Turkish, Korean and Chinese ones. The trailing
+	 * `[^\p{L}\p{N}]*` is what catches `#plena#panama 🇵🇦`, where a flag emoji
+	 * sits after the last tag.
+	 */
+	private val TRAILING_HASHTAGS =
+		Regex("""(?:\s*#[\p{L}\p{N}_]+)+[^\p{L}\p{N}]*$""")
+
+	/**
+	 * A leading `[tag]` that is *noise* rather than an artist — `[FREE]`,
+	 * `[Future Bass]`, `[4K]`.
+	 *
+	 * Adapted from the desktop extension's `processYtVideoTitle`, which strips a
+	 * leading bracket before anything else. **ASCII only**, deliberately: this
+	 * project already decided the opposite for CJK brackets, because
+	 * `【Bring Me The Horizon】…` names the artist (see [LEADING_BRACKET_ARTIST]).
+	 * An earlier version of this rule stripped both and broke exactly that case —
+	 * `【Artist】Song - Live` became artist `Song`.
+	 */
+	private val LEADING_TAG = Regex("""^\s*\[[^\]]{1,30}\]\s*-*\s*""")
+
+	/**
+	 * A track-number prefix, as album and vinyl rips carry: `03. `, `A1. `,
+	 * `12) `. From the extension's `removeNumericPrefix` and its CD/vinyl rule.
+	 *
+	 * Bounded to two leading characters so a real title starting with a number
+	 * (`1999`, `7 Rings`) is untouched — those have no separator after the digits.
+	 */
+	private val TRACK_NUMBER_PREFIX =
+		Regex("""^\s*(?:[A-Za-z]{1,2}\d{0,2}|\d{1,2})\s*[.)]\s+""")
+
+	/**
+	 * `Artist "Track"` / `Artist - "Track"`. The quotes name the track outright,
+	 * which is stronger than any separator guess. From the extension's
+	 * `ytTitleRegExps`.
+	 */
+	private val QUOTED_TRACK = Regex("""^(.{1,80}?)\s*[-–—:]?\s*"([^"]{1,120})"\s*$""")
+
+	/**
+	 * `Track (by Artist)` / `Track (performed by Artist)` — the one common shape
+	 * where the artist comes *second*. Also from `ytTitleRegExps`.
+	 */
+	private val TRACK_BY_ARTIST =
+		Regex("""^(.{1,80}?)\s*\((?:[^)]*\s)?by\s+([^)]{1,60})\)\s*$""", RegexOption.IGNORE_CASE)
+
 	private val TRAILING_PUNCT = Regex("""[\s\-–—_|｜/／+＋~]+$""")
 
 	private val WORD_SPLIT = Regex("""[\s\-_/]+""")
@@ -151,6 +217,24 @@ object TitleParser {
 			}
 		}
 
+		// Explicit shapes beat separator guessing, because they name which side
+		// is which instead of assuming artist-first. Both adapted from the
+		// desktop extension's `ytTitleRegExps`.
+		QUOTED_TRACK.find(title)?.let { m ->
+			val artist = tidy(m.groupValues[1])
+			val track = finishTrack(m.groupValues[2])
+			if (artist.isNotEmpty() && track.isNotEmpty()) {
+				return Parsed(artist, track)
+			}
+		}
+		TRACK_BY_ARTIST.find(title)?.let { m ->
+			val track = finishTrack(m.groupValues[1])
+			val artist = tidy(m.groupValues[2])
+			if (artist.isNotEmpty() && track.isNotEmpty()) {
+				return Parsed(artist, track)
+			}
+		}
+
 		for (sep in SEPARATORS) {
 			val idx = title.indexOf(sep)
 			if (idx <= 0) continue
@@ -173,7 +257,13 @@ object TitleParser {
 	 * the artist/track split.
 	 */
 	private fun cleanCore(value: String): String {
-		var out = BRACKETED.replace(value) { m ->
+		// Prefixes first, and never down to nothing — `[Remix]` alone is a title
+		// of sorts, and an empty one is worse.
+		var out = TRACK_NUMBER_PREFIX.replace(value, "").ifBlank { value }
+		LEADING_TAG.find(out)?.let { m ->
+			out = out.removeRange(m.range).ifBlank { out }
+		}
+		out = BRACKETED.replace(out) { m ->
 			if (isPromoOnly(m.groupValues[1])) "" else m.value
 		}
 		PIPE_SUFFIX.find(out)?.let { m ->
@@ -181,12 +271,14 @@ object TitleParser {
 		}
 
 		// Trailing junk comes in layers — "…【Guitar Cover】＋Screen Tabs" only
-		// exposes what's behind it once the tab suffix is gone. Loop until
-		// stable.
+		// exposes what's behind it once the tab suffix is gone, and a tag run
+		// hides behind a promo bracket in "…#shorts (Official Video)". Loop
+		// until stable so the order the uploader chose doesn't matter.
 		var changed = true
 		while (changed) {
 			val before = out
 			TRAILING_JUNK.forEach { out = it.replace(out, "") }
+			out = stripTrailingHashtags(out)
 			out = TRAILING_PUNCT.replace(out, "")
 			changed = out != before
 		}
@@ -199,6 +291,34 @@ object TitleParser {
 
 	private fun tidy(value: String): String =
 		TRAILING_PUNCT.replace(value.replace(Regex("""\s{2,}"""), " ").trim(), "").trim()
+
+	/**
+	 * Drops a trailing hashtag run, but never everything.
+	 *
+	 * When the tags *are* the title (`"#guitar"`, `"#plena#panama 🇵🇦"`) the
+	 * original is returned unchanged — a payload needs some title, and an empty
+	 * string is worse than an ugly one. [isHashtagOnly] is how a caller detects
+	 * that case and declines to call it a song.
+	 */
+	fun stripTrailingHashtags(value: String): String {
+		val m = TRAILING_HASHTAGS.find(value) ?: return value
+		val remainder = value.removeRange(m.range).trim()
+		return remainder.ifEmpty { value }
+	}
+
+	/**
+	 * True when nothing but hashtags, emoji and punctuation is left.
+	 *
+	 * A title like `"#guitar #dubstep #fnaf"` names no work. YouTube's own
+	 * `Music` category was enough to make one of those a `song` on-chain, and a
+	 * song with no title isn't a listen — so [MusicClassifier] uses this to
+	 * refuse the `song` kind outright, keeping the entry as the video it
+	 * usefully is.
+	 */
+	fun isHashtagOnly(rawTitle: String): Boolean {
+		val m = TRAILING_HASHTAGS.find(rawTitle) ?: return false
+		return rawTitle.removeRange(m.range).trim().isEmpty()
+	}
 
 	/**
 	 * Drops a trailing year, but only when something is left to say. Without

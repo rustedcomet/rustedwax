@@ -26,9 +26,15 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * Position handling here is the same extrapolation Phase 3 needs: PlaybackState
  * reports a position sampled at `lastPositionUpdateTime`, so live position is
- * `position + (now - sampledAt) * speed`. We also accumulate *real played
+ * `position + (now - sampledAt) * speed`. We also accumulate *played
  * milliseconds* across play/pause, which is what the 60% rule consumes and is
  * computable from this data alone.
+ *
+ * "Played" means **content consumed**, not seconds elapsed: the same `speed`
+ * factor scales the accumulator, because the threshold compares against
+ * `duration`. Watching at 1.25× used to report 67% of a trailer that had been
+ * watched to 79%, and at 2× a video watched in full read 50% and never
+ * scrobbled. See [Watch.accumulate].
  */
 class SessionProbe(context: Context) {
 
@@ -68,25 +74,18 @@ class SessionProbe(context: Context) {
 	var onVideoConfirmed: ((videoId: String) -> Unit)? = null
 
 	/**
-	 * Cached watch-page title for a video id, or null when not fetched yet.
-	 * Used to corroborate a latched video id against what the session is
-	 * actually playing. Cache-only — must never touch the network.
+	 * What a resolved page says about a video id — the two facts that can
+	 * disprove a latch. Deliberately narrow rather than passing `VideoFacts`
+	 * around: the probe corroborates identity, it doesn't consume metadata.
 	 */
-	var pageTitleFor: ((videoId: String) -> String?)? = null
+	data class KnownVideo(val title: String?, val lengthSeconds: Long?)
 
 	/**
-	 * Loose equality for "is the page's video the session's track". Chromium
-	 * sets the media-session title from the video title, so after trimming and
-	 * case-folding they should be equal; containment is allowed because one
-	 * side is sometimes truncated.
+	 * Cached facts for a video id, or null when nothing is known yet. Used to
+	 * corroborate a latched video id against what the session is actually
+	 * playing. Cache-only — must never touch the network.
 	 */
-	private fun titlesMatch(a: String, b: String): Boolean {
-		fun norm(s: String) = s.lowercase().replace(Regex("""\s+"""), " ").trim()
-		val x = norm(a)
-		val y = norm(b)
-		if (x.isEmpty() || y.isEmpty()) return false
-		return x == y || x.contains(y) || y.contains(x)
-	}
+	var knownVideoFor: ((videoId: String) -> KnownVideo?)? = null
 
 	private var started = false
 
@@ -116,6 +115,17 @@ class SessionProbe(context: Context) {
 				watches.values
 					.filter { it.packageName == pkg }
 					.forEach { it.reidentify("address bar") }
+				publish()
+			}
+		}
+		// The accessibility callback sees YouTube's visible ad UI in the same
+		// window snapshot that supplied the `/shorts/` id. Bind that literal
+		// evidence to the matching active track; never infer from its channel.
+		AdEvidence.onEvidence = { evidence ->
+			handler.post {
+				watches.values
+					.filter { it.packageName == evidence.packageName }
+					.forEach { it.noteAdEvidence(evidence) }
 				publish()
 			}
 		}
@@ -151,9 +161,20 @@ class SessionProbe(context: Context) {
 		if (!started) return
 		NotificationHints.onHint = null
 		UrlEvidence.onEvidence = null
+		AdEvidence.onEvidence = null
 		runCatching { sessionManager.removeOnActiveSessionsChangedListener(activeSessionsListener) }
-		watches.values.forEach { it.dispose(finalizeTracks) }
+		// Probe shutdown cannot wait for a replacement session: either score the
+		// last aggregate now (system teardown) or discard it (user Stop).
+		watches.values.forEach {
+			it.dispose(finalize = finalizeTracks, allowContinuation = false)
+		}
 		watches.clear()
+		// Nothing observed before a Stop may survive it — including play time
+		// waiting to be handed to a session that no longer exists.
+		if (!finalizeTracks) {
+			TrackProgressCarry.clear()
+			AdEvidence.clearAll()
+		}
 		started = false
 		EventLog.append(
 			"probe",
@@ -174,7 +195,7 @@ class SessionProbe(context: Context) {
 		for (key in watches.keys - byKey.keys) {
 			watches.remove(key)?.let {
 				EventLog.append("session", "− ${it.packageName} (session ended)")
-				it.dispose()
+				it.dispose(finalize = true, allowContinuation = true)
 			}
 		}
 
@@ -272,6 +293,21 @@ class SessionProbe(context: Context) {
 		private var latchedVideo: YouTubeProbe.Identity.Confirmed? = null
 
 		/**
+		 * Last identity selected while this Watch was still active.
+		 *
+		 * A continuation expiry may run a minute after this Watch was removed
+		 * from [watches], when the live address bar already describes several
+		 * later Shorts. It must spend this value, never re-read that later tab.
+		 */
+		private var lastStableIdentity: YouTubeProbe.Identity? = null
+
+		/** Identity frozen when disappearance opened a continuation window. */
+		private var continuationIdentity: YouTubeProbe.Identity? = null
+
+		/** Exact visible YouTube ad label bound to this track, if one appeared. */
+		private var explicitAdSignal: String? = null
+
+		/**
 		 * Video ids disproven for this track by the watch page's own title not
 		 * matching the session's. Never re-latched; a rejected id also stops
 		 * qualifying as live URL evidence for this track.
@@ -281,8 +317,16 @@ class SessionProbe(context: Context) {
 		private var metadata: MediaMetadata? = controller.metadata
 		private var state: PlaybackState? = controller.playbackState
 
-		/** Real milliseconds spent in STATE_PLAYING for the current track. */
+		/**
+		 * Milliseconds of *content* consumed in the current track — elapsed time
+		 * in STATE_PLAYING, scaled by the playback rate. See [accumulate].
+		 */
 		private var playedMs: Long = 0
+
+		/** Highest rate scored for this track, for the finalize line only. */
+		private var fastestSpeedSeen: Double = 1.0
+		/** End-to-start playback reset observed during this continuous viewing. */
+		private var loopDetected: Boolean = false
 		private var playingSince: Long = if (isPlaying(state)) SystemClock.elapsedRealtime() else 0
 		private var trackKey: String = trackKeyOf(metadata)
 		private var trackStartedAtEpochSec: Long = System.currentTimeMillis() / 1000
@@ -290,27 +334,52 @@ class SessionProbe(context: Context) {
 		/** One finalize per track, however many callbacks announce the end. */
 		private var finalized: Boolean = false
 
+		/**
+		 * Token for progress waiting to see whether Chrome creates a replacement
+		 * MediaSession. While present, disappearance is not a track ending.
+		 */
+		private var continuationToken: Long? = null
+		private var continuationTrackKey: String? = null
+
 		private val callback = object : MediaController.Callback() {
 			override fun onMetadataChanged(md: MediaMetadata?) {
 				val newKey = trackKeyOf(md)
-				if (newKey != trackKey) {
+				val trackChanged = newKey != trackKey
+				if (trackChanged) {
 					EventLog.append(
 						"track",
 						"$packageName track change after ${playedMsNow() / 1000}s played",
 					)
+					// A real metadata change outranks the continuation grace
+					// period: the old track has now demonstrably ended.
+					cancelContinuation()
 					finalizeCurrent("track change")
 					resetForNewTrack()
 					trackKey = newKey
 				}
 				metadata = md
+				if (trackChanged) {
+					// The real title often arrives here rather than at
+					// construction — Chromium publishes a placeholder first — so
+					// this is where a resumed track usually gets its time back.
+					// Assign metadata first so cross-session loop detection
+					// compares against the replacement's real duration.
+					restoreCarriedProgress()
+				}
 				logMetadata(md, "changed")
 				publish()
 			}
 
 			override fun onPlaybackStateChanged(ps: PlaybackState?) {
+				val previousPosition = extrapolatedPosition(state)
 				accumulate()
 				val wasPlaying = isPlaying(state)
 				state = ps
+				notePositionWrap(
+					previousPositionMs = previousPosition,
+					newPositionMs = extrapolatedPosition(ps),
+					acrossSessionRestart = false,
+				)
 				if (isPlaying(ps) && playingSince == 0L) {
 					playingSince = SystemClock.elapsedRealtime()
 				}
@@ -318,6 +387,7 @@ class SessionProbe(context: Context) {
 				// track is often resumed, and finalizing it would scrobble a
 				// half-listen and then dedup-block the real one.
 				if (wasPlaying && ps?.state == PlaybackState.STATE_STOPPED) {
+					cancelContinuation()
 					finalizeCurrent("stopped")
 				}
 				logPlaybackState(ps, "changed")
@@ -326,22 +396,168 @@ class SessionProbe(context: Context) {
 
 			override fun onSessionDestroyed() {
 				EventLog.append("session", "× $packageName destroyed")
-				finalizeCurrent("session destroyed")
+				// Chrome tears sessions down around ad breaks and playlist
+				// transitions. Disappearance starts a continuation window; it is
+				// not itself a track ending.
+				deferForContinuation("session destroyed")
 				publish()
 			}
-
 		}
 
 		init {
 			controller.registerCallback(callback, handler)
+			// A session that appears already knowing its track is usually a
+			// replacement for one Chrome just tore down.
+			restoreCarriedProgress()
 		}
 
-		fun dispose(finalize: Boolean = true) {
-			// A session disappearing is the last chance to score the track —
-			// closing the tab never produces a STOPPED state. A user-initiated
-			// Stop is the one case where we deliberately walk away from it.
-			if (finalize) finalizeCurrent("session ended")
+		fun dispose(finalize: Boolean = true, allowContinuation: Boolean = true) {
+			when {
+				!finalize -> cancelContinuation()
+				allowContinuation -> deferForContinuation("session ended")
+				else -> {
+					// System teardown cannot observe a replacement. Score the
+					// aggregate now; user Stop passes finalize=false above.
+					cancelContinuation()
+					finalizeCurrent("probe ended")
+				}
+			}
 			runCatching { controller.unregisterCallback(callback) }
+		}
+
+		/**
+		 * Hold this track for a replacement MediaSession without scoring the
+		 * fragment on its own.
+		 *
+		 * If no matching replacement claims the progress during [TrackProgressCarry.TTL_MS],
+		 * the delayed callback finalizes the aggregate exactly once. A token keeps
+		 * an older callback from consuming a newer continuation with the same key.
+		 */
+		private fun deferForContinuation(reason: String) {
+			if (finalized || continuationToken != null || metadata == null) return
+			accumulate()
+			val now = System.currentTimeMillis()
+			val key = trackKey
+			// This Watch leaves the active map immediately after disappearance.
+			// Freeze what it knew while active; the expiry callback must not
+			// acquire whatever id the foreground tab names a minute later.
+			val frozenIdentity = lastStableIdentity ?: YouTubeProbe.Identity.Unconfirmed(
+				"identity was not established before the session ended",
+			)
+			val token = TrackProgressCarry.remember(
+				packageName = packageName,
+				trackKey = key,
+				progress = TrackProgressCarry.Progress(
+					playedMs = playedMs,
+					trackStartedAtEpochSec = trackStartedAtEpochSec,
+					fastestSpeedSeen = fastestSpeedSeen,
+					atMillis = now,
+					lastPositionMs = extrapolatedPosition(state),
+					loopDetected = loopDetected,
+					identity = frozenIdentity,
+					explicitAdSignal = explicitAdSignal,
+				),
+			) ?: return
+			continuationIdentity = frozenIdentity
+			continuationToken = token
+			continuationTrackKey = key
+			EventLog.append(
+				"session",
+				"$packageName [$reason] waiting ${TrackProgressCarry.TTL_MS / 1000}s " +
+					"for a replacement session before finalizing",
+			)
+			handler.postDelayed(
+				{
+					val expired = TrackProgressCarry.expire(packageName, key, token)
+					if (expired != null && continuationToken == token && !finalized) {
+						continuationToken = null
+						continuationTrackKey = null
+						finalizeCurrent("session continuation expired")
+					}
+				},
+				TrackProgressCarry.TTL_MS + CONTINUATION_TIMER_SLOP_MS,
+			)
+		}
+
+		private fun cancelContinuation() {
+			val token = continuationToken ?: return
+			val key = continuationTrackKey ?: trackKey
+			TrackProgressCarry.cancel(packageName, key, token)
+			continuationToken = null
+			continuationTrackKey = null
+		}
+
+		/**
+		 * Take back play time from a session that vanished mid-track.
+		 *
+		 * `trackStartedAtEpochSec` is restored along with the clock, so the
+		 * on-chain `timestamp` names when the listen actually began rather than
+		 * when Chrome happened to rebuild its session — and so the dedup key stays
+		 * stable across the restart.
+		 */
+		private fun restoreCarriedProgress() {
+			val carried = TrackProgressCarry.claim(packageName, trackKey) ?: return
+			playedMs = carried.playedMs
+			trackStartedAtEpochSec = carried.trackStartedAtEpochSec
+			fastestSpeedSeen = carried.fastestSpeedSeen
+			loopDetected = carried.loopDetected
+			carried.identity?.let { identity ->
+				lastStableIdentity = when (identity) {
+					is YouTubeProbe.Identity.Confirmed -> identity.copy(
+						source = "${identity.source} (carried across session restart)",
+					).also {
+						latchedVideo = it
+						onVideoConfirmed?.invoke(it.videoId)
+					}
+					else -> identity
+				}
+			}
+			explicitAdSignal = carried.explicitAdSignal
+			notePositionWrap(
+				previousPositionMs = carried.lastPositionMs,
+				newPositionMs = extrapolatedPosition(state),
+				acrossSessionRestart = true,
+			)
+			EventLog.append(
+				"session",
+				"$packageName resumed \"$trackKey\" after a session restart — " +
+					"carrying ${carried.playedMs / 1000}s of play time forward" +
+					when {
+						loopDetected && explicitAdSignal != null ->
+							", a detected loop, and explicit ad evidence"
+						loopDetected -> " and a detected loop"
+						explicitAdSignal != null -> " and explicit ad evidence"
+						else -> ""
+					},
+			)
+		}
+
+		/**
+		 * Record a strict end-to-start position reset.
+		 *
+		 * MediaSession exposes no "automatic loop" bit. The position boundary
+		 * is the literal evidence available, and [positionWrapped] deliberately
+		 * requires both ends of the item so ordinary backward seeking does not
+		 * qualify.
+		 */
+		private fun notePositionWrap(
+			previousPositionMs: Long?,
+			newPositionMs: Long?,
+			acrossSessionRestart: Boolean,
+		) {
+			if (loopDetected || !positionWrapped(previousPositionMs, newPositionMs, durationOf(metadata))) {
+				return
+			}
+			loopDetected = true
+			EventLog.append(
+				"playback",
+				"$packageName playback position wrapped from end to start" +
+					if (acrossSessionRestart) {
+						" across a session restart — loop detected"
+					} else {
+						" — loop detected"
+					},
+			)
 		}
 
 		/**
@@ -359,18 +575,27 @@ class SessionProbe(context: Context) {
 				"finalize",
 				"$packageName [$reason] ${snapshot.title ?: "<untitled>"} — " +
 					"played ${snapshot.playedMs / 1000}s of " +
-					"${(snapshot.durationMs ?: 0) / 1000}s",
+					"${(snapshot.durationMs ?: 0) / 1000}s" +
+					// Named only when it applies, so the ordinary line is unchanged
+					// and a sped-up listen is obvious rather than looking like a
+					// mis-measured one.
+					if (fastestSpeedSeen > 1.0) " (up to ${fastestSpeedSeen}× speed)" else "",
 			)
 			onTrackFinalized?.invoke(snapshot)
 		}
 
 		private fun resetForNewTrack() {
 			playedMs = 0
+			fastestSpeedSeen = 1.0
+			loopDetected = false
 			playingSince = if (isPlaying(state)) SystemClock.elapsedRealtime() else 0
 			trackStartedAtEpochSec = System.currentTimeMillis() / 1000
 			finalized = false
 			taintedReason = null
 			latchedVideo = null
+			lastStableIdentity = null
+			continuationIdentity = null
+			explicitAdSignal = null
 			rejectedVideoIds.clear()
 		}
 
@@ -380,6 +605,11 @@ class SessionProbe(context: Context) {
 		 * the taint rule, and latching the video id for the track's lifetime.
 		 */
 		private fun identityOf(md: MediaMetadata?): YouTubeProbe.Identity {
+			// A Watch waiting outside the active map has ended. Its identity was
+			// frozen at disappearance; consulting live evidence here is the exact
+			// race that paired Karol G's progress with the next Short's payload.
+			continuationIdentity?.let { return it }
+
 			val sessionTitle = titleOf(md)
 			val hint = NotificationHints.bestFor(
 				packageName = packageName,
@@ -391,6 +621,7 @@ class SessionProbe(context: Context) {
 			val url = UrlEvidence.get(packageName)
 				?.takeUnless { it.videoId != null && it.videoId in rejectedVideoIds }
 			val live = YouTubeProbe.identify(md, hint, url, soleSession)
+			var rejectedThisPass = false
 
 			if (live is YouTubeProbe.Identity.Unconfirmed && live.provenOtherSite) {
 				if (taintedReason == null) {
@@ -411,29 +642,71 @@ class SessionProbe(context: Context) {
 				onVideoConfirmed?.invoke(live.videoId)
 			}
 
-			// Corroborate the latch once enrichment has the page: the watch
-			// page's own title must match what the session is playing. A clear
-			// mismatch means the bar was already showing some other video when
-			// we latched — drop the id rather than broadcast a wrong url.
+			// Corroborate the latch once a page is known: what it says must match
+			// what the session is playing. A clear mismatch means the bar was
+			// already showing some other video when we latched — drop the id
+			// rather than broadcast a wrong url.
+			//
+			// Two independent checks, because either can be unavailable. The
+			// title is the stronger signal but absent whenever the fetch failed;
+			// the duration survives that, and it is what the 2026-07-29
+			// wrong-url case turned on. See [durationsDisagree].
 			latchedVideo?.let { l ->
-				val pageTitle = pageTitleFor?.invoke(l.videoId)
-				if (pageTitle != null && sessionTitle != null &&
-					!titlesMatch(pageTitle, sessionTitle)
-				) {
+				val known = knownVideoFor?.invoke(l.videoId)
+				val disagreement = when {
+					known == null -> null
+					known.title != null && sessionTitle != null &&
+						!titlesMatch(known.title, sessionTitle) ->
+						"page title \"${known.title}\" ≠ session title \"$sessionTitle\""
+					durationsDisagree(durationOf(md), known.lengthSeconds) ->
+						"page is ${known.lengthSeconds}s but the session is playing " +
+							"${(durationOf(md) ?: 0) / 1000}s"
+					else -> null
+				}
+				if (disagreement != null) {
 					EventLog.append(
 						"identity",
-						"$packageName unlatched ${l.videoId}: page title " +
-							"\"$pageTitle\" ≠ session title \"$sessionTitle\"",
+						"$packageName unlatched ${l.videoId}: $disagreement",
 					)
 					rejectedVideoIds += l.videoId
 					latchedVideo = null
+					rejectedThisPass = true
 				}
 			}
 
-			taintedReason?.let {
-				return YouTubeProbe.Identity.Unconfirmed("another site was proven earlier: $it", true)
+			val selected = taintedReason?.let {
+				YouTubeProbe.Identity.Unconfirmed("another site was proven earlier: $it", true)
+			} ?: identityAfterCorroboration(
+				latched = latchedVideo,
+				live = live,
+				rejectedVideoIds = rejectedVideoIds,
+				rejectedThisPass = rejectedThisPass,
+			)
+			lastStableIdentity = selected
+			if (selected is YouTubeProbe.Identity.Confirmed && selected.isShort) {
+				AdEvidence.get(packageName, selected.videoId)?.let(::noteAdEvidence)
 			}
-			return latchedVideo ?: live
+			return selected
+		}
+
+		/**
+		 * Persist explicit ad evidence only when it names this exact Short.
+		 *
+		 * The id binding is mandatory. A visible watch-page pre-roll label sits
+		 * over the real video's URL; treating the package alone as sufficient
+		 * would veto the content the user actually chose.
+		 */
+		fun noteAdEvidence(evidence: AdEvidence.Evidence) {
+			val identity =
+				latchedVideo ?: (lastStableIdentity as? YouTubeProbe.Identity.Confirmed)
+			if (!adEvidenceMatches(identity, evidence)) return
+			if (explicitAdSignal == evidence.signal) return
+			explicitAdSignal = evidence.signal
+			EventLog.append(
+				"ad",
+				"$packageName bound explicit ad evidence to ${evidence.videoId}: " +
+					"\"${evidence.signal}\"",
+			)
 		}
 
 		/** The hint the probe is currently bound to, for the diagnostics card. */
@@ -445,16 +718,39 @@ class SessionProbe(context: Context) {
 				soleSession = soleSession,
 			)
 
-		/** Folds elapsed playing time into [playedMs] and restarts the clock. */
+		/**
+		 * Folds the elapsed window into [playedMs] and restarts the clock.
+		 *
+		 * Scaled by the playback rate, which is the whole point: the threshold
+		 * compares against `duration`, so what has to be measured is *content
+		 * consumed*, not seconds elapsed. A 2026-07-29 field session watched a
+		 * 76 s trailer at 1.25× to position 59.9 s — 79% of the video — and it
+		 * went on-chain as 67%, because 50 s of wall-clock had passed. At 2× the
+		 * same arithmetic puts a fully-watched video at 50% and it never
+		 * scrobbles at all.
+		 *
+		 * Read from `state` deliberately *before* the caller assigns the new one:
+		 * the window that just ended was played at the rate that was in effect
+		 * during it, not at the rate being switched to.
+		 */
 		private fun accumulate() {
 			if (playingSince != 0L) {
-				playedMs += SystemClock.elapsedRealtime() - playingSince
+				val speed = speedOf(state)
+				val elapsed = SystemClock.elapsedRealtime() - playingSince
+				playedMs += (elapsed * speed).toLong()
+				if (speed > fastestSpeedSeen) fastestSpeedSeen = speed
 				playingSince = 0
 			}
 		}
 
 		private fun playedMsNow(): Long =
-			playedMs + if (playingSince != 0L) SystemClock.elapsedRealtime() - playingSince else 0
+			playedMs + if (playingSince != 0L) {
+				((SystemClock.elapsedRealtime() - playingSince) * speedOf(state)).toLong()
+			} else {
+				0
+			}
+
+		private fun speedOf(ps: PlaybackState?): Double = speedFactor(ps?.playbackSpeed)
 
 		fun logMetadata(md: MediaMetadata?, reason: String) {
 			EventLog.appendBlock("metadata", "$packageName ($reason)", MetadataDump.dump(md))
@@ -505,12 +801,18 @@ class SessionProbe(context: Context) {
 			MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_ARTIST)
 				?: MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE)
 
+		private fun durationOf(md: MediaMetadata?): Long? =
+			MetadataDump.longOrNull(md, MediaMetadata.METADATA_KEY_DURATION)
+
 		fun snapshot(): SessionSnapshot {
 			val md = metadata
 			val ps = state
 			val duration = MetadataDump.longOrNull(md, MediaMetadata.METADATA_KEY_DURATION)
 			val position = extrapolatedPosition(ps)
 			val played = playedMsNow()
+			// Resolve identity before reading explicitAdSignal: identityOf may
+			// consume fresh id-bound ad evidence from the accessibility bridge.
+			val identity = identityOf(md)
 			return SessionSnapshot(
 				packageName = packageName,
 				appLabel = appLabel,
@@ -521,12 +823,16 @@ class SessionProbe(context: Context) {
 				durationMs = duration,
 				positionMs = position,
 				playedMs = played,
+				loopDetected = loopDetected,
+				explicitAdSignal = explicitAdSignal,
 				playbackState = stateName(ps?.state ?: PlaybackState.STATE_NONE),
 				isPlaying = isPlaying(ps),
-				// Percent-of-duration using real played time — the input the
-				// 60% / 160% rule in ScrobbleRules will consume in Phase 3.
+				// Percent-of-duration using content played — the input the
+				// 60% / 160% rule in ScrobbleRules consumes. Both sides of this
+				// division are content milliseconds, which is why the accumulator
+				// has to be speed-scaled.
 				percentPlayed = duration?.takeIf { it > 0 }?.let { played.toDouble() / it },
-				identity = identityOf(md),
+				identity = identity,
 				notificationHint = boundHint(md),
 				metadataLines = MetadataDump.dump(md),
 				trackStartedAtEpochSec = trackStartedAtEpochSec,
@@ -569,6 +875,158 @@ class SessionProbe(context: Context) {
 	}
 
 	companion object {
+		/** Handler and wall clocks can differ by a few milliseconds. */
+		private const val CONTINUATION_TIMER_SLOP_MS = 250L
+
+		/**
+		 * Select an identity after latch corroboration without resurrecting a
+		 * value that the same pass just disproved.
+		 *
+		 * v0.8.8 cleared `latchedVideo` and then returned
+		 * `latchedVideo ?: live`. When `live` was the value just rejected, the
+		 * clear was undone in the return expression and the wrong id reached
+		 * enrichment. A later active callback may still latch a different,
+		 * corroborated id; only this contradictory pass fails closed.
+		 */
+		fun identityAfterCorroboration(
+			latched: YouTubeProbe.Identity.Confirmed?,
+			live: YouTubeProbe.Identity,
+			rejectedVideoIds: Set<String>,
+			rejectedThisPass: Boolean,
+		): YouTubeProbe.Identity {
+			if (rejectedThisPass) {
+				return YouTubeProbe.Identity.Unconfirmed(
+					"the latched video id was disproven for this track",
+				)
+			}
+			latched?.let { return it }
+			if (live is YouTubeProbe.Identity.Confirmed &&
+				live.videoId in rejectedVideoIds
+			) {
+				return YouTubeProbe.Identity.Unconfirmed(
+					"video id ${live.videoId} was disproven for this track",
+				)
+			}
+			return live
+		}
+
+		/**
+		 * Explicit ad UI only belongs to the current Short whose id was read in
+		 * the same browser window. Package-only binding would turn a watch-page
+		 * pre-roll into a veto on the real content behind it.
+		 */
+		fun adEvidenceMatches(
+			identity: YouTubeProbe.Identity.Confirmed?,
+			evidence: AdEvidence.Evidence,
+		): Boolean =
+			identity?.isShort == true && identity.videoId == evidence.videoId
+
+		/**
+		 * Loose equality for "is the page's video the session's track". Chromium
+		 * sets the media-session title from the video title, so after trimming and
+		 * case-folding they should be equal; containment is allowed because one
+		 * side is sometimes truncated.
+		 */
+		fun titlesMatch(a: String, b: String): Boolean {
+			fun norm(s: String) = s.lowercase().replace(Regex("""\s+"""), " ").trim()
+			val x = norm(a)
+			val y = norm(b)
+			if (x.isEmpty() || y.isEmpty()) return false
+			return x == y || x.contains(y) || y.contains(x)
+		}
+
+		/**
+		 * Second, independent corroboration of a latched id: does the page's length
+		 * match what the session says it's playing?
+		 *
+		 * Added because the title check **fails open**. On 2026-07-29 the address
+		 * bar was 7 seconds late advancing a playlist, so a Danger Man track latched
+		 * the *previous* entry's id — and the page fetch for that id had already
+		 * timed out, so there was no title to compare and the stale id survived onto
+		 * the chain with a `url` pointing at Daddy Yankee's "Con Calma". The
+		 * durations were 226 s against 193 s: the mismatch was sitting right there.
+		 *
+		 * Tolerance is both absolute *and* proportional, and it has to be both.
+		 * `lengthSeconds` and the session's `DURATION` routinely differ by a second
+		 * of rounding, so a flat threshold alone is too noisy; a percentage alone
+		 * would let a 30-second disagreement pass on a two-hour video.
+		 */
+		fun durationsDisagree(sessionMs: Long?, pageSeconds: Long?): Boolean {
+			if (sessionMs == null || sessionMs <= 0 || pageSeconds == null || pageSeconds <= 0) {
+				return false
+			}
+			val pageMs = pageSeconds * 1000
+			val diff = kotlin.math.abs(sessionMs - pageMs)
+			val longer = maxOf(sessionMs, pageMs)
+			return diff > DURATION_TOLERANCE_MS &&
+				diff > longer * DURATION_TOLERANCE_FRACTION
+		}
+
+		/**
+		 * Strict evidence that the same media item restarted at its beginning.
+		 *
+		 * Both boundary checks and the minimum jump are required. A person may
+		 * seek backward anywhere in a long video; only a transition from the
+		 * final 20% to the first 20%, covering at least half the duration,
+		 * counts as the continuous loop signal used by the scrobble cap.
+		 */
+		fun positionWrapped(
+			previousPositionMs: Long?,
+			newPositionMs: Long?,
+			durationMs: Long?,
+		): Boolean {
+			if (previousPositionMs == null || newPositionMs == null ||
+				durationMs == null || durationMs <= 0 ||
+				previousPositionMs < 0 || newPositionMs < 0
+			) {
+				return false
+			}
+			val nearEnd = previousPositionMs.toDouble() >= durationMs * LOOP_END_FRACTION
+			val nearStart = newPositionMs.toDouble() <= durationMs * LOOP_START_FRACTION
+			val largeReset =
+				previousPositionMs - newPositionMs >= durationMs * LOOP_MIN_RESET_FRACTION
+			return nearEnd && nearStart && largeReset
+		}
+
+		/**
+		 * Ceiling on the rate [Watch.accumulate] will scale by.
+		 *
+		 * YouTube's own maximum is 2×; this leaves headroom for players that
+		 * offer more while refusing to let one absurd `playbackSpeed` sample turn
+		 * ten seconds of play into a full listen.
+		 */
+		const val MAX_PLAYBACK_SPEED = 4.0
+
+		/** Rounding slack between `lengthSeconds` and the session's `DURATION`. */
+		const val DURATION_TOLERANCE_MS = 5_000L
+
+		/** Also required, so long videos aren't held to the flat 5 s. */
+		const val DURATION_TOLERANCE_FRACTION = 0.05
+
+		const val LOOP_END_FRACTION = 0.8
+		const val LOOP_START_FRACTION = 0.2
+		const val LOOP_MIN_RESET_FRACTION = 0.5
+
+		/**
+		 * The rate to score a play window at, given what `PlaybackState`
+		 * reported.
+		 *
+		 * Non-positive — paused, or simply unreported — is **not** an instruction
+		 * to count zero. `playingSince` already decides whether a window counts
+		 * at all; a `speed=0.0` sample landing mid-window would otherwise erase
+		 * time genuinely spent playing. A missing value means "assume normal
+		 * speed", which is the pre-v0.8.1 behaviour.
+		 *
+		 * Clamped above so one absurd sample can't turn ten seconds into a full
+		 * listen. Extracted here, away from the Android types, so those rules are
+		 * unit-testable.
+		 */
+		fun speedFactor(reported: Float?): Double {
+			val raw = reported?.toDouble() ?: return 1.0
+			if (!raw.isFinite() || raw <= 0.0) return 1.0
+			return raw.coerceAtMost(MAX_PLAYBACK_SPEED)
+		}
+
 		/** True if the app's notification listener is currently enabled. */
 		fun hasNotificationAccess(context: Context): Boolean {
 			val enabled = android.provider.Settings.Secure.getString(
@@ -579,4 +1037,5 @@ class SessionProbe(context: Context) {
 			return enabled.split(':').any { it.startsWith("$pkg/") }
 		}
 	}
+
 }

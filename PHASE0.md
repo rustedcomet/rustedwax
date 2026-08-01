@@ -1,5 +1,9 @@
 # Phase 0 — Detection spike (YouTube in Brave)
 
+> **Historical engineering record.** This document describes the Phase 0 spike and includes
+> present-tense statements that were true for those builds, not for v0.8.6. Use
+> [README.md](README.md) for current behavior and [TESTING.md](TESTING.md) for current verification.
+
 The build in `app/` does one thing: report exactly what Android's media-session
 API exposes about **YouTube playing in Brave**. No keys, no network, no crypto,
 no broadcast. It exists to answer the questions that block Phase 1, before any

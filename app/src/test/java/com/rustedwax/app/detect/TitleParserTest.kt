@@ -168,4 +168,173 @@ class TitleParserTest {
 		val parsed = TitleParser.parse("- Track", "Channel")
 		assertEquals("Channel", parsed.artist)
 	}
+
+	// region shapes adapted from the desktop extension's ytTitleRegExps
+
+	/** Quotes name the track outright, which beats guessing at a separator. */
+	@Test
+	fun `splits a quoted track`() {
+		TitleParser.parse("""BABYMETAL "Gimme Chocolate!!"""", "Some Channel").let {
+			assertEquals("BABYMETAL", it.artist)
+			assertEquals("Gimme Chocolate!!", it.track)
+		}
+		TitleParser.parse("""Korn - "Trash"""", "KornVEVO").let {
+			assertEquals("Korn", it.artist)
+			assertEquals("Trash", it.track)
+		}
+	}
+
+	/** The one common shape where the artist comes second. */
+	@Test
+	fun `splits Track (by Artist)`() {
+		TitleParser.parse("Nevada (by Vicetone)", "Some Channel").let {
+			assertEquals("Vicetone", it.artist)
+			assertEquals("Nevada", it.track)
+		}
+		TitleParser.parse("Yesterday (performed by The Beatles)", null).let {
+			assertEquals("The Beatles", it.artist)
+			assertEquals("Yesterday", it.track)
+		}
+	}
+
+	/** Album and vinyl rips carry a track number the chain shouldn't see. */
+	@Test
+	fun `strips a track-number prefix`() {
+		assertEquals("Trash", TitleParser.clean("03. Trash"))
+		assertEquals("Trash", TitleParser.clean("A1. Trash"))
+		assertEquals("Trash", TitleParser.clean("12) Trash"))
+		TitleParser.parse("07. Korn - Trash", null).let {
+			assertEquals("Korn", it.artist)
+			assertEquals("Trash", it.track)
+		}
+	}
+
+	/** A number that *is* the title has no separator after it, so it survives. */
+	@Test
+	fun `does not strip numbers that are part of the title`() {
+		assertEquals("1999", TitleParser.clean("1999"))
+		assertEquals("7 Rings", TitleParser.clean("7 Rings"))
+		assertEquals("100 Bad Days", TitleParser.clean("100 Bad Days"))
+	}
+
+	/** A leading genre tag is noise — but only when an artist survives without it. */
+	@Test
+	fun `strips a leading tag when a separator survives`() {
+		TitleParser.parse("[Future Bass] Vicetone - Nevada", null).let {
+			assertEquals("Vicetone", it.artist)
+			assertEquals("Nevada", it.track)
+		}
+	}
+
+	/**
+	 * Regression guard for the interaction: the reported guitar cover puts the
+	 * *artist* in a leading CJK bracket, so the tag strip must not eat it.
+	 */
+	@Test
+	fun `keeps a leading bracket that names the artist`() {
+		val parsed = TitleParser.parse(
+			"【Bring Me The Horizon】I Used to Make Out With Medusa",
+			"OLD MOON CHILD",
+		)
+		assertEquals("Bring Me The Horizon", parsed.artist)
+		assertEquals("I Used to Make Out With Medusa", parsed.track)
+	}
+	// endregion
+
+	// region trailing hashtags
+	//
+	// All of these went on-chain verbatim in the 2026-07-29 session. The cost
+	// isn't only cosmetic: the tag run is part of the title, so the same clip
+	// reposted with different tags dedups as a different listen.
+
+	@Test
+	fun `strips a trailing hashtag run`() {
+		assertEquals(
+			"Rüyamda seni gördüm",
+			TitleParser.clean(
+				"Rüyamda seni gördüm #ilkveson #dizi #blutv #hazalsubaşı #ulastunaastepe",
+			),
+		)
+		assertEquals(
+			"🏫Un reggaeton educativo",
+			TitleParser.clean("🏫Un reggaeton educativo #insulini #reggaeton #perreo #poliglota"),
+		)
+	}
+
+	/** Non-Latin tags: the session was full of Turkish, Korean and Chinese ones. */
+	@Test
+	fun `strips non-latin hashtags`() {
+		assertEquals(
+			"下班后的日常",
+			TitleParser.clean("下班后的日常 #老人与海 #shortsvideo #dance #护士跳舞"),
+		)
+	}
+
+	/** `#plena#panama 🇵🇦` — no spaces between tags, an emoji after the last one. */
+	@Test
+	fun `strips runs with no spaces and trailing emoji`() {
+		assertTrue(TitleParser.isHashtagOnly("#plena#panama 🇵🇦"))
+		assertEquals(
+			"PREGUNTO.",
+			TitleParser.clean("PREGUNTO. #oldveteran #plena #reggaeespañol #panama"),
+		)
+	}
+
+	@Test
+	fun `keeps a hashtag that is not trailing`() {
+		assertEquals("Song #2 of the series", TitleParser.clean("Song #2 of the series"))
+	}
+
+	/**
+	 * `#` is also a sharp. A tag needs word characters immediately after the
+	 * hash, which a note name never has — the letter comes *before* it.
+	 */
+	@Test
+	fun `does not mistake sharp notes for hashtags`() {
+		assertEquals("Prelude in C#", TitleParser.clean("Prelude in C#"))
+		assertEquals("Nocturne in C# Minor", TitleParser.clean("Nocturne in C# Minor"))
+		assertEquals("Learn C# Programming", TitleParser.clean("Learn C# Programming"))
+		assertFalse(TitleParser.isHashtagOnly("Prelude in C#"))
+	}
+
+	/**
+	 * A tag run hiding behind a promo bracket. The clean loop has to reach it
+	 * whichever order the uploader used.
+	 */
+	@Test
+	fun `strips a hashtag run behind promotional noise`() {
+		assertEquals("Song", TitleParser.clean("Song #shorts (Official Video)"))
+		assertEquals("Song", TitleParser.clean("Song (Official Video) #shorts"))
+	}
+
+	/**
+	 * When the tags are all there is, the title is returned unchanged — a
+	 * payload needs some title, and empty is worse than ugly. The classifier
+	 * uses [TitleParser.isHashtagOnly] to refuse the `song` kind instead.
+	 */
+	@Test
+	fun `never strips a title down to nothing`() {
+		assertEquals("#guitar", TitleParser.clean("#guitar"))
+		assertEquals(
+			"#guitar #dubstep #djdubstep #fnaf",
+			TitleParser.clean("#guitar #dubstep #djdubstep #fnaf"),
+		)
+	}
+
+	@Test
+	fun `recognises a title that is only hashtags`() {
+		assertTrue(TitleParser.isHashtagOnly("#guitar #dubstep #fnaf"))
+		assertTrue(TitleParser.isHashtagOnly("#skrillex #electricguitar  #dubstep"))
+		assertFalse(TitleParser.isHashtagOnly("That's sharp 🔥 #artist #music #guitar"))
+		assertFalse(TitleParser.isHashtagOnly("Blackened"))
+	}
+
+	/** Tags must not survive into the artist half of a split, either. */
+	@Test
+	fun `strips tags before splitting artist and track`() {
+		val parsed = TitleParser.parse("Slayer - South of Heaven #metal #thrash", null)
+		assertEquals("Slayer", parsed.artist)
+		assertEquals("South of Heaven", parsed.track)
+	}
+	// endregion
 }

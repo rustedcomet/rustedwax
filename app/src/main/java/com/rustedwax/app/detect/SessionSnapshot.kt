@@ -20,8 +20,23 @@ data class SessionSnapshot(
 	val album: String?,
 	val durationMs: Long?,
 	val positionMs: Long?,
-	/** Real time spent in STATE_PLAYING for this track — drives the 60% rule. */
+	/**
+	 * Content consumed in this track — time in STATE_PLAYING scaled by the
+	 * playback rate. Drives the 60% rule, so it has to be in the same units as
+	 * [durationMs]. See `SessionProbe.Watch.accumulate`.
+	 */
 	val playedMs: Long,
+	/**
+	 * True when playback was observed moving from the end of this media item
+	 * back to its beginning during the same continuous viewing. Carried across
+	 * Chromium media-session recreation.
+	 */
+	val loopDetected: Boolean,
+	/**
+	 * Exact visible YouTube UI label that marked this `/shorts/` track as an
+	 * advertisement, or null when no explicit label was observed.
+	 */
+	val explicitAdSignal: String? = null,
 	val playbackState: String,
 	val isPlaying: Boolean,
 	/** playedMs / durationMs; null when duration is unknown. */
@@ -40,15 +55,7 @@ data class SessionSnapshot(
 		get() = identity is YouTubeProbe.Identity.Confirmed ||
 			identity is YouTubeProbe.Identity.SiteOnly
 
-	/**
-	 * Everything v1 needs to broadcast: proven YouTube, a title, and a duration
-	 * to measure 60% against. Anything less is skipped rather than guessed.
-	 * A missing video id costs the payload its `url`, not its validity.
-	 */
-	val payloadViable: Boolean
-		get() = isYouTube && !title.isNullOrBlank() && durationMs != null
-
-	/** Would the extension's music branch have broadcast by now? (≥60%.) */
-	val wouldScrobble: Boolean
-		get() = payloadViable && (percentPlayed ?: 0.0) >= 0.6
+	/** Progress-only threshold check; final eligibility still belongs to ScrobbleRules. */
+	fun reachedThreshold(threshold: Double): Boolean =
+		(percentPlayed ?: 0.0) >= threshold
 }

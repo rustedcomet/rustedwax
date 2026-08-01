@@ -1,5 +1,12 @@
 # Phase 4 — Control, exclusivity, and metadata fidelity
 
+> **Chronological engineering record.** Earlier sections describe the problem or behavior at that
+> point in development and are superseded by later version addenda. Use [README.md](README.md) for
+> the current product description, [BEHAVIOR_CONTRACT.md](BEHAVIOR_CONTRACT.md) for the canonical
+> invariants and v0.8.6 as-built audit, and [TESTING.md](TESTING.md) for the current verification matrix.
+> The unsupported YouTube lookup retained for concept testing is documented in
+> [README.md](README.md#youtube-policy-and-prototype-tradeoff).
+
 Phase 3 shipped automatic scrobbling and it ran clean for a full day on Brave /
 Android tablet. This phase addresses the three things that day surfaced:
 
@@ -790,14 +797,1008 @@ extension's under-claimed music keeps real songs pinned in `/videos`. Not
 fixable from any client; raised with the site's developer (options: majority
 or latest kind, a server-side category check, curator override).
 
-## 10. Before enabling D4
+## 9l. v0.8.0 — the shorts floor, and five bugs the 46-video run exposed
+
+A deliberately adversarial session on 2026-07-29: 46 videos mixing full-length
+uploads, shorts, playlists, non-English titles and Spanish-language music
+obscure enough that MusicBrainz would have nothing to say about it. The goal was
+to make the app miss a hyperlink or misindex music.
+
+**The hyperlink bug is fixed.** 29 of 30 automatic broadcasts carried a `url`.
+The one miss is honest and self-reporting — the address bar had moved on to the
+next video, the search fallback's fetch failed, and the payload said so on its
+way out:
+
+```
+[identity] YouTube (site only, no video id) → m.youtube.com (no video id in the bar)
+[resolve]  search fetch failed for "THE THOMAS CROWN AFFFAIR Official Trailer…"
+[engine]   broadcasting WITHOUT url — identity was address bar + notification → …
+```
+
+**The kind hierarchy held.** Only 4 shorts became `song`, every one via
+YouTube's own `category=Music`. No trailer, vlog or football clip leaked into
+`song` across 64 unique shorts. Enrichment resolved a category for 88 unique
+ids and failed on 12 (~12%).
+
+### The shorts gap, and why the floor was the wrong shape
+
+Of 64 unique shorts opened:
+
+| Outcome | Count |
+| --- | --- |
+| Scrobbled | 20 |
+| Blocked by the 30 s floor | 22 |
+| Below the 60% threshold | 6 |
+| **No duration — never measured** | **10** |
+| Never reached the engine | 6 |
+
+Two separate problems sit in that table, and only one is a policy.
+
+Sorting every 30 s-floor rejection by URL path settled the policy question:
+**all 24 were `/shorts/`, none were `/watch`.** The floor was doing nothing on
+the path it was written for — pre-roll ads are a watch-page phenomenon — while
+discarding a third of the shorts feed. The blocked durations clustered hard at
+the bottom (`7, 10, 10, 10, 10, 10, 11, 12, 12, 15, 16, …`), so a 10 s floor
+recovers 23 of the 24 where 15 s recovers only 15.
+
+The exception is granted on **proof the video exists**, not on its length:
+`videoDetails.lengthSeconds` parsing successfully means the id has a public
+watch page, which an ad creative does not. Length is a useless ad guard — an ad
+and a real 12-second clip are the same length.
+
+Cost, stated rather than buried: enrichment fails ~12% of the time and D8
+requires it stay non-blocking, so roughly one in eight legitimate short clips is
+still held to 30 s. That is the direction to fail. A missed entry can be earned
+again by watching; a false one is permanent.
+
+### The loop bound, and a claim the data corrected
+
+`playedMs` accumulates wall-clock time in `STATE_PLAYING` and only resets on a
+track change — and a loop is not a track change. The initial concern was that
+the 60% gate would be meaningless below 30 s. The log says otherwise on both
+counts:
+
+- The 60% gate **rejected 29 of 64 shorts finalizations** (45%). It is doing
+  substantial work, not rubber-stamping.
+- The highest overrun in the whole session was **120%** (`played 12s of 10s`),
+  with the rest at 102–108% — timing slack, not replays.
+
+So looping never fired during fast-scrolling browsing. The *mechanism* is still
+unbounded, and the untested case is the passive one: a phone left face-up on a
+10 s short reads thousands of percent. `SHORT_MAX_PROGRESS = 2.0` bounds it,
+scoped to the lowered floor only — a genuine song double-listen lands near 200%
+and must keep earning its second transaction.
+
+### Duration recovery — a silent loss, not a policy
+
+Ten shorts were skipped as "no duration" before any rule could look at them,
+while `videoDetails.lengthSeconds` for those same ids was already being fetched
+and thrown away. That is now the fallback.
+
+It forced the rules into two stages, because both the recovered duration and the
+watch-page proof arrive only after enrichment. `ScrobbleRules.prefilter` keeps
+that from meaning one fetch per finalize: 165 of the 198 "no duration"
+finalizations had under three seconds of play time — a browser swapping a
+placeholder title for the real one as a page loads — and none of them can clear
+any threshold at any recoverable length.
+
+### Silence was the actual bug behind "where are my entries?"
+
+Every skip reason was computed and sent only to the event log. From outside,
+"watched 20 shorts, got 6 entries" was indistinguishable from a broken app: no
+artifact anywhere in the UI said the other 14 were seen, let alone why. The
+**Not logged** tab surfaces the reason string that already existed. A gap you
+can explain is a policy; a silent one reads as a bug every time.
+
+Filtered at three seconds of play time for the reason above — otherwise the 165
+page-load transitions bury the 33 a person might wonder about.
+
+### Titles were going on-chain as tag runs
+
+On-chain verbatim from this session:
+
+```
+katter — #guitar #dubstep #djdubstep #fnaf #fivenightsatfreddy
+Rony González — #plena#panama 🇵🇦
+```
+
+The cosmetic cost is obvious. The real one is that the tag run is *part of the
+title*, so the same clip reposted with different tags dedups as a different
+listen and lands twice on a chain that can't be edited. Trailing runs are now
+stripped (never interior ones — `Song #2 of the series` is doing work).
+
+Where the tags are all there is, the classifier refuses the `song` kind
+outright. `katter`'s clip was `song` on the strength of `category=Music` alone;
+the category was arguably right about the content and still produced a permanent
+playlist entry naming no track.
+
+### The kind was computed and then never consulted
+
+The clearest bug in the run, and one this session wasn't looking for:
+
+```json
+"kind":"video","artist":"Fall 2: Deadpoint (2026) Official Trailer 2",
+"title":"Harriet Slater, Arsema Thomas"
+```
+
+A film name in the artist field and a cast list in the title. `category=Film &
+Animation` had already resolved, `kind` was already `video`, and the channel
+(`Lionsgate Movies`) was sitting in the notification — but `creditsOf` ran
+`TitleParser.parse` unconditionally, so the `Artist - Track` split happened
+anyway.
+
+`Artist - Track` splitting is a **music** operation: it asserts the text left of
+a dash names a performer. For a video the channel is the artist and the whole
+title is the title. The reversed `Iran threatens to attack UK bases… - Risking
+wider war | BBC News` is the same failure — `Track - Artist` ordering is common
+in Spanish-language uploads, and MusicBrainz can only arbitrate it for real
+recordings, never for a news clip.
+
+MusicBrainz is still asked about the *music* reading of every track regardless of
+kind. That is how a video-looking title is discovered to be a real recording, so
+the question has to be asked before the kind is known — see
+`ScrobbleBuilder.creditsForKind`.
+
+### `FactsCache` was dropping fields the classifier reads
+
+Found while adding `lengthSeconds` to it: `autoGenerated` was parsed from the
+page and then never written to the cache, so a **cache hit** downgraded a
+distributor-fed Art Track to whatever the title heuristics made of it. The
+session took 22 cache hits. Both fields now round-trip, and the class doc states
+the invariant.
+
+### Still to verify — ads in the shorts feed
+
+The floor's ad-guard rationale was checked only against the watch path. YouTube
+inserts ad items into the Shorts *feed* as their own entries, and this session
+hit none, so the log cannot say whether an ad short publishes a media session at
+all. See TESTING.md — the next run is on Chrome specifically so ads play.
+
+If an ad short both publishes a session and resolves a real watch page, both
+guards fail and a third signal is needed. `Settings.shortClips` is the kill
+switch in the meantime.
+
+## 9m. v0.8.1 — the ad guard was wrong, and speed was never counted
+
+The Chrome run §6b asked for, on 2026-07-29 evening: ~50 shorts plus regular
+videos, Chrome first so ads would actually play, then Brave, plus a playback-speed
+test that hadn't been tried before.
+
+**The shorts floor itself worked.** 46 of 77 unique shorts scrobbled, against 20
+of 64 the previous run. Zero 30 s-floor rejections on the shorts path — the one
+time that message fired it was correct, for a short whose page hadn't resolved.
+40 of 40 broadcasts carried a `url`. All 40 were `kind: video`, with no false
+songs; weak evidence for the classifier, though, since the run contained almost
+no music.
+
+### The ad guard failed, and the premise was the problem
+
+`Video ad upload channel — Blurry: Formula única` reached the chain:
+
+```
+17:09:37  [url] com.android.chrome → video=CYgQQqvwwsY ("m.youtube.com/shorts/CYgQQqvwwsY")
+17:09:40  [enrich] CYgQQqvwwsY → category=People & Blogs originalArtist=—
+17:09:58  [finalize] Blurry: Formula única — played 19s of 18s
+17:09:58  [engine] broadcasting: {…"duration":"0:18","percent_played":100…}
+```
+
+Both halves of the v0.8.0 gate were satisfied. **YouTube serves shorts ads at
+genuine `/shorts/` URLs backed by genuine, resolvable watch pages**, so
+"resolved on its watch page" proved nothing. Note the 18 s duration: that ad
+would have been rejected by the old 30 s floor, so the leak was created by the
+feature.
+
+Four ads appeared. Three were rejected by luck rather than design — 6 s and 5 s
+fell under the 10 s hard floor, and a 42 s one was scrolled past at 4 s played.
+
+Fetching the ad's watch page next to a real short from the same feed found what
+actually separates them:
+
+| field | ad `CYgQQqvwwsY` | real short `cq2xXbWGHu8` |
+| --- | --- | --- |
+| `microformat…isUnlisted` | **true** | false |
+| `videoDetails.isCrawlable` | **false** | true |
+| `videoDetails.viewCount` | **1** | 96229 |
+
+`isUnlisted` sits in the same `playerMicroformatRenderer` the parser already
+reads `category` from — byte offset 561095 against 561152 on the live page — so
+it costs nothing to read. An ad creative is unlisted by construction; a short
+reached by scrolling the feed is public by construction.
+
+Rejected: matching the channel name. It was literally `Video ad upload channel`
+(and `Video ad upload channel for 469-265-4554`) on all four ads, which is
+tempting and worked — but it is a string YouTube can rename or localize, where
+`isUnlisted` is structural. `isCrawlable` is parsed as corroboration and logged,
+but not used as a gate: a legitimately unindexed upload happens, and being
+uncrawlable says nothing about being an advertisement.
+
+**The flag is tri-state on purpose.** Absent reads as "not proven public", not
+as `false`. Reading absence as public is exactly the direction that let the ad
+through, so if YouTube renames the field the floor closes instead of silently
+re-opening the leak. D8's rule — breakage must be distinguishable from absence —
+applies with teeth here, so the three refusals are separately worded: page
+didn't resolve, page says unlisted, page never said.
+
+### Playback speed was never counted
+
+The untried test that found a real bug. `playedMs` accumulated wall-clock time in
+`STATE_PLAYING` and ignored `speed`, which every `[playback]` line already
+carried:
+
+```
+17:31:44  state=PLAYING pos=59873ms speed=1.25 played=50418ms
+17:31:44  [finalize] It's Always Sunny… Season 18 Trailer (HD) — played 50s of 76s
+17:31:46  [engine] broadcasting: {…"percent_played":67…}
+```
+
+Position had reached 59.9 s of a 76 s video — 79% of the content consumed — and
+it went on-chain as 67%. The threshold compares against `duration`, so the
+accumulator has to be in the same units: content, not elapsed seconds.
+
+Under-reporting is the mild case. **At 2× a fully-watched video reads 50% and
+never scrobbles at all.** The session's 2× burst lasted only ~2 seconds so
+nothing was lost, but the arithmetic is unambiguous.
+
+Fixed by scaling each play window by the rate in effect during it — read from
+`state` *before* the callback assigns the new one, since the window that just
+ended was played at the old rate. Two rules worth stating because they are
+failure directions, not details:
+
+- A non-positive or missing `speed` falls back to 1.0 rather than counting zero.
+  `playingSince` already decides whether a window counts; a `speed=0.0` sample
+  landing mid-window would otherwise erase play time that really happened. The
+  session logged 36 such samples.
+- A non-finite reading falls back to 1.0 rather than to the ceiling, while a
+  merely absurd one (500×) clamps to 4×. Clamping NaN to the maximum would
+  quadruple a track's play time on the strength of a nonsense sample.
+
+The finalize line now names the rate when it wasn't 1× — `(up to 1.25× speed)` —
+so a sped-up listen reads as intentional rather than as a mis-measurement.
+
+### Also fixed
+
+`FactsCache` gained `isUnlisted`/`isCrawlable`, both nullable, so a cache entry
+written before this version fails the gate rather than inheriting a silent
+"public" and gets the 30 s floor until its page is fetched again.
+
+### Left alone, deliberately
+
+- **Two hashtag-only titles went on-chain** — `#fyp #viral #parati` and
+  `#viral #fyp #parati`, same channel. That is the documented fallback working
+  (never broadcast an empty title) and both are `video` rather than `song`. It
+  does demonstrate the near-duplicate cost: one clip, two entries, differing only
+  in tag order.
+- **`3 de marzo de 2026` → `3 de marzo de`.** The trailing-year strip ate the
+  year from a title that *is* a date; the "≥2 words remain" guard passed because
+  four did. Cosmetic, and tightening it risks the `1979`/`1999` case the guard
+  exists for.
+- **`Paramount+` → `Paramount`**, from `TRAILING_PUNCT`. Pre-existing, cosmetic.
+
+## 9n. v0.8.2 — five things adapted from the desktop extension
+
+The upstream extension was read side by side with this app to find YouTube
+handling worth borrowing. Five things came across, one bug was found in the
+process, and two candidates were deliberately declined.
+
+### The bug that fell out of the review — a wrong `url` on-chain
+
+Found while testing the extension's YouTube Music endpoint against ids from the
+field logs. From log (4):
+
+```
+14:22:33  [url] → video=GQwj_FRntp8  (playlist index=13)
+14:22:41  [enrich] fetch failed or timed out for GQwj_FRntp8
+14:22:49  broadcasting … "Con Calma" / "Daddy Yankee" / url=…GQwj_FRntp8   ← correct
+14:27:39  TITLE = "Para Mis Soldados - Danger Man"
+14:27:39  [identity] latched video GQwj_FRntp8 for this track              ← stale
+14:27:46  [url] → video=RW7Hn24Agyc                                       ← bar 7s late
+14:28:06  broadcasting … "Danger Man" / "Para Mis Soldados" / url=…GQwj_FRntp8
+```
+
+Both ids verified against their pages: `GQwj_FRntp8` is **Con Calma, 193 s**;
+`RW7Hn24Agyc` is **Para Mis Soldados - Danger Man, 227 s**. So that entry links
+to a Daddy Yankee track.
+
+The latch corroboration (`SessionProbe.identityOf`) was written for exactly this
+and **failed open**: `if (pageTitle != null && …)`, and the page fetch for that
+id had already timed out, so there was no title to compare.
+
+Fixed by adding a second, independent check on data v0.8.0 already fetches — the
+session said 226 s, the page says 193 s. Tolerance is absolute *and*
+proportional, because `lengthSeconds` and the session's `DURATION` differ by a
+second of rounding routinely (a live page reported 39 against 39141 ms) while a
+percentage alone would let a 30-second gap pass on a two-hour video.
+
+### 1. The YouTube Music catalogue lookup
+
+The extension's authoritative music signal (`getTrackInfoFromYoutubeMusic`), and
+the single most valuable thing in the comparison. One POST to
+`music.youtube.com/youtubei/v1/player` with a `WEB_REMIX` client identity, keyed
+by **video id** — which is what makes it answer where a string-matched MusicBrainz
+lookup can't. Verified against ids from the logs:
+
+| video | `musicVideoType` | author / title |
+| --- | --- | --- |
+| `GQwj_FRntp8` | `MUSIC_VIDEO_TYPE_ATV` | Daddy Yankee / Con Calma |
+| `mgoLdQZl_pQ` | `MUSIC_VIDEO_TYPE_ATV` | KAROL G & Nicki Minaj / Tusa |
+| `l69Cq38GgZ4` | `MUSIC_VIDEO_TYPE_OMV` | Elena Verrier / Metallica - Blackened (guitar cover) |
+| `cq2xXbWGHu8` | *absent* | — (a football short) |
+| `CYgQQqvwwsY` | *absent* | — (the shorts-feed ad) |
+
+Both sessions are full of `[musicbrainz] no match` on Spanish-language and
+small-channel uploads. The catalogue recognises them immediately.
+
+Read **positive-only**, copying the extension's reasoning verbatim because it is
+right: indie, live and personal-channel uploads are absent from the catalogue, so
+absence is not evidence against music. It sits below the format blocklist so a
+reaction video that picks up a user-generated audio match still stays `video`.
+
+**Credits are taken from `ATV` only.** The extension also trusts `OMV`
+author/title; for `l69Cq38GgZ4` that yields author `Elena Verrier` (the channel)
+and title `Metallica - Blackened (guitar cover)` — strictly worse than what
+`TitleParser` already produces. An Art Track is distributor metadata; an OMV is a
+filmed video whose "author" is just the uploader.
+
+It also turned out to carry `lengthSeconds`, `category` and `unlisted` — so at
+10 KB and ~0.3 s against ~615 KB for the watch page, it is now the fallback when
+the page fetch fails. That closes the hole the wrong-`url` bug came through:
+enrichment failing no longer means no evidence at all.
+
+Field names differ between the two sources and must not be "tidied" together:
+the music client returns `microformat.microformatDataRenderer` with `unlisted`,
+the watch page returns `microformat.playerMicroformatRenderer` with `isUnlisted`.
+
+### 2. `album`, which was never populated
+
+`album` has been a field on `HiveScrobblePayload` since Phase 0 and nothing ever
+set it — every entry went on-chain without one. Auto-generated descriptions have
+a fixed shape the extension has been reading all along
+(`parseYtVideoDescription`):
+
+```
+Provided to YouTube by <distributor>
+
+<Song> · <Artist> · <more artists>
+
+<Album>
+
+℗ <year> <label>
+```
+
+Restricted to descriptions carrying the `Provided to YouTube by` header, because
+on a hand-written description the line after a credit is prose. The `℗`/`©` line
+is explicitly excluded — it sits where the album would be when a track has none.
+Songs only: release metadata on a trailer is noise.
+
+### 3. Upper duration gates — a real gap
+
+The extension requires a positive music signal above 8 and 15 minutes
+(`MEDIUM_FORM_THRESHOLD_SEC`, `LONG_FORM_THRESHOLD_SEC`). RustedWax had a *lower*
+bound (90 s) and no upper one, so a 45-minute podcast titled `Host - Guest Name`
+with no category reached the weak "title names an artist" rule and became a
+`song`. Both thresholds adopted rather than guessed.
+
+Genuine long-form music always carries a real signal — a Music category,
+`full album` / `live at` / `mix` vocabulary, an artist channel, or now the
+catalogue — and all of those are checked first.
+
+### 4. Four title shapes from `processYtVideoTitle`
+
+- `Artist "Track"` — quotes name the track outright, which beats guessing at a
+  separator.
+- `Track (by Artist)` / `(performed by …)` — the one common shape where the
+  artist comes second.
+- Track-number prefixes: `03. `, `A1. `, `12) `. Bounded so `1999` and `7 Rings`
+  survive, since those have no separator after the digits.
+- A leading `[tag]` as noise.
+
+**ASCII brackets only for that last one.** A first attempt stripped `【…】` too and
+broke `【Artist】Song - Live`, which became artist `Song` — this project already
+decided the opposite for CJK brackets, because that is where the reported guitar
+cover keeps its artist. The existing `LEADING_BRACKET_ARTIST` comment says so;
+the test suite caught the contradiction.
+
+### 5. Diagnostics
+
+`yt music` and `listed` rows on the Now card, and `ytmusic=` on the one
+`[enrich]` line per video, so the two new signals are visible before anything
+reaches the chain rather than only afterwards in a log.
+
+### Declined
+
+- **Their separator table.** It includes bare `:`, `|`, `/` and `~` with no
+  surrounding spaces, which is looser than ours and would split titles we
+  correctly leave whole.
+- **Chapter-based per-track scrobbling** (albums, live sets, DJ mixes). Not
+  portable: it reads the chapter title from the DOM, and Chromium's media session
+  publishes the *video* title, not the current chapter. Rebuilding it from the
+  page's chapter markers plus `positionMs` is a feature, not an adaptation.
+  If it is ever built, take their two guards verbatim — both are earned from bug
+  reports: `SONG_SECTION_NAMES` (never scrobble a chapter called "Chorus" as a
+  track) and `chaptersLookLikeTracks()` (chapters are tracks only when the title
+  says album/live/mix, or the video is ≥15 min *and* carries a music signal).
+
+### Their id freshness is not portable either
+
+The extension reads the video id from the page it runs inside, so it cannot go
+stale — which is why it needs no latch, no title guard and no duration
+cross-check. That advantage comes from being in the page, and nothing adapts it.
+
+## 9o. v0.8.3 — the ad guard is half a guard, and the bar can go quiet
+
+The 2026-07-29 late run tested every open item. 20 broadcasts, 20 confirmed
+transactions, and the profile matches the log one-for-one. Verdicts:
+
+| Item | Result |
+| --- | --- |
+| Speed scaling | Works. `+57 — played 191s of 298s (up to 2.0× speed)` = 64%; the old arithmetic gave ~32% and no entry |
+| Loop bound | Works, 3 fires — 233% of 10s, 227% of 25s, 318% of 17s |
+| `album` | 6 of 6 songs, first time the field has ever been populated |
+| ATV credits | `FloyyMenor & Cris Mj`, `KAROL G, Feid, & DFZM`, `Peso Pluma & Anitta` — canonical multi-artist |
+| False songs | **Zero.** 6 songs, all real music |
+| Enrichment | 27 resolved, 20 cache hits, **0 failures** (was ~12%) |
+| Latch corroboration | Caught 6 stale ids — 5 of them watch-path ads |
+| Ad guard | **One caught, one leaked** |
+| Long-form gate | Untested — longest video was 298 s |
+| Duration cross-check | Never fired; the title was always available |
+
+### At v0.8.3 there were two kinds of Shorts ad, and only one was detectable
+
+Caught, as designed:
+
+```
+21:29:18  [engine] skipped: track is 15s, under the 30s minimum
+          (a short, but the video is unlisted — almost certainly a feed ad)
+```
+
+Leaked — `PONDS CAM — Consigue tu rutina ahora. #Agemiracle`, 10 s, tx
+`e2610cac`, with `listed=yes`. Fetching all three pages side by side:
+
+| | Oral B (caught) | POND'S (leaked) | Susy Mouriz (organic) |
+| --- | --- | --- | --- |
+| `unlisted` | **true** | false | false |
+| `isCrawlable` | **false** | true | true |
+| `noindex` | **true** | false | false |
+| `viewCount` | 3,539,246 | 1,138,564 | 20,886,671 |
+
+Oral B is a dedicated unlisted creative. POND'S is a **fully public video on a
+brand channel that YouTube promoted**, and it is identical to organic content on
+every field in the response — `adBreakHeartbeatParams`, `paid`,
+`playabilityStatus`, `familySafe` all checked. Identical because it *is* ordinary
+content: the same video could have arrived in the feed organically.
+
+So `isUnlisted` closes one class and **cannot** close the other. No rule
+available to a media-session observer can. v0.8.9 later added a separate,
+explicit visible-page-label signal through the optional accessibility service;
+§9s supersedes this section's then-current capability without changing the
+reason channel-name heuristics were rejected.
+
+Rejected, for the record:
+
+- **Raising the shorts floor.** POND'S was exactly 10 s, but 10–11 s was the
+  largest recovered bucket in the 0.8.0 run and the next ad could be 20 s. A
+  large certain cost against a small uncertain gain.
+- **Channel-name matching.** `PONDS CAM`, `Oral B Latam`, `inDrive`, `Blurry` —
+  nothing generalizes, and it risks blocking real channels.
+
+What ships instead is [MutedVideos]: the user's own judgement, applied once, keyed
+by video id and never expiring. It cannot unwrite what is on-chain — nothing can —
+but a promoted video that comes round again won't count twice. Bound on the
+manual path too, for the same reason the manual button was made to share the
+dedup ledger in v0.5.4: otherwise the button is a way around it.
+
+### The address bar can go quiet, and nothing said so
+
+The other finding, and the more instructive one. The watcher reported
+`connected` at 20:45:47, read the collapsed omnibox once —
+`host=m.youtube.com video=—` — and then said nothing for **thirteen minutes**:
+
+```
+20:46:21  [url] com.android.chrome → host=m.youtube.com video=—  ("m.youtube.com")
+20:59:40  [url] com.android.chrome → host=m.youtube.com video=uQRWIADigL0  ("m.youtube.com/shorts/uQRWIADigL0")
+```
+
+The visible cost was five shorts scrobbled with no `url`. The invisible cost was
+larger: **four more were lost outright** — 15 s, 25 s, 21 s, 15 s — because with
+no id there is no `/shorts/` proof, so the short-clip floor couldn't apply and
+they were held to the 30-second minimum. Everything above 30 s got through
+without a link; everything below vanished.
+
+The mechanism worked correctly throughout. The search fallback ran nine times and
+correctly declined every one (`no confident match … leaving url unset`), because
+guessing a url is worse than omitting one. Nothing here is a regression — no
+`unlatched` line fired before 21:01, so the new duration check took nothing away.
+
+The defect is that **the app knew and didn't say.** It knew the watcher was
+enabled and that nine consecutive finalizes had produced no video id. That is
+the same failure the Not-logged tab was built for, one layer down: a silent
+degradation is indistinguishable from working.
+
+Now counted per finalize — `ScrobbleEngine.tracksWithoutVideoId` — and surfaced
+after three consecutive misses, in the log and as a banner naming both costs.
+Counted per finalize rather than on a timer on purpose: a long watch-page video
+legitimately produces one id and then silence for an hour, and that must not
+warn.
+
+### Still untested
+
+- The long-form gate. Nothing above 298 s has been played yet.
+- The duration cross-check, since enrichment hasn't failed since it landed.
+- `MUSIC_VIDEO_TYPE_UGC` promoting a short to `song`. It occurred once
+  (`Farruko - Quiéreme // Estado para WhatsApp`, People & Blogs) but the loop
+  bound rejected it at 233% before the kind mattered.
+
+### Two profile-rendering notes, not bugs
+
+scrobble.life shows only the primary artist (`Yandel`, not `Yandel & Feid`) and
+does not appear to surface `album` at all. Both fields go on-chain in full.
+
+## 9p. v0.8.4 — a frozen node, and seven scrobbles that never existed
+
+The worst failure so far, and the one that had been invisible longest: the app
+reported seven scrobbles it had not made.
+
+### What happened
+
+`api.openhive.network` — first in `DEFAULT_NODES` — froze at block **108575690,
+2026-07-30T03:55:12** and stayed there. Three probes six seconds apart:
+
+```
+api.openhive.network   108575690  03:55:12   ← identical every time
+api.hive.blog          108577226  05:12:15
+                       108577228  05:12:21
+                       108577230  05:12:27
+```
+
+77 minutes behind and not advancing, while answering every RPC normally.
+
+Five broadcasts went into a pending block that would never be produced. The node
+returned no error, so the app reported five successes with transaction ids. Then
+it refused the next two:
+
+```
+23:54:42  rejected: Account ${'$'}{a} already submitted ${'$'}{n} custom json operation(s) this block.
+23:57:36  rejected: Account ${'$'}{a} already submitted ${'$'}{n} custom json operation(s) this block.
+```
+
+That error is the tell, and initially it looked impossible: a per-block limit
+cannot fire twice for operations three minutes apart. It can when **the block
+never advances** — the five stuck operations were forever "this block". The
+absurd error was the stall announcing itself.
+
+Verified three ways that nothing landed: the account's 110 `hive_scrobble_ai`
+operations end at `02:31:39` (the *previous* session); `find_transaction` returns
+`unknown` for both reported ids; and the only operation on the account in that
+window was a `notify`/`setLastRead` from a web frontend. RC was at 100%, so that
+was never it.
+
+### Four defects, and the one that matters most
+
+**1. Success was assumed, never confirmed.** `broadcast()` returned `Success`
+whenever the response had no `error` field, and the transaction id shown in
+History was computed locally (`sha256(serialized tx)[0..20]`) because
+`broadcast_transaction` returns an empty result. So the app *predicted* an id and
+displayed it as fact. `transaction_status_api.find_transaction` now confirms
+before anything is called a success — and it is asked of **every** node, so the
+question goes to someone other than whoever accepted it.
+
+The confirmation semantics took some care. `within_mempool` on the final attempt
+**counts as confirmed**, deliberately. The real question is "does any node other
+than the accepting one know this transaction exists" — which is exactly what the
+frozen node failed, since healthy nodes answered `unknown`. Treating mempool as
+failure would queue the operation, and the retry rebuilds it with a fresh
+expiration and therefore a new id: if the original *did* land, that's a permanent
+duplicate. A missed entry can be earned again by watching. On ambiguity, don't
+retry.
+
+**2. No node freshness check.** Now enforced in two places, and the second is
+easy to miss: at broadcast time, and in `getDynamicGlobalProperties`, because
+that call is what the transaction is *built* from. A stalled node's `time` yields
+`expiration = time + 60s` that can already be in the past when a healthy node
+sees it — the frozen node would have poisoned the transaction even if something
+else broadcast it. Freshness is judged against the **device** clock: asking a
+stalled node whether it is stalled is circular.
+
+**3. `Rejected` was terminal for everything.** A per-block rate limit is about
+capacity, not correctness. New `BroadcastResult.Deferred` covers refusals expected
+to pass later (rate limits, RC exhaustion) plus accepted-but-never-included, and
+the caller queues those instead of discarding them. `Rejected` keeps its old
+meaning — a bad signature never becomes good, and retrying it would loop.
+
+**4. `errorMessage` read the wrong field.** It preferred
+`data.stack[0].format`, the *uninterpolated template*, over `error.message`, the
+interpolated text. That is why the log said `${'$'}{a}` and `${'$'}{n}` instead of
+`skiptvads` and `5`. With the numbers filled in, the jammed block would have been
+obvious hours earlier. Values from `stack[0].data` are now appended when the
+message still carries placeholders.
+
+### Node list
+
+`hive-api.arcange.eu` removed — it answered a broadcast with an empty body and
+its DGP call with nothing at all. `api.openhive.network` moved off the front but
+kept, because a stall is transient and the freshness check now handles it.
+Replacements were probed for a current head block *and* for
+`transaction_status_api` support, which confirmation depends on: `api.hive.blog`,
+`api.deathwing.me`, `api.syncad.com`. `anyx.io` was considered and dropped —
+unreachable on both counts.
+
+### Cost of the incident
+
+Seven listens, unrecoverable. They were never signed onto anything, so there is
+nothing to rebroadcast; re-watching is the only way back. The user's own reading
+of the situation was right on every point they raised — re-scrobbling the same
+video is allowed, the dedup ledger is hour-bucketed and correctly permitted both
+music videos, and nothing in RustedWax excluded them.
+
+## 9q. v0.8.5 — a video watched to 80% that produced nothing
+
+The complaint that had recurred for three sessions — "certain videos that are
+supposed to be logged are not" — finally showed up in a log short enough to read
+end to end.
+
+### Chrome recreates its media session mid-video
+
+`LUNA`, 196 seconds long, on the watch page with a playlist:
+
+```
+11:44:02  [session] + com.android.chrome          ← LUNA starts
+11:45:05  [finalize] LUNA — played 47s of 196s    → 24%, skipped
+11:45:26  [session] + com.android.chrome          ← recreated
+11:45:50  [finalize] LUNA — played 24s of 196s    → 12%, skipped
+11:46:08  [session] + com.android.chrome          ← recreated
+11:47:33  [finalize] LUNA — played 85s of 196s    → 43%, skipped
+```
+
+47 + 24 + 85 = **156 s of 196 = 80% watched**, and no entry was written.
+
+The playback positions prove the video never stopped:
+
+```
+11:45:26  pos=47039ms  played=36ms   ← position 47s, our counter back to zero
+11:46:08  pos=70769ms  played=33ms   ← position 71s = 47+24, zero again
+```
+
+`SessionProbe` keys each `Watch` by `controller.sessionToken`. A recreated
+session is a new token, so `playedMs` restarted and each fragment was scored
+against the 60% threshold on its own. Chrome tears the session down around ad
+breaks and playlist transitions — an ad (`Abre la puerta … Mastercard`, 15 s)
+appears in this very log between the fragments.
+
+`TQG` in the same session survived only by luck: its first fragment happened to
+run 166 s of 197 s = 84%, clearing the bar before the teardown.
+
+### The fix
+
+[TrackProgressCarry] holds a vanished track's progress for 60 seconds, keyed by
+package + track, and the replacement session claims it. Three rules are load
+bearing and all are pinned by tests:
+
+- **Consumed on read.** Two sessions inheriting the same play time would double
+  count it onto a chain that can't be edited.
+- **Expires.** Otherwise it could attach itself to a genuine separate viewing of
+  the same video later on.
+- **Not carried across a user Stop.** D2 discards the in-flight track on purpose,
+  and carrying it would smuggle that time into the next session.
+
+`trackStartedAtEpochSec` travels with the play time, so the on-chain `timestamp`
+names when the listen began rather than when Chrome rebuilt its session — and the
+dedup key stays stable across the restart, which is what stops a fragment that
+already scrobbled from scrobbling again.
+
+It lives in its own object rather than inside `Watch` because `Watch` owns a
+`MediaController` and can't be unit-tested; the rules worth pinning are pure.
+
+Known cosmetic consequence: the early fragments still land in **Not logged** as
+"below 60%" before the track later scrobbles. Honest, momentarily confusing, and
+not worth more state to hide.
+
+### Also found in the same review — `NxNN` episode numbering (v0.8.6)
+
+`EPISODE_STRUCTURAL` matched `Season 6 Ep 19` and `S06E19` but not `3x1` or
+`11x24`, which is the notation TV clip channels actually use. Two Walking Dead
+clips reached the chain as `kind: song` on 2026-07-30 — one split as
+`artist: "The Walking Dead 11x24 Negan and Maggie talk…"` / `title: "Rest In
+Peace"`, the same `Artist - Track`-on-a-video failure §9l fixed elsewhere.
+
+It didn't go into the existing regex, because `NxNN` needs exclusions a single
+pattern can't express:
+
+- **Resolutions can't reach it.** `1920x1080` and `640x480` have too many digits
+  on the left for `\b\d{1,2}x\d{1,3}\b` to find a word boundary, so they never
+  match in the first place.
+- **Aspect ratios have exactly the same shape** as a season and an episode —
+  `16x9`, `4x3` — so they are named in `NOT_EPISODE_NUMBERS`.
+
+Genuinely ambiguous titles (`4x4` is a real song) resolve toward `video`, which is
+the direction the rest of the class already leans: a misfiled entry costs one
+listing, a TV clip in the music index is permanent.
+
+### Note on log 8
+
+Produced by 0.8.3, not 0.8.4 — the log says "Broadcast accepted by", the
+pre-confirmation wording. So the frozen-node work was not exercised. Both
+broadcasts in it did land on `skiptvads.vidz` (verified on-chain), and
+`api.openhive.network` had recovered by then.
+
+## 9r. v0.8.7 — contract reconciliation
+
+The v0.8.6 review found that incident-driven comments and tests had started
+acting as product policy without one canonical contract. Most notably, a
+high-progress verified Short was deliberately rejected even though the
+video-kind cap already guaranteed one transaction; session fragments were
+finalized before their progress was carried; and three different Hive evidence
+states were all displayed as `Confirmed on-chain`.
+
+[BEHAVIOR_CONTRACT.md](BEHAVIOR_CONTRACT.md) preserves the exact v0.8.6 as-built
+behavior and defines the invariants applied in v0.8.7. The implementation:
+
+- keeps the first qualifying Short viewing and logs probable auto-looping;
+- defers fragment finalization through a tokenized one-minute continuation
+  window;
+- makes Stop clear URL/playlist evidence and guard removal callbacks;
+- polls every independent healthy Hive node and distinguishes block, mempool,
+  and accepted-without-confirmation;
+- binds queued work to its account and preserves percent/video metadata;
+- applies configured rules to the Now verdict and manual session button; and
+- stores literal watch-page provenance instead of inferring it from a duration
+  that YouTube Music may have supplied.
+
+Earlier Phase 4 sections remain the chronology of how those policies arose; they
+do not override the current contract.
+
+## 9s. v0.8.9 — explicit ad evidence and frozen delayed identity
+
+Log 11 separated two app-side defects from the scrobble.life indexing problem.
+The chain transactions missing from the profile were reproduced with the
+desktop extension and are deferred to the site's developer. They do not justify
+rebroadcasting or changing Hive confirmation semantics here.
+
+### Public promotions need explicit page evidence
+
+The earlier ad rule knew only what the watch page said. That catches dedicated
+unlisted creatives but cannot distinguish a public video inserted as an ad from
+the same public video reached organically. The desktop Hive Scrobbler connector
+has an additional signal because its YouTube content script can inspect the
+page: it vetoes while YouTube marks the player `.ad-showing`.
+
+Android does not expose that DOM state, but the existing optional accessibility
+service can receive visible YouTube controls. The mobile adaptation is:
+
+1. inspect visible accessibility nodes only while the evidence URL identifies a
+   concrete YouTube `/shorts/` video;
+2. accept only exact localized ad controls (`Sponsored`, `Ad`, `Skip ad`, and
+   maintained Spanish/Portuguese equivalents), never brand/channel/title
+   guesses;
+3. bind the signal to that exact 11-character video id with a short freshness
+   window;
+4. carry it into the matching active watch and make it an unconditional
+   prefilter/final-decision veto, including the manual session button; and
+5. retain unlisted detection and the permanent per-video mute as independent
+   fallbacks.
+
+This path is deliberately fail-closed only when explicit evidence exists. If
+YouTube or the browser does not expose a visible label through Android
+accessibility, a public promotion remains indistinguishable from organic
+playback. Expanding the detector to words inside titles would trade that known
+gap for false permanent exclusions.
+
+### The late-address-bar identity race
+
+The first item in log 11 was Short `grNk0DpiaEE`. By the time its delayed
+finalization ran, the foreground URL had advanced through later items and named
+`ysY13cbxJR4`. Corroboration correctly rejected that live id, but the return
+expression `latchedVideo ?: live` selected it again when no older latch existed.
+That contradicted both the documented no-wrong-URL invariant and the purpose of
+corroboration.
+
+The correction has two layers:
+
+- identity selection is a pure operation whose rejected live candidate is never
+  eligible as a fallback; and
+- when a session disappears, its last stable identity is frozen together with
+  played time, start timestamp, dedup state, loop state, and explicit ad
+  evidence. A matching replacement consumes that bundle. Continuation expiry
+  finalizes the same frozen identity without reading the current address bar.
+
+Regression tests pin the exact rejected-live-id case, carried confirmed
+identity, exact ad-label matching, video-id binding, ad veto ordering, and
+identity/ad survival through progress carry. Physical-device testing still has
+to establish which label YouTube exposes in each supported browser build.
+
+## 9t. v0.8.10 — mandatory hyperlinks and the Shorts search shape
+
+Log 12 put six consecutive Video entries on-chain without `url`. scrobble.life
+therefore rendered their titles as plain text rather than links. The immediate
+cause was not one race but a permissive chain of three states:
+
+1. Chrome accessibility exposed only `m.youtube.com`, so no exact id was
+   latched.
+2. The fallback downloaded YouTube search successfully but did not understand
+   its current Shorts representation.
+3. `ScrobbleEngine` logged `broadcasting WITHOUT url` and continued through
+   dedup, signing, and broadcast.
+
+### The parser's “zero results” was false
+
+Current Shorts results use `shortsLockupViewModel`, not `videoRenderer`. The
+eleven-character id is nested under `reelWatchEndpoint.videoId`; the title is
+`overlayMetadata.primaryText.content`; and the card exposes no channel or
+duration. The old generic parser required a node that directly carried both
+`videoId` and `title`, so a result page with dozens of Short ids could produce
+an empty candidate list.
+
+The resolver now reads legacy video renderers, modern ordinary-video lockups,
+and modern Shorts lockups. It searches raw title+channel and bounded
+noise-stripped variants, retries a failed fetch once, and treats hashtag tails,
+emoji, punctuation, quote styles, and title diacritics as presentation noise.
+That relaxation never becomes acceptance by itself: up to eight highest-ranked
+incomplete Short candidates are fetched by id and each accepted candidate must
+return the same id plus a matching title, channel, and duration. Multiple
+matches are logged as ambiguous and refused.
+
+### Hyperlink presence is now a product invariant
+
+Recovery can improve coverage but cannot make withheld evidence appear. The
+irreversible guarantee is enforced instead at three boundaries:
+
+- `ScrobbleEngine` stops an unresolved finalize and writes the reason to
+  **Not logged**;
+- `ScrobbleBuilder` cannot construct a YouTube listen from a missing or malformed
+  id; and
+- `HiveBroadcaster` validates serialized payloads, so a manual path or a
+  URL-less retry-queue entry produced by an older build is also refused.
+
+The quiet-address-bar banner now says unresolved tracks stayed off-chain rather
+than warning that entries will have no links. This deliberately chooses a
+visible missed scrobble over an immutable unlinked or incorrectly linked one.
+
+## 9u. Log 14 — v0.8.10 transport passed; four pre-broadcast losses remained
+
+The next field run covered the evening of 2026-07-31 through midday
+2026-08-01. Its evidence set was deliberately broader than the app log:
+
+- `debug/rustedwax-log (14).txt` supplied session, rule, payload and Hive
+  outcomes;
+- the signed-in YouTube History page supplied an independent list of watched
+  ids where YouTube retained them; and
+- the live Music and Videos views for `skiptvads.vidz` supplied section,
+  presence and hyperlink targets.
+
+### What v0.8.10 proved
+
+The hyperlink patch held at every irreversible boundary. There were 109
+broadcast payloads and 109 block confirmations. All 109 were present on the
+profile, all linked to the same id that the payload carried, all 54 song
+payloads were under Music, and all 55 video payloads were under Videos. No
+advertisement-like payload reached either section. The long Davoo Xeneize test
+also behaved as designed: 27:13 duration, 86% played, `kind: video`, correct
+link.
+
+The run contained 66 engine skips: 34 below threshold, 15 under the hard
+10-second floor, 12 explicit visible-ad vetoes, 3 unresolved-id vetoes and 2
+dedup vetoes. The short ad and bumper families seen in the log stayed off-chain.
+Thirty-three loop diagnostics capped continuous playback; no Short/video loop
+created a second transaction.
+
+This clean transport result matters because it separates the remaining losses
+from the earlier scrobble.life indexing incident. The four items below never
+became payloads, so waiting for another node or profile refresh could not make
+them appear.
+
+### Four qualifying misses, with four different evidence paths
+
+1. **Me Porto Bonito (`saGYMhApaH8`)** finalized at 193/191 seconds. Its own
+   watch-page title and the MediaSession's localized title were similar but not
+   equal, so the id had been rejected. The finalize coroutine then used the
+   following La Bebe id/facts (`3mchJ-EW9rM`) and emitted La Bebe with the ended
+   track's timestamp/progress.
+2. **Cardi B - Trump (`5YrJf3CpHNk`)** was one continuous viewing. Chromium
+   changed `METADATA_KEY_DURATION` from `227125` to `227124` ms while keeping
+   title, artist and album unchanged. Because duration is an exact component of
+   `trackKeyOf`, the callback finalized 48%, reset, then finalized 53%. The two
+   sequential fragments cover the viewing but neither independently reached
+   60%.
+3. **The best cosplayer avengers (`IW524Zl2Pus`)** followed a six-second
+   stadium ad. The URL changed to the organic Short and, two milliseconds later,
+   the old UI still exposed `Sponsored`. The detector truthfully read both in
+   one accessibility snapshot and bound the stale label to the new id. The
+   organic Short later finalized at 23/22 seconds and was vetoed.
+4. **YCB Frenzy - Crazy (`aZaxQG3ggng`)** finalized at 194/192 seconds after its
+   watch-page title and MediaSession credit differed. Its finalize coroutine
+   used the following Coming Home id/facts (`2QqyPy2itXw`) instead.
+
+All four intended ids were visible in YouTube History and absent from both
+profile sections. The two mixed-identity cases prove v0.8.9's probe fix was
+necessary but not the whole boundary: the rejected-live fallback and carried
+probe identity are frozen, yet later resolver/enrichment output can still
+replace the ended track's metadata before payload construction.
+
+### The ad rule was precise but not temporally coherent
+
+“Id and label in the same snapshot” prevented package-only poisoning, but the
+Shorts UI does not update atomically. During a swipe, the address bar can expose
+the successor id before the old overlay disappears. The next rule therefore
+needs a URL generation and a provisional state:
+
+- a label first observed in the transition frame is not yet a veto;
+- it becomes persistent only when the same id/label is observed again in that
+  generation or agrees with an already-established session for that id;
+- another URL, label disappearance, Stop or package reset discards it; and
+- once accepted, it travels with the track instance across session churn rather
+  than poisoning the public id for an arbitrary freshness window.
+
+This intentionally accepts a possible miss on an extremely short ad if its UI
+never stabilizes. The alternative demonstrated by log 14 is permanently
+dropping the next organic item. Brand/title guesses remain prohibited.
+
+### Exact duration is observation, not identity
+
+The Cardi B split is the same class of mistake as treating a late notification
+as a new track: an unstable observation was embedded in the identity key.
+For v0.8.11, unchanged normalized title, artist and album plus either
+missing-to-known duration or no more than 2,000 ms of duration drift is one
+track. The newest valid duration may refine measurement, but progress,
+timestamp, identity, loop and ad state remain. A material duration conflict or
+different title/artist still ends the track.
+
+### Four parser failures became literal fixtures
+
+The profile preserved exactly what the app broadcast, which isolated these as
+parser defects rather than scrobble.life presentation:
+
+- `vG4h2KkwMDA`: a performance sentence before `| BET Awards '24` became the
+  artist and only the event became the title; the fixture expects
+  `Ice Spice` / `Think You The Sh*t (Fart)`;
+- `VpXRPrwezQ8`: the dash in `(Official Video - No Skits)` became the split;
+  the fixture expects `Sexyy Red` / `Get It Sexyy`;
+- `z5WrgDzNIZ0`: the dash in `(WSHH Exclusive - Official Music Video)` became
+  the split; the fixture expects `6IX9INE` / `Gotti`; and
+- `oNg3M9IJJlY`: `TROLLZ - 6ix9ine & Nicki Minaj` remained backwards; the
+  fixture expects `6ix9ine & Nicki Minaj` / `TROLLZ`.
+
+v0.8.11 must scan only top-level separators, recognize quoted tracks and
+performance shapes before generic separators, and use channel agreement to
+choose orientation. Ambiguity falls back to channel plus the whole cleaned
+title. It does not guess, and it does not alter video-kind behavior.
+
+### v0.8.11 scope and exit
+
+The patch order is deliberately narrow:
+
+1. make the finalized evidence/resolver bundle immutable through payload
+   construction and add the two successor-identity regressions;
+2. add URL generations and provisional/re-observed ad evidence, pinned by the
+   exact stadium-to-cosplayer ordering;
+3. replace exact duration track-key equality with the bounded same-track
+   predicate and pin the `227125 → 227124` case;
+4. make song parsing structure- and channel-aware with the four field fixtures;
+5. run the complete test/build/lint gates; then
+6. repeat the physical-device log/History/Music/Videos/ad/loop/hyperlink
+   reconciliation.
+
+No code was changed while recording this incident and plan. Past on-chain
+entries will not be rebroadcast or rewritten. The 60% policy, confirmation
+semantics, prototype lookup route and the flashmob Music-vs-Videos product edge
+are explicitly outside this patch. The canonical required behavior and full
+acceptance matrix live in [BEHAVIOR_CONTRACT.md](BEHAVIOR_CONTRACT.md) and
+[TESTING.md](TESTING.md).
+
+## 10. Historical pre-D4 checklist
+
+This checklist predates v0.4.0 and is retained only as Phase 4 history. D4 was
+subsequently revised by the field findings above; it is not an outstanding
+gate for v0.8.11.
 
 Song-by-default is irreversible per entry. Run the new classifier over the
 existing event log and print what each past track *would* have been classified
 as. That is a cheap dry-run, and it calibrates the blocklist against what is
 actually watched rather than against guesses.
 
-## 11. Docs to update when this lands
+## 11. Historical v0.4.0 documentation checklist (completed)
+
+These were the documentation/version tasks for the original Phase 4 landing,
+not the current next-patch plan. The active v0.8.11 documentation and gates are
+in §9u, `BEHAVIOR_CONTRACT.md`, and `TESTING.md`.
 
 - **README** — v1 scope; delete the native-apps "Bonus over desktop" claim (D3);
   add Accessibility setup incl. the restricted-setting step; state plainly that

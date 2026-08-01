@@ -7,7 +7,7 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
 /**
- * Reads the browser's address bar, so origin and video id stop being guesses.
+ * Reads the browser's address bar and explicit visible YouTube ad labels.
  *
  * Optional and off by default (decision D5). With it off nothing here runs and
  * identity falls back to notification hints, exactly as in Phase 3.
@@ -29,7 +29,9 @@ import android.view.accessibility.AccessibilityNodeInfo
  * `accessibility_service_config.xml` pins `packageNames` to the browsers in
  * [YouTubeProbe.TARGET_PACKAGES]. That is enforced by the OS, not by this
  * class: events from any other app are never delivered here at all. The class
- * additionally re-checks the package, and reads exactly one node — the URL bar.
+ * additionally re-checks the package. It reads the URL bar for identity and,
+ * only while that bar names a YouTube `/shorts/` id, scans visible
+ * accessibility labels for exact ad UI such as "Sponsored" or "Skip ad".
  *
  * ## Known limits
  *
@@ -49,6 +51,7 @@ class UrlWatcherService : AccessibilityService() {
 	override fun onDestroy() {
 		super.onDestroy()
 		UrlEvidence.setConnected(false)
+		AdEvidence.clearAll()
 		EventLog.append("url", "address-bar watcher stopped")
 	}
 
@@ -61,23 +64,53 @@ class UrlWatcherService : AccessibilityService() {
 		if (pkg !in YouTubeProbe.TARGET_PACKAGES) return
 
 		val root = rootInActiveWindow ?: return
-		val raw = try {
-			readUrlBar(root, pkg)
+		val observation = try {
+			val raw = readUrlBar(root, pkg)
+			val host = raw?.let(::hostOf)
+			val parsedVideoId = raw?.let { VIDEO_ID.find(it)?.groupValues?.get(1) }
+			val isShort = raw?.contains("/shorts/", ignoreCase = true) == true
+			val adVideoId = YouTubeAdDetector.videoIdInSameShortSnapshot(host, raw)
+			Observation(
+				raw = raw,
+				host = host,
+				videoId = parsedVideoId,
+				isShort = isShort,
+				playlistId = raw?.let { PLAYLIST_ID.find(it)?.groupValues?.get(1) },
+				// Do not bind watch-path pre-roll UI to the real video's URL.
+				// Also do not reuse a prior Short id after the bar collapses to
+				// the host: the label could already belong to the next item.
+				// Ad evidence requires the concrete id and `/shorts/` path in
+				// this same accessibility snapshot.
+				adSignal = if (adVideoId != null) {
+					findAdSignal(root, depth = 0, budget = ScanBudget())
+				} else {
+					null
+				},
+			)
 		} finally {
 			root.recycle()
 		}
-		if (raw.isNullOrBlank()) return
+		val raw = observation.raw?.takeIf { it.isNotBlank() } ?: return
 
 		UrlEvidence.put(
 			pkg,
 			UrlEvidence.Evidence(
-				host = hostOf(raw),
-				videoId = VIDEO_ID.find(raw)?.groupValues?.get(1),
-				isShort = raw.contains("/shorts/", ignoreCase = true),
-				playlistId = PLAYLIST_ID.find(raw)?.groupValues?.get(1),
+				host = observation.host,
+				videoId = observation.videoId,
+				isShort = observation.isShort,
+				playlistId = observation.playlistId,
 				raw = raw,
 			),
 		)
+		if (observation.adSignal != null && observation.videoId != null) {
+			AdEvidence.put(
+				AdEvidence.Evidence(
+					packageName = pkg,
+					videoId = observation.videoId,
+					signal = observation.adSignal,
+				),
+			)
+		}
 	}
 
 	/**
@@ -111,6 +144,35 @@ class UrlWatcherService : AccessibilityService() {
 	}
 
 	/**
+	 * Search visible browser-page accessibility labels for YouTube's own ad UI.
+	 *
+	 * Both depth and node count are bounded because a long Shorts feed can
+	 * expose a large virtual tree. [YouTubeAdDetector] performs the strict text
+	 * matching; this method only walks and recycles nodes.
+	 */
+	private fun findAdSignal(
+		node: AccessibilityNodeInfo?,
+		depth: Int,
+		budget: ScanBudget,
+	): String? {
+		if (node == null || depth > AD_SCAN_MAX_DEPTH || budget.remaining-- <= 0) return null
+		if (node.isVisibleToUser) {
+			YouTubeAdDetector.signalFor(node.text)?.let { return it }
+			YouTubeAdDetector.signalFor(node.contentDescription)?.let { return it }
+		}
+		for (i in 0 until node.childCount) {
+			val child = node.getChild(i) ?: continue
+			val found = try {
+				findAdSignal(child, depth + 1, budget)
+			} finally {
+				child.recycle()
+			}
+			if (found != null) return found
+		}
+		return null
+	}
+
+	/**
 	 * The bar may hold a full URL, a bare host, or a search query. Accept the
 	 * first two shapes, reject the rest — same fail-closed rule the rest of
 	 * detection follows.
@@ -123,6 +185,19 @@ class UrlWatcherService : AccessibilityService() {
 
 	companion object {
 		private const val MAX_DEPTH = 12
+		private const val AD_SCAN_MAX_DEPTH = 24
+		private const val AD_SCAN_MAX_NODES = 500
+
+		private data class Observation(
+			val raw: String?,
+			val host: String?,
+			val videoId: String?,
+			val isShort: Boolean,
+			val playlistId: String?,
+			val adSignal: String?,
+		)
+
+		private data class ScanBudget(var remaining: Int = AD_SCAN_MAX_NODES)
 
 		private val VIDEO_ID =
 			Regex("""(?:[?&]v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})""")

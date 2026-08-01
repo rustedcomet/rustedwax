@@ -44,6 +44,98 @@ class SearchResultsParserTest {
 	}
 
 	/**
+	 * The renderer shape that caused all six unlinked entries in log 12. A
+	 * Shorts card no longer has `title`, `ownerText`, or `lengthText`; the old
+	 * generic walker therefore reported zero candidates even though the ids were
+	 * present in `reelWatchEndpoint`.
+	 */
+	@Test
+	fun `extracts modern Shorts lockup cards for watch-page corroboration`() {
+		val body = """{"contents":[{"shortsLockupViewModel":{
+			"entityId":"shorts-shelf-item-L12DOfNlPKE",
+			"onTap":{"innertubeCommand":{"reelWatchEndpoint":{
+				"videoId":"L12DOfNlPKE"}}},
+			"overlayMetadata":{"primaryText":{"content":
+				"YOU NEED A NEW MASTER🔥 MR STARK- Tony Stark Is Back - AL NACER SLOWED #edit #marvel #MCU#shorts"},
+				"secondaryText":{"content":"5.5K views"}}
+		}}]}""".trimIndent()
+		val candidates = SearchResultsParser.candidates(body)
+		assertEquals(1, candidates.size)
+		assertEquals("L12DOfNlPKE", candidates.single().videoId)
+		assertEquals(
+			"YOU NEED A NEW MASTER🔥 MR STARK- Tony Stark Is Back - AL NACER SLOWED #edit #marvel #MCU#shorts",
+			candidates.single().title,
+		)
+		assertNull(candidates.single().channel)
+		assertNull(candidates.single().lengthSeconds)
+	}
+
+	@Test
+	fun `a Shorts card can be shortlisted only when its known fields do not contradict`() {
+		val incomplete = SearchResultsParser.Candidate(
+			videoId = "L12DOfNlPKE",
+			title = "How Unai Simon Denied Messi's Clearest Goal Scoring Chance",
+			channel = null,
+			lengthSeconds = null,
+		)
+		assertEquals(
+			true,
+			SearchResultsParser.hasNoIdentityContradiction(
+				incomplete,
+				"How Unai Simón Denied Messi’s Clearest Goal Scoring Chance 🧠 #football",
+				"Mind-boggling Football",
+				59,
+			),
+		)
+		assertEquals(
+			false,
+			SearchResultsParser.hasNoIdentityContradiction(
+				incomplete.copy(title = "A different Messi clip"),
+				"How Unai Simón Denied Messi’s Clearest Goal Scoring Chance 🧠 #football",
+				"Mind-boggling Football",
+				59,
+			),
+		)
+		assertEquals(
+			false,
+			SearchResultsParser.hasNoIdentityContradiction(
+				incomplete.copy(title = "#fyp #viral"),
+				"#viral #fyp",
+				"Mind-boggling Football",
+				59,
+			),
+		)
+	}
+
+	@Test
+	fun `watch-page completion tolerates Shorts presentation noise but still needs all evidence`() {
+		val completed = SearchResultsParser.Candidate(
+			videoId = "L12DOfNlPKE",
+			title = "How Unai Simon Denied Messi's Clearest Goal Scoring Chance",
+			channel = "Mind-boggling Football",
+			lengthSeconds = 60,
+		)
+		assertEquals(
+			true,
+			SearchResultsParser.matchesIdentity(
+				completed,
+				"How Unai Simón Denied Messi’s Clearest Goal Scoring Chance 🧠 #football",
+				"Mind-boggling Football",
+				59,
+			),
+		)
+		assertEquals(
+			false,
+			SearchResultsParser.matchesIdentity(
+				completed.copy(channel = "A repost channel"),
+				"How Unai Simón Denied Messi’s Clearest Goal Scoring Chance 🧠 #football",
+				"Mind-boggling Football",
+				59,
+			),
+		)
+	}
+
+	/**
 	 * The reported track. The session said 274 s while search displays 4:35
 	 * (275 s) — search rounds, so the duration check needs tolerance. Verified
 	 * against the watch page: CZFTfYYql4k really is 274 s, "Bring Me The
@@ -95,6 +187,24 @@ class SearchResultsParserTest {
 				title = "Doomed",
 				channel = "Some Reupload Channel",
 				durationSec = 274,
+			),
+		)
+	}
+
+	@Test
+	fun `two indistinguishable uploads are ambiguous rather than first one wins`() {
+		val duplicate = SearchResultsParser.Candidate(
+			videoId = "abcdefghijk",
+			title = "Doomed",
+			channel = "Bring Me The Horizon",
+			lengthSeconds = 275,
+		)
+		assertNull(
+			SearchResultsParser.bestMatch(
+				listOf(duplicate, duplicate.copy(videoId = "zyxwvutsrqp")),
+				"Doomed",
+				"Bring Me The Horizon - Topic",
+				274,
 			),
 		)
 	}
@@ -162,6 +272,14 @@ class SearchResultsParserTest {
 		assertEquals(
 			SearchResultsParser.channelKey("Linkin Park"),
 			SearchResultsParser.channelKey("Linkin Park - Topic"),
+		)
+		assertEquals(
+			SearchResultsParser.channelKey("SUBHAN-EDITS"),
+			SearchResultsParser.channelKey("Subhan Edits"),
+		)
+		assertEquals(
+			SearchResultsParser.channelKey("Música Panamá"),
+			SearchResultsParser.channelKey("Musica-Panama"),
 		)
 		// Different artists must still differ.
 		assertNotEquals(
