@@ -181,6 +181,39 @@ class HiveVectorsTest {
 		)
 	}
 
+	@Test
+	fun `YouTube payload policy requires one canonical video hyperlink`() {
+		val missing = HiveScrobblePayload(
+			title = "Unresolved Short",
+			timestamp = "2026-07-31T18:42:01.000Z",
+			platform = HiveScrobblePayload.PLATFORM_YOUTUBE,
+		)
+		assertTrue(!missing.hasRequiredYouTubeUrl)
+		assertTrue(!HiveScrobblePayload.serializedHasRequiredYouTubeUrl(missing.toJson()))
+		assertTrue(
+			HiveBroadcaster().broadcastJson(
+				"throwaway",
+				HiveKey.fromWif(WIF)!!,
+				missing.toJson(),
+			) is HiveRpc.BroadcastResult.Rejected,
+		)
+
+		val linked = missing.copy(url = "https://www.youtube.com/watch?v=L12DOfNlPKE")
+		assertTrue(linked.hasRequiredYouTubeUrl)
+		assertTrue(HiveScrobblePayload.serializedHasRequiredYouTubeUrl(linked.toJson()))
+		assertTrue(
+			!missing.copy(url = "https://youtube.com/shorts/L12DOfNlPKE")
+				.hasRequiredYouTubeUrl,
+		)
+
+		// The Account-tab transport test is not a YouTube listen.
+		assertTrue(
+			HiveScrobblePayload.serializedHasRequiredYouTubeUrl(
+				HiveScrobblePayload(title = "test", timestamp = "x", platform = "test").toJson(),
+			),
+		)
+	}
+
 	// ── signing (gate G1) ──────────────────────────────────────────────
 
 	@Test

@@ -3,6 +3,8 @@ package com.rustedwax.app.enrich
 import com.rustedwax.app.detect.TitleParser
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.Normalizer
+import java.util.Locale
 
 /**
  * Finds a video id by matching a YouTube search page against what the media
@@ -55,8 +57,56 @@ object SearchResultsParser {
 	fun candidates(json: String): List<Candidate> {
 		val out = LinkedHashMap<String, Candidate>()
 		walk(JSONObject(json)) { node ->
+			// YouTube moved Shorts search cards away from `videoRenderer`.
+			// `shortsLockupViewModel` carries the id below `reelWatchEndpoint`
+			// and the title as plain `content`; it deliberately carries neither
+			// channel nor duration. The resolver corroborates those two fields
+			// against each candidate's watch page before accepting the id.
+			node.optJSONObject("shortsLockupViewModel")?.let { lockup ->
+				val id = firstObject(lockup, "reelWatchEndpoint")
+					?.optString("videoId")
+					?.takeIf { VIDEO_ID.matches(it) }
+					?: return@let
+				val title = lockup.optJSONObject("overlayMetadata")
+					?.optJSONObject("primaryText")
+					?.optString("content")
+					?.takeIf { it.isNotBlank() }
+					?: return@let
+				out.putIfAbsent(id, Candidate(id, title, channel = null, lengthSeconds = null))
+			}
+
+			// The modern ordinary-video card. Playlist cards use the same name,
+			// but their `contentId` is not an eleven-character video id and is
+			// therefore ignored.
+			node.optJSONObject("lockupViewModel")?.let { lockup ->
+				val id = lockup.optString("contentId")
+					.takeIf { VIDEO_ID.matches(it) } ?: return@let
+				val metadata = firstObject(
+					lockup.optJSONObject("metadata"),
+					"lockupMetadataViewModel",
+				)
+				val title = metadata?.optJSONObject("title")
+					?.optString("content")
+					?.takeIf { it.isNotBlank() } ?: return@let
+				val rows = mutableListOf<String>()
+				collectStrings(metadata.optJSONObject("metadata"), "content", rows)
+				val clocks = mutableListOf<String>()
+				collectStrings(lockup, "text", clocks)
+				out.putIfAbsent(
+					id,
+					Candidate(
+						videoId = id,
+						title = title,
+						channel = rows.firstOrNull()?.takeIf { it.isNotBlank() },
+						lengthSeconds = clocks.firstNotNullOfOrNull(::parseClock),
+					),
+				)
+			}
+
 			val id = node.optString("videoId").takeIf { VIDEO_ID.matches(it) } ?: return@walk
-			val title = text(node.opt("title")) ?: return@walk
+			val title = text(node.opt("title"))
+				?: text(node.opt("headline"))
+				?: return@walk
 			if (out.containsKey(id)) return@walk
 			out[id] = Candidate(
 				videoId = id,
@@ -84,20 +134,76 @@ object SearchResultsParser {
 		durationSec: Long?,
 	): Candidate? {
 		if (durationSec == null || durationSec <= 0) return null
-		val wantTitle = normalize(title)
+		val wantTitle = titleKey(title)
 		val wantChannel = channelKey(channel)
 		if (wantTitle.isEmpty() || wantChannel == null) return null
 
-		return candidates.firstOrNull { c ->
-			val len = c.lengthSeconds ?: return@firstOrNull false
-			normalize(c.title) == wantTitle &&
+		return candidates.filter { c ->
+			val len = c.lengthSeconds ?: return@filter false
+			titleKey(c.title) == wantTitle &&
 				channelKey(c.channel) == wantChannel &&
 				kotlin.math.abs(len - durationSec) <= DURATION_TOLERANCE_SEC
-		}
+		}.singleOrNull()
 	}
 
 	/**
-	 * Channel names compared with whitespace removed.
+	 * Whether a fully-populated candidate proves the same media-session item.
+	 * Used again after a Shorts card has been completed from its watch page, so
+	 * the ordinary and Shorts paths cannot drift into different identity rules.
+	 */
+	fun matchesIdentity(
+		candidate: Candidate,
+		title: String,
+		channel: String?,
+		durationSec: Long?,
+	): Boolean = bestMatch(listOf(candidate), title, channel, durationSec) != null
+
+	/**
+	 * A search card worth completing from its watch page. Missing card fields are
+	 * allowed; a field that is present and contradicts the session is not.
+	 */
+	fun hasNoIdentityContradiction(
+		candidate: Candidate,
+		title: String,
+		channel: String?,
+		durationSec: Long?,
+	): Boolean {
+		val wantTitle = titleKey(title)
+		if (wantTitle.isEmpty() || titleKey(candidate.title) != wantTitle) return false
+		val wantChannel = channelKey(channel) ?: return false
+		val candidateChannel = channelKey(candidate.channel)
+		if (candidateChannel != null && candidateChannel != wantChannel) return false
+		val candidateDuration = candidate.lengthSeconds
+		if (
+			candidateDuration != null && durationSec != null &&
+			kotlin.math.abs(candidateDuration - durationSec) > DURATION_TOLERANCE_SEC
+		) return false
+		return true
+	}
+
+	/**
+	 * Identity title key. Hashtags, emoji and punctuation are presentation noise
+	 * in Shorts MediaSession titles and search cards, but words and numbers are
+	 * retained. Channel and duration still have to match independently.
+	 */
+	fun titleKey(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFKD)
+		.lowercase(Locale.ROOT)
+		.replace(Regex("""\p{M}+"""), "")
+		.replace(HASHTAG, " ")
+		.replace(SYMBOL, " ")
+		.replace(Regex("""[^\p{L}\p{N}]+"""), " ")
+		.replace(Regex("""\s+"""), " ")
+		.trim()
+
+	/** A shorter second search query for titles whose hashtag tail dominates the URL. */
+	fun searchTitle(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFKC)
+		.replace(HASHTAG, " ")
+		.replace(SYMBOL, " ")
+		.replace(Regex("""\s+"""), " ")
+		.trim()
+
+	/**
+	 * Channel names compared with presentation punctuation removed.
 	 *
 	 * VEVO channels are written as one word — the media session reports
 	 * `systemofadownVEVO`, while search lists the owner as `System Of A Down`.
@@ -105,12 +211,15 @@ object SearchResultsParser {
 	 * `system of a down`, so **every VEVO track failed to resolve**: three of
 	 * the four missing `url`s in the 2026-07-28 session were this, and in each
 	 * case the correct video was the *first* search result with an exact title
-	 * and a duration one second off. Spaces carry no meaning in a channel
-	 * name, so they are dropped on both sides.
+	 * and a duration one second off. Spaces, hyphens and diacritics carry no
+	 * identity meaning in a display name, so they are dropped on both sides.
 	 */
 	fun channelKey(channel: String?): String? = channel
 		?.let { TitleParser.cleanChannel(it) }
-		?.let { normalize(it).replace(" ", "") }
+		?.let { Normalizer.normalize(it, Normalizer.Form.NFKD) }
+		?.lowercase(Locale.ROOT)
+		?.replace(Regex("""\p{M}+"""), "")
+		?.replace(Regex("""[^\p{L}\p{N}]+"""), "")
 		?.takeIf { it.isNotEmpty() }
 
 	/** `4:35` → 275, `1:02:33` → 3753. */
@@ -148,9 +257,34 @@ object SearchResultsParser {
 		}
 	}
 
-	private fun normalize(value: String): String =
-		value.lowercase()
-			.replace(Regex("""["'’‘“”]"""), "")
-			.replace(Regex("""\s+"""), " ")
-			.trim()
+	private fun firstObject(node: Any?, key: String): JSONObject? {
+		when (node) {
+			is JSONObject -> {
+				node.optJSONObject(key)?.let { return it }
+				for (child in node.keys()) firstObject(node.opt(child), key)?.let { return it }
+			}
+
+			is JSONArray -> for (i in 0 until node.length()) {
+				firstObject(node.opt(i), key)?.let { return it }
+			}
+		}
+		return null
+	}
+
+	private fun collectStrings(node: Any?, key: String, out: MutableList<String>) {
+		when (node) {
+			is JSONObject -> for (child in node.keys()) {
+				val value = node.opt(child)
+				if (child == key && value is String) out += value
+				else collectStrings(value, key, out)
+			}
+
+			is JSONArray -> for (i in 0 until node.length()) {
+				collectStrings(node.opt(i), key, out)
+			}
+		}
+	}
+
+	private val HASHTAG = Regex("""#[\p{L}\p{M}\p{N}_-]+""")
+	private val SYMBOL = Regex("""[\p{So}\u200D\uFE0E\uFE0F]""")
 }

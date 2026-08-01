@@ -23,6 +23,7 @@ import com.rustedwax.app.hive.HiveRpc
 import com.rustedwax.app.hive.HiveScrobblePayload
 import com.rustedwax.app.hive.KeyValidator
 import com.rustedwax.app.scrobble.ScrobbleEngine
+import com.rustedwax.app.scrobble.ScrobbleRules
 import com.rustedwax.app.detect.MonitorSwitch
 import com.rustedwax.app.detect.ProbeHolder
 import com.rustedwax.app.detect.ScrobbleBuilder
@@ -60,17 +61,31 @@ class MainActivity : ComponentActivity() {
 				val monitoring by MonitorSwitch.enabled.collectAsStateWithLifecycle()
 				val logLines by EventLog.lines.collectAsStateWithLifecycle()
 				val recent by ScrobbleEngine.recent.collectAsStateWithLifecycle()
+				val skipped by ScrobbleEngine.skipped.collectAsStateWithLifecycle()
+				val quietBar by ScrobbleEngine.tracksWithoutVideoId.collectAsStateWithLifecycle()
 				val queued by ScrobbleEngine.queueSize.collectAsStateWithLifecycle()
 
 				var sessions by remember { mutableStateOf(emptyList<com.rustedwax.app.detect.SessionSnapshot>()) }
 				var hasAccess by remember { mutableStateOf(SessionProbe.hasNotificationAccess(this)) }
 				var urlWatcher by remember { mutableStateOf(UrlWatcherService.isEnabled(this)) }
 				var enrichment by remember { mutableStateOf(settings.enrichment) }
+				var shortClips by remember { mutableStateOf(settings.shortClips) }
+				// Read once per composition rather than held in a flow: mutes change
+				// only by the button below, so recomposing on that is enough.
+				var mutedIds by remember { mutableStateOf(ScrobbleEngine.mutedVideos().keys) }
 				var account by remember { mutableStateOf(vault.account) }
 				var autoScrobble by remember { mutableStateOf(settings.autoScrobble) }
-				var busy by remember { mutableStateOf(false) }
-				var status by remember { mutableStateOf<String?>(null) }
-				var statusIsError by remember { mutableStateOf(false) }
+					var busy by remember { mutableStateOf(false) }
+					var status by remember { mutableStateOf<String?>(null) }
+					var statusIsError by remember { mutableStateOf(false) }
+					var probeError by remember { mutableStateOf<String?>(null) }
+
+					// Observe errors as a flow. Reading StateFlow.value directly in
+					// composition does not subscribe and can leave stale UI.
+					LaunchedEffect(probe) {
+						probeError = null
+						probe?.error?.collect { probeError = it }
+					}
 
 				// The probe belongs to the service; poll it for live position
 				// and re-check the grant, which can be revoked from Settings.
@@ -97,7 +112,7 @@ class MainActivity : ComponentActivity() {
 					logLines = logLines,
 					hasAccess = hasAccess,
 					serviceRunning = probe != null,
-					error = probe?.error?.value,
+						error = probeError,
 					account = account,
 					accountBusy = busy,
 					accountStatus = status,
@@ -107,7 +122,11 @@ class MainActivity : ComponentActivity() {
 					thresholdPercent = settings.thresholdPercent,
 					urlWatcherEnabled = urlWatcher,
 					enrichment = enrichment,
+					shortClips = shortClips,
 					recent = recent,
+					skipped = skipped,
+					mutedIds = mutedIds,
+					tracksWithoutVideoId = quietBar,
 					queuedCount = queued,
 					onGrantAccess = ::openNotificationAccessSettings,
 					onExportLog = ::exportLog,
@@ -133,6 +152,20 @@ class MainActivity : ComponentActivity() {
 							"video lookup ${if (enabled) "on" else "off"}",
 						)
 					},
+					onToggleShortClips = { enabled ->
+						settings.shortClips = enabled
+						shortClips = enabled
+						EventLog.append(
+							"engine",
+							"short-clip scrobbling ${if (enabled) "on" else "off"} — " +
+								"verified shorts count from " +
+								"${if (enabled) {
+									ScrobbleRules.SHORT_MIN_DURATION_SECONDS
+								} else {
+									ScrobbleRules.MIN_DURATION_SECONDS
+								}}s",
+						)
+					},
 					onToggleAutoScrobble = { enabled ->
 						if (enabled && account == null) {
 							report("Add a Hive key first — nothing can be signed.", true)
@@ -140,6 +173,17 @@ class MainActivity : ComponentActivity() {
 							ScrobbleEngine.setAutoScrobble(enabled)
 							autoScrobble = enabled
 						}
+					},
+					onMute = { record ->
+						val id = record.videoId ?: return@MainScreen
+						val label = record.artist?.let { "$it — ${record.title}" } ?: record.title
+						ScrobbleEngine.mute(id, label)
+						mutedIds = ScrobbleEngine.mutedVideos().keys
+						report(
+							"\"$label\" won't scrobble again. The entry already " +
+								"on-chain can't be removed — nothing can remove it.",
+							isError = false,
+						)
 					},
 					onRetryQueue = {
 						ScrobbleEngine.flushQueue()
@@ -188,16 +232,56 @@ class MainActivity : ComponentActivity() {
 						// broadcast exactly the payload the user just looked at.
 						val facts = session.confirmed
 							?.let { ScrobbleEngine.cachedFacts(it.videoId) }
-						val mb = ScrobbleEngine.cachedMusicMatch(session, facts)
-						val payload = ScrobbleBuilder.from(session, facts, mb)
-						val startedAt = session.trackStartedAtEpochSec
-						when {
-							payload == null ->
-								report("Nothing broadcastable in that session yet.", isError = true)
+							val mb = ScrobbleEngine.cachedMusicMatch(session, facts)
+							val durationMs = ScrobbleBuilder.effectiveDurationMs(session, facts)
+							val payload = ScrobbleBuilder.from(
+								session,
+								facts,
+								mb,
+								durationMs = durationMs,
+							)
+							val decision = ScrobbleRules.decide(
+								playedMs = session.playedMs,
+								durationMs = durationMs,
+								threshold = settings.scrobbleThreshold,
+								isShort = session.confirmed?.isShort == true,
+								videoResolved = facts?.resolvedOnWatchPage == true,
+								videoUnlisted = facts?.isUnlisted,
+								shortClipsEnabled = settings.shortClips,
+								explicitAdSignal = session.explicitAdSignal,
+							)
+							val startedAt = session.trackStartedAtEpochSec
+							when {
+								session.confirmed == null ->
+									report(
+										"Video ID not verified — nothing sent because every " +
+											"scrobble requires a hyperlink.",
+										isError = true,
+									)
 
-							// Shares the automatic path's ledger, so this button is
-							// idempotent and the later automatic finalize of the same
-							// track is blocked instead of duplicating it.
+								payload == null ->
+									report("Nothing broadcastable in that session yet.", isError = true)
+
+							// The mute has to bind here too, or this button is a
+							// way around it — the same reason the manual path was
+							// made to share the dedup ledger in v0.5.4.
+							session.confirmed?.videoId?.let { ScrobbleEngine.isMuted(it) } == true ->
+								report(
+									"That video is muted — you asked never to scrobble " +
+										"it again. Nothing sent.",
+										isError = true,
+									)
+
+								!decision.shouldScrobble ->
+									report(
+										"Not eligible under the automatic rules: " +
+											(decision.skippedBecause ?: "no qualifying decision"),
+										isError = true,
+									)
+
+								// Shares the automatic path's ledger, so this button is
+								// idempotent and the later automatic finalize of the same
+								// track is blocked instead of duplicating it.
 							!ScrobbleEngine.claimManual(payload, startedAt) ->
 								report(
 									"Already scrobbled — \"${payload.title}\" is in the " +
@@ -205,15 +289,23 @@ class MainActivity : ComponentActivity() {
 									isError = true,
 								)
 
-							else -> {
-								busy = true
-								broadcast(payload) { msg, err ->
-									busy = false
+								else -> {
+									val manualPayload = payload.copy(
+										percentPlayed = ScrobbleRules.capForKind(
+											decision.percentages,
+											payload.kind,
+											isShort = session.confirmed?.isShort == true,
+											loopDetected = session.loopDetected,
+										).first(),
+									)
+									busy = true
+									broadcast(manualPayload) { msg, err ->
+										busy = false
 									// No queue on this path, so a failed send must give
 									// the claim back or the listen is stuck.
-									if (err) {
-										ScrobbleEngine.releaseManualClaim(payload, startedAt)
-									}
+										if (err) {
+											ScrobbleEngine.releaseManualClaim(manualPayload, startedAt)
+										}
 									report(msg, err)
 								}
 							}
@@ -244,14 +336,38 @@ class MainActivity : ComponentActivity() {
 					.getOrElse { HiveRpc.BroadcastResult.NetworkFailure(it.message ?: "unknown") }
 			}
 			when (result) {
-				is HiveRpc.BroadcastResult.Success -> onDone(
-					"Broadcast accepted by ${result.node.substringAfter("//")}" +
-						(result.txId?.let { " — tx $it" } ?: ""),
-					false,
-				)
+				is HiveRpc.BroadcastResult.Success -> {
+					val message = when (result.evidence) {
+						HiveRpc.BroadcastResult.Evidence.BLOCK ->
+							"Confirmed in a block — tx ${result.txId}"
+						HiveRpc.BroadcastResult.Evidence.MEMPOOL ->
+							"Accepted by ${result.node.substringAfter("//")} and seen " +
+								"relaying in an independent node's mempool — tx ${result.txId}"
+					}
+					onDone(message, false)
+				}
+
+				is HiveRpc.BroadcastResult.AcceptedUnconfirmed ->
+					// Not an error callback: the manual claim must remain held.
+					// Retrying an accepted-but-ambiguous transaction can duplicate it.
+					onDone(
+						"Accepted by ${result.node.substringAfter("//")}, but confirmation " +
+							"was unavailable — do not retry" +
+							(result.txId?.let { " — tx $it" } ?: ""),
+						false,
+					)
 
 				is HiveRpc.BroadcastResult.Rejected ->
 					onDone("Chain rejected it: ${result.message}", true)
+
+				// No queue behind this path, so the honest answer is "not yet"
+				// plus what to do about it.
+				is HiveRpc.BroadcastResult.Deferred ->
+					onDone(
+						"Not on-chain yet — ${result.message}. Nothing was signed " +
+							"away; try again in a moment.",
+						true,
+					)
 
 				is HiveRpc.BroadcastResult.NetworkFailure ->
 					onDone("Couldn't reach a node: ${result.message}", true)

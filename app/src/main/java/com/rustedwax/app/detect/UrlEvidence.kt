@@ -6,8 +6,9 @@ import java.util.concurrent.ConcurrentHashMap
  * What the browser's address bar last said, per browser package.
  *
  * The strongest evidence available: it names the origin exactly instead of
- * inferring it, and when the full URL is exposed it carries the video id —
- * which is the only route to `url` in the payload and to enrichment.
+ * inferring it, and when the full URL is exposed it carries the video id — the
+ * preferred exact route to the payload hyperlink and enrichment. Finalization
+ * can also recover an id from playlist/search evidence when the bar stays bare.
  *
  * Three limits are baked into how this is consumed, not bolted on:
  *

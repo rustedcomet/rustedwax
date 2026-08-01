@@ -51,9 +51,10 @@
 		</service>
 
 		<!--
-			Phase 4: optional address-bar watcher. Off unless the user enables
-			it in Accessibility settings. Scoped to browser packages in
-			accessibility_service_config.xml, which the OS enforces.
+			Phase 4: optional browser-evidence watcher. Off unless the user
+			enables it in Accessibility settings. Reads the URL bar plus exact
+			visible YouTube Shorts ad labels, and is scoped to browser packages
+			in accessibility_service_config.xml, which the OS enforces.
 		-->
 		<service
 			android:name=".detect.UrlWatcherService"

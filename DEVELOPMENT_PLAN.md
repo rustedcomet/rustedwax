@@ -1,10 +1,21 @@
 # RustedWax — Development Plan
 
-Working spec for RustedWax — an independent Android app, **not** affiliated with or supported by
-scrobble.life, Hive Scrobbler or Web Scrobbler. The upstream extension below is a reference for the
-on-chain format and behaviour only.
-app/service for Brave Browser. This document is the working spec: what gets copied, what gets
-rewritten, in what order, and what must be proven before shipping.
+> **Historical plan, not the as-built specification.** This file preserves the decisions and
+> sequencing that produced the app. Some early sections intentionally describe components that were
+> later replaced: OkHttp, Room, a foreground service, finalize-only identity, the proposed directory
+> layout, and an unverified first broadcast. For current behavior use [README.md](README.md), for the
+> current verification matrix use [TESTING.md](TESTING.md), and treat source plus tests as
+> authoritative where this history disagrees with them. The next documented
+> implementation target is the v0.8.11 patch contract produced by the v0.8.10
+> log-14 field run; it is planned, not implemented.
+>
+> The current concept-test also performs optional unsupported YouTube page extraction and an
+> undocumented YouTube Music request. The policy and distribution tradeoff is recorded in
+> [README.md](README.md#youtube-policy-and-prototype-tradeoff).
+
+Historical working spec for RustedWax — an independent Android app, **not** affiliated with or
+supported by scrobble.life, Hive Scrobbler or Web Scrobbler. The upstream extension below is a
+reference for the on-chain format and behaviour only.
 
 Upstream reference clone (read-only, for line-by-line porting):
 
@@ -19,15 +30,17 @@ git clone --depth 1 https://github.com/Holozing1/hivescrobble.git reference/hive
 **Goal:** identical on-chain behaviour to the extension for music-shaped content, with local signing
 instead of Hive Keychain and OS media sessions instead of DOM connectors.
 
-**In scope (v1)** — narrowed to **YouTube in Brave** (2026-07-22). Other sites and native players are
-observed as control cases but never broadcast; they widen once detection is proven.
-- Brave Android media-session detection, gated on provable YouTube identity
+**In scope (v1)** — narrowed to **YouTube in Brave and Chrome**. Other sites and native players are
+not watched by the current probe.
+
+- Brave/Chrome Android media-session detection, gated on provable YouTube identity
 - Username + posting key entry, on-chain validation, Keystore-backed storage
 - Local `custom_json` construction, secp256k1 signing, broadcast with node failover
 - 60% / 160% music thresholds, dedup, offline retry queue
-- Privacy mode (AES-256-GCM envelope), key-compatible with desktop
+- Privacy mode (AES-256-GCM envelope), key-compatible with desktop — **planned, not implemented**
 
 **Out of scope (v1)**
+
 - movie / episode kinds (no DOM → no reliable `videoKind`). *Artist verification, the other thing
   desktop's Wikipedia/Wikidata layer provided, landed in Phase 4 as a MusicBrainz check instead.*
 - guest (Google / scrobble.life) ingest path
@@ -41,9 +54,9 @@ observed as control cases but never broadcast; they widen once detection is prov
 | --- | --- | --- |
 | Language / UI | Kotlin + Jetpack Compose | The detection layer is entirely platform API; a JS runtime kept alive in a foreground service costs battery and complexity for no gain. |
 | Crypto | BouncyCastle (`org.bouncycastle:bcprov-jdk18on`) secp256k1 | Needs RFC-6979 deterministic ECDSA + canonical-signature grinding; BC exposes `HMacDSAKCalculator` directly. |
-| Hive RPC | OkHttp + kotlinx.serialization, `condenser_api` | Matches the endpoints the extension already uses. |
-| Key storage | `EncryptedSharedPreferences` + Android Keystore, `BiometricPrompt` gate | Raw posting key on device — see §7. |
-| Persistence | Room | Dedup ledger + offline broadcast queue must survive process death (extension used `storage.session`; Android needs durable). |
+| Hive RPC | `HttpURLConnection` + `org.json`, `condenser_api` | Dependency-light implementation with node freshness and transaction-status checks. |
+| Key storage | `EncryptedSharedPreferences` + Android Keystore | Raw posting key on device; the planned `BiometricPrompt` gate is still outstanding — see §7. |
+| Persistence | SharedPreferences + JSON files | Dedup, facts and settings use preferences; the small offline queue is a durable JSON file. |
 | Min SDK | 26 (Keystore AES-GCM, `MediaSessionManager` stability); target latest | |
 
 ### Why not Capacitor / React Native
@@ -234,14 +247,14 @@ WIF parse → derive compressed pubkey → base58/STM encode → compare against
 in [KeyVault.kt](app/src/main/java/com/rustedwax/app/storage/KeyVault.kt), account UI. Gate G5
 green. **Biometric gate still outstanding** — see §7.
 
-**Phase 2 — Signing & broadcast** — *done (v0.2.0), pending a real on-chain tx*
+**Phase 2 — Signing & broadcast** — *done (v0.2.0); real on-chain broadcast verified*
 [TxSerializer.kt](app/src/main/java/com/rustedwax/app/hive/TxSerializer.kt),
 [HiveKey.sign](app/src/main/java/com/rustedwax/app/hive/HiveKey.kt) (RFC-6979 + canonical
 grinding), [HiveRpc.kt](app/src/main/java/com/rustedwax/app/hive/HiveRpc.kt) with node failover,
 and a manual broadcast button. Gates **G1 and G3 verified** against dhive-generated vectors in
 [HiveVectorsTest.kt](app/src/test/java/com/rustedwax/app/hive/HiveVectorsTest.kt) — the Kotlin
 signer reproduces dhive's output byte-for-byte, including the privacy-challenge signature Phase 4
-depends on. **G4 (a real broadcast landing on-chain) is the one gate still unproven.**
+depends on. **G4 was verified on 2026-07-23**; see the compatibility table above and PHASE0 run 3.
 
 **Phase 3 — Detection & rules** — *done (v0.3.0)*
 `ScrobbleRules` (gate G6 green), `DedupLedger`, `BroadcastQueue` with exponential backoff,
@@ -260,14 +273,40 @@ service-owned probe through `ProbeHolder` rather than owning one.
 Not carried over from the original plan: **cross-device dedup (§8)**. Desktop and phone running
 together will still double-scrobble the same listen.
 
-**Phase 4 — Control, exclusivity, metadata fidelity** — *done (v0.4.0–v0.6.1; see PHASE4.md)*
+**Phase 4 — Control, exclusivity, metadata fidelity** — *implemented through v0.8.10;
+v0.8.11 planned; see
+[BEHAVIOR_CONTRACT.md](BEHAVIOR_CONTRACT.md) for current invariants and PHASE4.md for chronology*
 Stop switch, browser-only watching with per-session hint binding, evidence-layered kind
 classification (format evidence > category Music > hard music evidence > non-music category >
-contextual words > music vocabulary > weak title shapes > video-by-default), optional address-bar
-watcher with track-lifetime id latching, watch-page enrichment, MusicBrainz artist/recording
-verification, song-only double-listen, and three-stage video-id recovery — address bar, then the
-playlist listing, then a title+channel+duration search — because the bar goes silent for tens of
-minutes whenever a playlist advances behind a hidden toolbar.
+contextual words > music vocabulary > weak title shapes > video-by-default), optional browser
+evidence watcher with track-lifetime id latching and exact visible YouTube Shorts ad labels,
+watch-page enrichment, MusicBrainz artist/recording verification, song-only double-listen, and
+three-stage video-id recovery — address bar, then the playlist listing, then a
+title+channel+duration search — because the bar goes silent for tens of minutes whenever a
+playlist advances behind a hidden toolbar. Identity and explicit ad evidence are frozen with
+played time across the one-minute Chrome session-continuation window.
+
+The log-14 release gate passed transport, section placement and mandatory
+hyperlinks for all 109 emitted payloads, but Phase 4 is not complete. v0.8.11 is
+limited to four evidence-backed corrections:
+
+1. extend identity freezing from the probe through asynchronous resolver,
+   enrichment and payload construction, with final candidate corroboration
+   against the immutable ended metadata;
+2. bind exact visible-ad evidence to a stable URL/session generation so a stale
+   overlay in the successor transition frame cannot veto organic playback;
+3. replace exact-duration track-key equality with bounded same-track metadata
+   refinement, preserving progress across missing-to-known or ≤2-second drift;
+   and
+4. make song-credit parsing top-level-separator and channel aware, pinned by the
+   four malformed log-14 payloads.
+
+Phase 4 does not advance to another feature until targeted regressions, the
+complete unit/build/lint gates, and a second physical-device reconciliation all
+pass. The next run must again compare the event log, signed-in YouTube History,
+block evidence, both profile sections, ad outcomes, loop caps and hyperlink
+targets by video id. No historical transaction is repaired or rebroadcast as
+part of this work.
 
 **Phase 5 — Privacy mode**
 `PrivacySecret`, `PrivacyCipher`, `PrivacyEnvelope`, four per-kind toggles matching the extension's
@@ -299,7 +338,7 @@ field logs showed a missing `url` was the common case for playlist listening, no
 
 ---
 
-## 10. Proposed layout
+## 10. Original proposed layout (superseded)
 
 ```
 rustedwax-mobile/
@@ -319,7 +358,10 @@ rustedwax-mobile/
 
 ---
 
-## 11. Open questions
+## 11. Original open questions
+
+These questions are retained to show what drove the spike. Several were answered by PHASE0 or by
+later field runs and should not be read as current blockers.
 
 1. Does Brave Android populate `METADATA_KEY_ART_URI`, and does it survive tab backgrounding?
    *(Phase 0 answers this; the whole `url`/`platform` story depends on it.)*

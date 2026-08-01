@@ -102,7 +102,9 @@ class RustedWaxListenerService : NotificationListenerService() {
 		probe = SessionProbe(applicationContext).also { p ->
 			p.onTrackFinalized = ScrobbleEngine::onTrackFinalized
 			p.onVideoConfirmed = ScrobbleEngine::prefetch
-			p.pageTitleFor = { videoId -> ScrobbleEngine.cachedFacts(videoId)?.title }
+			p.knownVideoFor = { videoId ->
+				ScrobbleEngine.knownVideo(videoId)
+			}
 			p.start()
 			ProbeHolder.set(p)
 		}
@@ -117,6 +119,8 @@ class RustedWaxListenerService : NotificationListenerService() {
 		// Evidence harvested before Stop must not survive to explain a session
 		// seen after the next Start.
 		NotificationHints.clearAll()
+		UrlEvidence.clearAll()
+		AdEvidence.clearAll()
 		EventLog.append(
 			"monitor",
 			if (wasRunning) {
@@ -154,6 +158,9 @@ class RustedWaxListenerService : NotificationListenerService() {
 	}
 
 	override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+		// Removal callbacks carry notification extras too. Stopped means returning
+		// before even reading the package or title, just like the posted path.
+		if (!MonitorSwitch.isEnabled) return
 		val pkg = sbn?.packageName ?: return
 		if (pkg !in YouTubeProbe.TARGET_PACKAGES) return
 		// Remove only the hint this notification produced. Clearing the whole

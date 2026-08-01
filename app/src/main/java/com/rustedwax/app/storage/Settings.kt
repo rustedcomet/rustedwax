@@ -30,10 +30,10 @@ class Settings(context: Context) {
 	/**
 	 * Whether to look a video up on youtube.com to improve its metadata.
 	 *
-	 * Only reachable when the address-bar watcher has produced a video id, so
-	 * this is a no-op until that's enabled. On by default because it's the
-	 * point of having the id at all, but it is off-device traffic — one GET per
-	 * new video, from outside the browser — so it stays a visible switch.
+	 * Given an id, this fetches richer metadata. When the address bar did not
+	 * produce one, the same switch also permits playlist/search/watch-page id
+	 * recovery. On by default, but it is off-device traffic from outside the
+	 * browser, so it stays a visible switch.
 	 */
 	var enrichment: Boolean
 		get() = prefs.getBoolean(KEY_ENRICH, true)
@@ -43,6 +43,25 @@ class Settings(context: Context) {
 	var autoScrobble: Boolean
 		get() = prefs.getBoolean(KEY_AUTO, false)
 		set(value) = prefs.edit().putBoolean(KEY_AUTO, value).apply()
+
+	/**
+	 * Whether verified YouTube shorts may scrobble below the 30-second minimum,
+	 * down to [ScrobbleRules.SHORT_MIN_DURATION_SECONDS].
+	 *
+	 * Requires **both** other switches, and not incidentally: the exception is
+	 * granted on proof, and each switch supplies half of it. The address-bar
+	 * watcher proves the `/shorts/` path; the lookup proves the video exists on
+	 * its watch page. With either off there is no proof, so the ordinary
+	 * 30-second floor applies and this setting does nothing — which is why the
+	 * UI says so rather than showing an unexplained no-op.
+	 *
+	 * On by default. The floor's own field data showed it rejecting only shorts
+	 * and never a watch-path track, so leaving the old behaviour in place would
+	 * keep discarding a third of the shorts feed by default.
+	 */
+	var shortClips: Boolean
+		get() = prefs.getBoolean(KEY_SHORT_CLIPS, true)
+		set(value) = prefs.edit().putBoolean(KEY_SHORT_CLIPS, value).apply()
 
 	/** `scrobblePercent` upstream — stored as a percentage, used as a fraction. */
 	var scrobbleThreshold: Double
@@ -57,6 +76,7 @@ class Settings(context: Context) {
 		const val KEY_MONITORING = "monitoringEnabled"
 		const val KEY_ENRICH = "enrichment"
 		const val KEY_AUTO = "autoScrobble"
+		const val KEY_SHORT_CLIPS = "shortClipScrobbling"
 
 		/** Same key the extension uses. */
 		const val KEY_PERCENT = "scrobblePercent"
