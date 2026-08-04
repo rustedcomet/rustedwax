@@ -63,6 +63,9 @@ object YouTubeAdDetector {
 		return literal.takeIf { normalized in exactLabels || countedLabel.matches(normalized) }
 	}
 
+	/** Exact-label scanning is allowed on any visible YouTube host shape. */
+	fun shouldScanHost(host: String?): Boolean = YouTubeProbe.isYouTubeHost(host)
+
 	/**
 	 * The id an ad label may be bound to in this exact accessibility snapshot.
 	 *

@@ -29,6 +29,15 @@ class YouTubeAdDetectorTest {
 	}
 
 	@Test
+	fun `exact label scanning is enabled for every visible youtube host shape`() {
+		assertTrue(YouTubeAdDetector.shouldScanHost("youtube.com"))
+		assertTrue(YouTubeAdDetector.shouldScanHost("m.youtube.com"))
+		assertTrue(YouTubeAdDetector.shouldScanHost("music.youtube.com"))
+		assertFalse(YouTubeAdDetector.shouldScanHost("example.com"))
+		assertFalse(YouTubeAdDetector.shouldScanHost(null))
+	}
+
+	@Test
 	fun `ad binding requires a concrete shorts id in the same snapshot`() {
 		assertEquals(
 			"grNk0DpiaEE",

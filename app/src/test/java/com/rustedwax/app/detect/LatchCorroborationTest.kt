@@ -81,19 +81,21 @@ class LatchCorroborationTest {
 	// endregion
 
 	// region title
+	private fun corroborates(first: String, second: String): Boolean =
+		SessionProbe.titleEvidence(first, second) != VideoTitleMatcher.Evidence.CONTRADICTION
 
 	@Test
 	fun `identical titles match`() {
-		assertTrue(SessionProbe.titlesMatch("Korn - Trash", "Korn - Trash"))
-		assertTrue(SessionProbe.titlesMatch("KORN - TRASH", "korn - trash"))
-		assertTrue(SessionProbe.titlesMatch("Korn  -  Trash", "Korn - Trash"))
+		assertTrue(corroborates("Korn - Trash", "Korn - Trash"))
+		assertTrue(corroborates("KORN - TRASH", "korn - trash"))
+		assertTrue(corroborates("Korn  -  Trash", "Korn - Trash"))
 	}
 
 	/** Chromium truncates the media-session title on long ones. */
 	@Test
 	fun `a truncated title still matches`() {
 		assertTrue(
-			SessionProbe.titlesMatch(
+			corroborates(
 				"Fall 2: Deadpoint (2026) Official Trailer 2 - Harriet Slater",
 				"Fall 2: Deadpoint (2026) Official Trailer 2",
 			),
@@ -102,13 +104,76 @@ class LatchCorroborationTest {
 
 	@Test
 	fun `two different videos do not match`() {
-		assertFalse(SessionProbe.titlesMatch("Con Calma", "Para Mis Soldados - Danger Man"))
+		assertFalse(corroborates("Con Calma", "Para Mis Soldados - Danger Man"))
+		assertFalse(corroborates("Bad Bunny", "Bad Bunny - Another Song"))
+	}
+
+	@Test
+	fun `log 16 localized and structural title presentations retain their own ids`() {
+		assertTrue(
+			corroborates(
+				"BAD BUNNY - SOY PEOR (Video Oficial)",
+				"BAD BUNNY - SOY PEOR (Official Video)",
+			),
+		)
+		assertTrue(
+			corroborates(
+				"Bad Bunny ft. Chencho Corleone - Me Porto Bonito (Video Oficial) | " +
+					"Un Verano Sin Ti",
+				"Bad Bunny (ft. Chencho Corleone) - Me Porto Bonito (Official Video) | " +
+					"Un Verano Sin Ti",
+			),
+		)
+		assertTrue(
+			corroborates(
+				"BAD BUNNY x JHAY CORTEZ - DÁKITI (Video Oficial)",
+				"BAD BUNNY x JHAY CORTEZ - DÁKITI | EL ÚLTIMO TOUR DEL MUNDO " +
+					"(Official Video)",
+			),
+		)
+	}
+
+	@Test
+	fun `log 16 adjacent tracks and ads remain contradictions`() {
+		assertFalse(
+			corroborates(
+				"BAD BUNNY - SOY PEOR (Official Video)",
+				"Bad Bunny ft. Chencho Corleone - Me Porto Bonito (Video Oficial) | " +
+					"Un Verano Sin Ti",
+			),
+		)
+		assertFalse(
+			corroborates(
+				"Bad Bunny (ft. Chencho Corleone) - Me Porto Bonito (Official Video) | " +
+					"Un Verano Sin Ti",
+				"KAROL G, Shakira - TQG (Official Video)",
+			),
+		)
+		assertFalse(
+			corroborates(
+				"BAD BUNNY x JHAY CORTEZ - DÁKITI | EL ÚLTIMO TOUR DEL MUNDO " +
+					"(Official Video)",
+				"FloyyMenor, Cris MJ - Gata Only (Video Oficial)",
+			),
+		)
+		assertFalse(
+			corroborates(
+				"Abre la puerta a un mundo de experiencias con Mastercard",
+				"Arcángel, Bad Bunny - Me Acostumbré (Video Oficial)",
+			),
+		)
+		assertFalse(
+			corroborates(
+				"PA P&G 2026 Vick + Jarabe 15s",
+				"W Sound 05 \"LA PLENA\" - Beéle, Westcol, Ovy On The Drums",
+			),
+		)
 	}
 
 	@Test
 	fun `an empty title is never a match`() {
-		assertFalse(SessionProbe.titlesMatch("", "Con Calma"))
-		assertFalse(SessionProbe.titlesMatch("Con Calma", "   "))
+		assertFalse(corroborates("", "Con Calma"))
+		assertFalse(corroborates("Con Calma", "   "))
 	}
 	// endregion
 

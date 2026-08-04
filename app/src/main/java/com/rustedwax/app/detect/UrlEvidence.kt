@@ -1,5 +1,6 @@
 package com.rustedwax.app.detect
 
+import com.rustedwax.app.enrich.VerifiedIdentityCandidateCache
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -31,6 +32,8 @@ object UrlEvidence {
 		/** Exactly what the address bar contained, for the log. */
 		val raw: String,
 		val atMillis: Long = System.currentTimeMillis(),
+		/** Monotonic per-package URL/track generation assigned by [put]. */
+		val generation: Long = 0,
 	)
 
 	/**
@@ -41,6 +44,7 @@ object UrlEvidence {
 	private const val FRESH_MS = 5L * 60 * 1000
 
 	private val byPackage = ConcurrentHashMap<String, Evidence>()
+	private val generationByPackage = ConcurrentHashMap<String, Long>()
 
 	/**
 	 * Last playlist seen per package, kept far longer than [FRESH_MS].
@@ -82,7 +86,7 @@ object UrlEvidence {
 	@Volatile
 	var onEvidence: ((packageName: String) -> Unit)? = null
 
-	fun put(packageName: String, evidence: Evidence) {
+	fun put(packageName: String, evidence: Evidence): Evidence {
 		val previous = byPackage[packageName]
 		// Chromium collapses the omnibox to the bare host as the toolbar hides,
 		// which used to overwrite a video id captured seconds earlier with "no
@@ -91,21 +95,35 @@ object UrlEvidence {
 		if (previous?.videoId != null && evidence.videoId == null &&
 			previous.host == evidence.host
 		) {
-			return
+			return previous
 		}
-		byPackage[packageName] = evidence
-		evidence.playlistId?.let { playlistByPackage[packageName] = it to evidence.atMillis }
-		if (previous == null ||
+		val changed = previous == null ||
 			previous.host != evidence.host ||
-			previous.videoId != evidence.videoId
+			previous.videoId != evidence.videoId ||
+			previous.isShort != evidence.isShort
+		val generation = if (changed) {
+			generationByPackage.merge(packageName, 1L, Long::plus) ?: 1L
+		} else {
+			previous.generation
+		}
+		val stored = evidence.copy(generation = generation)
+		byPackage[packageName] = stored
+		stored.playlistId?.let { playlistByPackage[packageName] = it to stored.atMillis }
+		if (previous == null ||
+			previous.host != stored.host ||
+			previous.videoId != stored.videoId
 		) {
-			EventLog.append(
-				"url",
-				"$packageName → host=${evidence.host ?: "?"} " +
-					"video=${evidence.videoId ?: "—"}  (\"${evidence.raw}\")",
-			)
+			runCatching {
+				EventLog.append(
+					"url",
+					"$packageName → host=${stored.host ?: "?"} " +
+						"video=${stored.videoId ?: "—"} generation=$generation  " +
+						"(\"${stored.raw}\")",
+				)
+			}
 			onEvidence?.invoke(packageName)
 		}
+		return stored
 	}
 
 	fun get(packageName: String, now: Long = System.currentTimeMillis()): Evidence? =
@@ -120,5 +138,18 @@ object UrlEvidence {
 	fun clearAll() {
 		byPackage.clear()
 		playlistByPackage.clear()
+		generationByPackage.clear()
+		MediaSessionAdEvidence.clearAll()
+		MediaSessionAccessibilityEvidence.clearAll()
+		VerifiedIdentityCandidateCache.clearAll()
+	}
+
+	fun clear(packageName: String) {
+		byPackage.remove(packageName)
+		playlistByPackage.remove(packageName)
+		generationByPackage.remove(packageName)
+		MediaSessionAdEvidence.clearPackage(packageName)
+		MediaSessionAccessibilityEvidence.clearPackage(packageName)
+		VerifiedIdentityCandidateCache.clear(packageName)
 	}
 }

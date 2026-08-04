@@ -69,9 +69,69 @@ class ScrobbleRulesTest {
 		)
 		assertFalse(d.shouldScrobble)
 		assertEquals(
-			"YouTube's visible UI marked this Short as an ad (\"Sponsored\")",
+			"YouTube's visible UI marked this track as an ad (\"Sponsored\")",
 			d.skippedBecause,
 		)
+	}
+
+	@Test
+	fun `public thirty second watch ad is vetoed by automatic and manual central rules`() {
+		fun decide() = ScrobbleRules.decide(
+			playedMs = 30_000,
+			durationMs = 30_000,
+			isShort = false,
+			videoResolved = true,
+			videoUnlisted = false,
+			explicitAdSignal = "Sponsored",
+		)
+		val automatic = decide()
+		val manual = decide()
+		assertFalse(automatic.shouldScrobble)
+		assertFalse(manual.shouldScrobble)
+		assertEquals(automatic.skippedBecause, manual.skippedBecause)
+		assertEquals(
+			"YouTube's visible UI marked this track as an ad (\"Sponsored\")",
+			automatic.skippedBecause,
+		)
+	}
+
+	@Test
+	fun `resolver only track without current scan refuses automatic and manual honestly`() {
+		fun decide() = ScrobbleRules.decide(
+			playedMs = 30_000,
+			durationMs = 30_000,
+			videoResolved = true,
+			videoUnlisted = false,
+			browserEvidenceEnabled = true,
+			resolvedWithoutExactUrl = true,
+			accessibilityCovered = false,
+		)
+		val automatic = decide()
+		val manual = decide()
+		assertFalse(automatic.shouldScrobble)
+		assertEquals(automatic.skippedBecause, manual.skippedBecause)
+		assertTrue(automatic.skippedBecause!!.contains("Browser evidence was unavailable"))
+		assertFalse(automatic.skippedBecause!!.contains("advertisement", ignoreCase = true))
+	}
+
+	@Test
+	fun `coverage exact URL and Browser evidence off preserve eligible paths`() {
+		fun decide(
+			enabled: Boolean,
+			resolverOnly: Boolean,
+			covered: Boolean,
+		) = ScrobbleRules.decide(
+			playedMs = 120_000,
+			durationMs = 120_000,
+			videoResolved = true,
+			videoUnlisted = false,
+			browserEvidenceEnabled = enabled,
+			resolvedWithoutExactUrl = resolverOnly,
+			accessibilityCovered = covered,
+		)
+		assertTrue(decide(enabled = true, resolverOnly = true, covered = true).shouldScrobble)
+		assertTrue(decide(enabled = true, resolverOnly = false, covered = false).shouldScrobble)
+		assertTrue(decide(enabled = false, resolverOnly = true, covered = false).shouldScrobble)
 	}
 
 	// region short-clip floor
@@ -287,7 +347,7 @@ class ScrobbleRulesTest {
 			explicitAdSignal = "Omitir anuncio",
 		)
 		assertEquals(
-			"YouTube's visible UI marked this Short as an ad (\"Omitir anuncio\")",
+			"YouTube's visible UI marked this track as an ad (\"Omitir anuncio\")",
 			why,
 		)
 	}

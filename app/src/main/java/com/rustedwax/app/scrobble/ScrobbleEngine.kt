@@ -19,13 +19,16 @@ import com.rustedwax.app.detect.ScrobbleBuilder
 import com.rustedwax.app.detect.SessionProbe
 import com.rustedwax.app.detect.SessionSnapshot
 import com.rustedwax.app.detect.TitleParser
-import com.rustedwax.app.detect.UrlEvidence
 import com.rustedwax.app.detect.EventLog
 import com.rustedwax.app.enrich.FactsCache
 import com.rustedwax.app.enrich.MetadataResolver
 import com.rustedwax.app.enrich.MusicBrainzVerifier
 import com.rustedwax.app.enrich.VideoFacts
 import com.rustedwax.app.enrich.VideoIdResolver
+import com.rustedwax.app.enrich.VideoIdentityCorroborator
+import com.rustedwax.app.enrich.VideoResolution
+import com.rustedwax.app.enrich.VideoResolutionAttempt
+import com.rustedwax.app.enrich.VerifiedIdentityCandidateCache
 import com.rustedwax.app.enrich.YouTubePageResolver
 import com.rustedwax.app.storage.KeyVault
 import com.rustedwax.app.storage.MutedVideos
@@ -228,26 +231,60 @@ object ScrobbleEngine {
 			// The address bar is the exact source when it spoke; searching is
 			// the fallback for when it never did (a playlist advancing behind a
 			// hidden toolbar fires no accessibility event at all).
-			val videoId = session.confirmed?.videoId ?: resolveVideoId(session)
-			noteVideoIdOutcome(videoId)
-			if (videoId == null) {
+			val attempt = session.confirmed?.let { confirmed ->
+				VideoResolutionAttempt(
+					resolution = VideoResolution(
+						videoId = confirmed.videoId,
+						source = "frozen ${confirmed.source}",
+						title = session.resolverContext.knownTitle,
+						channel = session.resolverContext.knownChannel,
+						lengthSeconds = session.resolverContext.knownDurationSeconds,
+					),
+				)
+			} ?: resolveVideoId(session)
+			val resolution = attempt.resolution
+			if (resolution == null) {
+				noteVideoIdOutcome(null)
 				skip(
 					session,
-					"video id could not be verified — no scrobble was broadcast " +
-						"because every YouTube entry requires a hyperlink",
+					"video id could not be verified — " +
+						(attempt.refusalReason ?: "no unique candidate corroborated") +
+						"; no scrobble was broadcast because every YouTube entry requires a hyperlink",
 				)
 				return@launch
 			}
+			val videoId = resolution.videoId
+			val facts = enrich(videoId)
+			VideoIdentityCorroborator.contradiction(session, resolution, facts)?.let { mismatch ->
+				noteVideoIdOutcome(null)
+				skip(
+					session,
+					"video id could not be verified against the finalized snapshot — $mismatch",
+				)
+				return@launch
+			}
+			if (VideoIdentityCorroborator.cacheable(session, resolution, facts)) {
+				VerifiedIdentityCandidateCache.remember(
+					packageName = session.packageName,
+					videoId = videoId,
+					title = session.title,
+					channel = session.artist,
+					durationMs = session.durationMs,
+				)
+				EventLog.append(
+					"resolve",
+					"remembered $videoId as a bounded run-local verified candidate",
+				)
+			}
+			noteVideoIdOutcome(videoId)
 
-			// Asked before anything else is spent on it. An id the user has muted
-			// is not a listen at all, so there is nothing to look up, verify or
-			// measure. See [MutedVideos] for why this exists rather than a rule.
+			// Once the frozen snapshot has verified the id, honor the user's mute
+			// before MusicBrainz, rules, payload construction or signing.
 			if (muted.isMuted(videoId)) {
 				skip(session, "muted video — you asked never to scrobble this one again")
 				return@launch
 			}
 
-			val facts = enrich(videoId)
 			val mb = verifyMusic(session, facts)
 
 			// Stage 2: the duration may have arrived from the watch page, and
@@ -269,6 +306,9 @@ object ScrobbleEngine {
 				videoUnlisted = facts?.isUnlisted,
 				shortClipsEnabled = settings.shortClips,
 				explicitAdSignal = session.explicitAdSignal,
+				browserEvidenceEnabled = session.browserEvidenceEnabled,
+				resolvedWithoutExactUrl = session.confirmed == null,
+				accessibilityCovered = session.accessibilityCoverage != null,
 			)
 			if (!decision.shouldScrobble) {
 				skip(session, decision.skippedBecause ?: "no reason given", durationMs)
@@ -460,7 +500,11 @@ object ScrobbleEngine {
 	 */
 	fun knownVideo(videoId: String): SessionProbe.KnownVideo? =
 		cachedFacts(videoId)?.let {
-			SessionProbe.KnownVideo(title = it.title, lengthSeconds = it.lengthSeconds)
+			SessionProbe.KnownVideo(
+				title = it.title,
+				channel = it.author,
+				lengthSeconds = it.lengthSeconds,
+			)
 		}
 
 	/**
@@ -485,20 +529,58 @@ object ScrobbleEngine {
 	 * — and fails closed. If the match is not certain, finalization records the
 	 * item in Not logged and never constructs an on-chain entry.
 	 */
-	private suspend fun resolveVideoId(session: SessionSnapshot): String? {
-		if (!settings.enrichment) return null
-		val title = session.title ?: return null
+	private suspend fun resolveVideoId(session: SessionSnapshot): VideoResolutionAttempt {
+		if (!settings.enrichment) {
+			return VideoResolutionAttempt(refusalReason = "video lookup is disabled")
+		}
+		val title = session.title
+			?: return VideoResolutionAttempt(refusalReason = "the finalized title is missing")
 		val durationSec = session.durationMs?.div(1000)
 		return runCatching {
+			val cachedIds = VerifiedIdentityCandidateCache.candidates(
+				packageName = session.packageName,
+				title = session.title,
+				channel = session.artist,
+				durationMs = session.durationMs,
+			)
+			if (cachedIds.isNotEmpty()) {
+				EventLog.append(
+					"resolve",
+					"${cachedIds.size} run-local candidate(s) for \"$title\" — re-fetching",
+				)
+				val cachedAttempt = idResolver.resolveVerifiedCandidates(
+					cachedIds, title, session.artist, durationSec,
+				)
+				if (cachedAttempt.resolution != null ||
+					cachedAttempt.refusalReason?.startsWith("ambiguous identity") == true
+				) {
+					return@runCatching cachedAttempt
+				}
+				EventLog.append(
+					"resolve",
+					"run-local recovery did not corroborate — continuing to playlist/search",
+				)
+			}
 			// The playlist is exact where search is only plausible, and after
 			// the first fetch it costs nothing for the rest of the playlist.
-			UrlEvidence.playlistId(session.packageName)?.let { list ->
-				idResolver.resolveFromPlaylist(list, title, session.artist, durationSec)
-			} ?: idResolver.resolve(title, session.artist, durationSec)
+			val playlistResolution = session.resolverContext.playlistId?.let { list ->
+				idResolver.resolveEvidenceFromPlaylist(list, title, session.artist, durationSec)
+			}
+			if (playlistResolution != null) {
+				VideoResolutionAttempt(resolution = playlistResolution)
+			} else {
+				idResolver.resolveEvidenceAttempt(title, session.artist, durationSec)
+			}
 		}.getOrElse {
 			EventLog.append("resolve", "resolver threw: ${it.message}")
-			null
+			VideoResolutionAttempt(refusalReason = "resolver failed: ${it.message ?: "unknown error"}")
 		}
+	}
+
+	/** Monitoring/package reset boundary for the memory-only identity index. */
+	fun clearVerifiedIdentityCandidates(packageName: String? = null) {
+		if (packageName == null) VerifiedIdentityCandidateCache.clearAll()
+		else VerifiedIdentityCandidateCache.clear(packageName)
 	}
 
 	/**

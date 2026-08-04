@@ -611,6 +611,14 @@ private fun SessionCard(
 			Field("played", fmt(s.playedMs))
 			if (s.loopDetected) Field("loop", "detected — continuous viewing capped to one")
 			s.explicitAdSignal?.let { Field("ad", "blocked — YouTube UI: \"$it\"") }
+			Field(
+				"browser scan",
+				when {
+					s.accessibilityCoverage != null -> "covered for this track"
+					s.browserEvidenceEnabled -> "unavailable for this track"
+					else -> "disabled — notification/lookup fallback disclosed"
+				},
+			)
 
 			when (val id = s.identity) {
 				is YouTubeProbe.Identity.Confirmed -> {

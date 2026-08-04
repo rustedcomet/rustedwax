@@ -12,8 +12,8 @@ android {
 		applicationId = "com.rustedwax.app"
 		minSdk = 26
 		targetSdk = 35
-		versionCode = 30
-		versionName = "0.8.10"
+		versionCode = 35
+		versionName = "0.8.15"
 	}
 
 	buildTypes {

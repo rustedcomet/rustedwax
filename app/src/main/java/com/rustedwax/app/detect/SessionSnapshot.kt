@@ -33,15 +33,24 @@ data class SessionSnapshot(
 	 */
 	val loopDetected: Boolean,
 	/**
-	 * Exact visible YouTube UI label that marked this `/shorts/` track as an
+	 * Exact visible YouTube UI label bound to this track instance as an
 	 * advertisement, or null when no explicit label was observed.
 	 */
 	val explicitAdSignal: String? = null,
+	/** Browser evidence access was enabled for the monitoring run that observed this track. */
+	val browserEvidenceEnabled: Boolean = false,
+	/** Fresh successful visible-YouTube-root scan frozen for this exact track. */
+	val accessibilityCoverage: MediaSessionAccessibilityEvidence.Coverage? = null,
 	val playbackState: String,
 	val isPlaying: Boolean,
 	/** playedMs / durationMs; null when duration is unknown. */
 	val percentPlayed: Double?,
 	val identity: YouTubeProbe.Identity,
+	/**
+	 * Resolver inputs frozen while this track was active. Asynchronous
+	 * finalization must never consult the package's later foreground URL.
+	 */
+	val resolverContext: ResolverContext = ResolverContext(),
 	/** Most recent browser media notification seen for this package, if any. */
 	val notificationHint: NotificationHints.Hint?,
 	val metadataLines: List<String>,
@@ -59,3 +68,15 @@ data class SessionSnapshot(
 	fun reachedThreshold(threshold: Double): Boolean =
 		(percentPlayed ?: 0.0) >= threshold
 }
+
+/** Immutable URL, playlist and cache evidence carried into finalization. */
+data class ResolverContext(
+	val playlistId: String? = null,
+	val urlGeneration: Long? = null,
+	val observedVideoId: String? = null,
+	val observedUrl: String? = null,
+	val knownTitle: String? = null,
+	val knownChannel: String? = null,
+	val knownDurationSeconds: Long? = null,
+	val rejectedVideoIds: Set<String> = emptySet(),
+)
