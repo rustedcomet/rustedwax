@@ -249,9 +249,23 @@ class MainActivity : ComponentActivity() {
 								videoUnlisted = facts?.isUnlisted,
 								shortClipsEnabled = settings.shortClips,
 								explicitAdSignal = session.explicitAdSignal,
+								browserEvidenceEnabled = session.browserEvidenceEnabled,
+								resolvedWithoutExactUrl = session.confirmed == null,
+								accessibilityCovered = session.accessibilityCoverage != null,
 							)
 							val startedAt = session.trackStartedAtEpochSec
 							when {
+								ScrobbleRules.browserEvidenceUnavailableReason(
+									browserEvidenceEnabled = session.browserEvidenceEnabled,
+									resolvedWithoutExactUrl = session.confirmed == null,
+									accessibilityCovered = session.accessibilityCoverage != null,
+								) != null ->
+									report(
+										"Not eligible under the automatic rules: " +
+											decision.skippedBecause,
+										isError = true,
+									)
+
 								session.confirmed == null ->
 									report(
 										"Video ID not verified — nothing sent because every " +

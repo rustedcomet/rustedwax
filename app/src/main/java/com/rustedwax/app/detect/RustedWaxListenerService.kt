@@ -99,6 +99,9 @@ class RustedWaxListenerService : NotificationListenerService() {
 	 */
 	private fun startProbe() {
 		if (probe != null) return
+		// A new/rebuilt monitor is a new recovery run. Cached identities never
+		// cross this boundary even though the singleton process may survive it.
+		ScrobbleEngine.clearVerifiedIdentityCandidates()
 		probe = SessionProbe(applicationContext).also { p ->
 			p.onTrackFinalized = ScrobbleEngine::onTrackFinalized
 			p.onVideoConfirmed = ScrobbleEngine::prefetch
@@ -121,6 +124,9 @@ class RustedWaxListenerService : NotificationListenerService() {
 		NotificationHints.clearAll()
 		UrlEvidence.clearAll()
 		AdEvidence.clearAll()
+		MediaSessionAdEvidence.clearAll()
+		MediaSessionAccessibilityEvidence.clearAll()
+		ScrobbleEngine.clearVerifiedIdentityCandidates()
 		EventLog.append(
 			"monitor",
 			if (wasRunning) {

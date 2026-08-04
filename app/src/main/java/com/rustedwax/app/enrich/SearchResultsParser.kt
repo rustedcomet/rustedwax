@@ -38,6 +38,8 @@ object SearchResultsParser {
 		val title: String,
 		val channel: String?,
 		val lengthSeconds: Long?,
+		/** The byline opens YouTube's explicit multi-owner/collaborator dialog. */
+		val collaborativeChannel: Boolean = false,
 	)
 
 	/** Search's displayed length is rounded — the real video was 274 s, listed as 4:35. */
@@ -99,6 +101,7 @@ object SearchResultsParser {
 						title = title,
 						channel = rows.firstOrNull()?.takeIf { it.isNotBlank() },
 						lengthSeconds = clocks.firstNotNullOfOrNull(::parseClock),
+						collaborativeChannel = firstObject(metadata, "showDialogCommand") != null,
 					),
 				)
 			}
@@ -108,13 +111,21 @@ object SearchResultsParser {
 				?: text(node.opt("headline"))
 				?: return@walk
 			if (out.containsKey(id)) return@walk
+			val ownerText = node.opt("ownerText")
+			val longBylineText = node.opt("longBylineText")
+			val shortBylineText = node.opt("shortBylineText")
+			val byline = when {
+				text(ownerText) != null -> ownerText
+				text(longBylineText) != null -> longBylineText
+				text(shortBylineText) != null -> shortBylineText
+				else -> null
+			}
 			out[id] = Candidate(
 				videoId = id,
 				title = title,
-				channel = text(node.opt("ownerText"))
-					?: text(node.opt("longBylineText"))
-					?: text(node.opt("shortBylineText")),
+				channel = text(byline),
 				lengthSeconds = text(node.opt("lengthText"))?.let(::parseClock),
+				collaborativeChannel = firstObject(byline, "showDialogCommand") != null,
 			)
 		}
 		return out.values.toList()
@@ -132,18 +143,26 @@ object SearchResultsParser {
 		title: String,
 		channel: String?,
 		durationSec: Long?,
-	): Candidate? {
-		if (durationSec == null || durationSec <= 0) return null
+	): Candidate? = identityMatches(candidates, title, channel, durationSec).singleOrNull()
+
+	/** Every strict three-field match, retained so ambiguity can be explained. */
+	fun identityMatches(
+		candidates: List<Candidate>,
+		title: String,
+		channel: String?,
+		durationSec: Long?,
+	): List<Candidate> {
+		if (durationSec == null || durationSec <= 0) return emptyList()
 		val wantTitle = titleKey(title)
 		val wantChannel = channelKey(channel)
-		if (wantTitle.isEmpty() || wantChannel == null) return null
+		if (wantTitle.isEmpty() || wantChannel == null) return emptyList()
 
 		return candidates.filter { c ->
 			val len = c.lengthSeconds ?: return@filter false
 			titleKey(c.title) == wantTitle &&
-				channelKey(c.channel) == wantChannel &&
+				channelMatches(c, wantChannel) &&
 				kotlin.math.abs(len - durationSec) <= DURATION_TOLERANCE_SEC
-		}.singleOrNull()
+		}
 	}
 
 	/**
@@ -172,13 +191,28 @@ object SearchResultsParser {
 		if (wantTitle.isEmpty() || titleKey(candidate.title) != wantTitle) return false
 		val wantChannel = channelKey(channel) ?: return false
 		val candidateChannel = channelKey(candidate.channel)
-		if (candidateChannel != null && candidateChannel != wantChannel) return false
+		if (candidateChannel != null && !channelMatches(candidate, wantChannel)) return false
 		val candidateDuration = candidate.lengthSeconds
 		if (
 			candidateDuration != null && durationSec != null &&
 			kotlin.math.abs(candidateDuration - durationSec) > DURATION_TOLERANCE_SEC
 		) return false
 		return true
+	}
+
+	/**
+	 * Exact owner agreement, with one bounded exception for YouTube's own
+	 * collaborator byline. The exception is available only when the parsed card
+	 * carried the explicit collaborator-dialog command; arbitrary channel names
+	 * containing "and" are never split. Title and duration remain independently
+	 * mandatory, and the complete result set must still contain exactly one id.
+	 */
+	private fun channelMatches(candidate: Candidate, wantChannel: String): Boolean {
+		if (channelKey(candidate.channel) == wantChannel) return true
+		if (!candidate.collaborativeChannel) return false
+		val leader = COLLABORATOR_LEADER.find(candidate.channel.orEmpty())
+			?.groupValues?.get(1) ?: return false
+		return channelKey(leader) == wantChannel
 	}
 
 	/**
@@ -221,6 +255,11 @@ object SearchResultsParser {
 		?.replace(Regex("""\p{M}+"""), "")
 		?.replace(Regex("""[^\p{L}\p{N}]+"""), "")
 		?.takeIf { it.isNotEmpty() }
+
+	private val COLLABORATOR_LEADER = Regex(
+		"""^(.+?)\s+(?:and|&|x|×)\s+(?:\d+\s+more|.+)$""",
+		RegexOption.IGNORE_CASE,
+	)
 
 	/** `4:35` → 275, `1:02:33` → 3753. */
 	fun parseClock(value: String): Long? {

@@ -289,6 +289,67 @@ class SearchResultsParserTest {
 	}
 
 	@Test
+	fun `log 18 compound owner and explicit collaborator bylines resolve safely`() {
+		val body = """{"contents":[
+			{"videoRenderer":{"videoId":"lZizLbWxr_E",
+			"title":{"runs":[{"text":"Spice, Sean Paul, Shaggy - Go Down Deh | Official Music Video"}]},
+			"longBylineText":{"runs":[{"text":"Spice Official"}]},"lengthText":{"simpleText":"3:06"}}},
+			{"videoRenderer":{"videoId":"dn3d8awSA0c",
+			"title":{"runs":[{"text":"Kybba, Ryan Castro, Sean Paul & Busy Signal - BA BA BAD REMIX (Video Oficial)"}]},
+			"longBylineText":{"runs":[{"text":"Ryan Castro and Kybba","navigationEndpoint":
+			{"showDialogCommand":{"panelLoadingStrategy":{}}}}]},"lengthText":{"simpleText":"2:30"}}},
+			{"videoRenderer":{"videoId":"napM9rZUzmU",
+			"title":{"runs":[{"text":"Blaiz Fayah X Maureen - Money Pull Up (Official Video)"}]},
+			"longBylineText":{"runs":[{"text":"Blaiz Fayah and 2 more","navigationEndpoint":
+			{"showDialogCommand":{"panelLoadingStrategy":{}}}}]},"lengthText":{"simpleText":"2:18"}}}
+		]}""".trimIndent()
+		val candidates = SearchResultsParser.candidates(body)
+		assertEquals(
+			"lZizLbWxr_E",
+			SearchResultsParser.bestMatch(
+				candidates, "Spice, Sean Paul, Shaggy - Go Down Deh | Official Music Video",
+				"SpiceOfficialVEVO", 185,
+			)?.videoId,
+		)
+		assertEquals(
+			"dn3d8awSA0c",
+			SearchResultsParser.bestMatch(
+				candidates,
+				"Kybba, Ryan Castro, Sean Paul & Busy Signal - BA BA BAD REMIX (Video Oficial)",
+				"Ryan Castro", 149,
+			)?.videoId,
+		)
+		assertEquals(
+			"napM9rZUzmU",
+			SearchResultsParser.bestMatch(
+				candidates, "Blaiz Fayah X Maureen - Money Pull Up (Official Video)",
+				"Blaiz Fayah", 137,
+			)?.videoId,
+		)
+	}
+
+	@Test
+	fun `collaborator relaxation requires YouTube marker and unique identity`() {
+		val title = "Feid, Young Miko - Classy 101 (Official Video)"
+		val duplicate = SearchResultsParser.Candidate(
+			"cD5T1Y4b7wA", title, "Feid and Young Miko", 195,
+			collaborativeChannel = true,
+		)
+		assertNull(
+			SearchResultsParser.bestMatch(
+				listOf(duplicate, duplicate.copy(videoId = "DwUA6misBRg")),
+				title, "FeidVEVO", 195,
+			),
+		)
+		assertNull(
+			SearchResultsParser.bestMatch(
+				listOf(duplicate.copy(collaborativeChannel = false)),
+				title, "FeidVEVO", 195,
+			),
+		)
+	}
+
+	@Test
 	fun `clock parsing handles both shapes`() {
 		assertEquals(275L, SearchResultsParser.parseClock("4:35"))
 		assertEquals(3753L, SearchResultsParser.parseClock("1:02:33"))

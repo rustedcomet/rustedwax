@@ -419,9 +419,6 @@ object MusicClassifier {
 		if (EPISODE_STRUCTURAL.containsMatchIn(title) || looksLikeEpisodeNumber(title)) {
 			return video("title reads as a TV episode")
 		}
-		NON_MUSIC_CHANNEL.firstOrNull { it.matches(ch) }?.let {
-			return video("channel has non-music \"${it.text}\"")
-		}
 		// A "playthrough" with no instrument is a game playthrough. The
 		// instrument-qualified case is let through to become a song below;
 		// unlike a cover, a bare playthrough defaults to gaming, not music.
@@ -444,12 +441,30 @@ object MusicClassifier {
 		//    user-generated audio match still stays `video`.
 		if (recognisedByYouTubeMusic) return song("YouTube Music catalogue")
 
+		// 2b. MusicBrainz is hard recording provenance. It remains below the
+		//     established tutorial/news/episode format rules, but above the new
+		//     narrative movie/edit marker and the uploader's bare category.
+		if (musicbrainzMatch) return song("MusicBrainz confirms artist and recording")
+
+		// 2c. Generic channel-name vocabulary is useful negative context, but it
+		//     is not stronger than id-bound catalogue or recording provenance.
+		//     `Flow La Movie` is a real music owner; the word "movie" must not
+		//     demote its YouTube Music OMV. Without hard provenance the existing
+		//     channel guard still beats a bare uploader category.
+		NON_MUSIC_CHANNEL.firstOrNull { it.matches(ch) }?.let {
+			return video("channel has non-music \"${it.text}\"")
+		}
+
+		// 2d. A paired, explicit movie/edit hashtag structure is strong narrative
+		//     format evidence. A bare word "movie" is intentionally insufficient.
+		//     Distributor, Topic, Art Track, YouTube Music and confirmed-recording
+		//     provenance above still win; this is content kind, never ad evidence.
+		if (STRONG_NARRATIVE_MOVIE_EDIT.containsMatchIn(title)) {
+			return video("title explicitly marks a narrative movie edit")
+		}
+
 		// 3. YouTube says Music, and nothing above disagreed.
 		if (category == MUSIC_CATEGORY) return song("YouTube category: Music")
-
-		// 4. A confirmed recording in MusicBrainz. Hard evidence: it names a
-		//    real artist *and* a real track, so it overrules everything below.
-		if (musicbrainzMatch) return song("MusicBrainz confirms artist and recording")
 
 		// 4. Commentary words that are also song titles — below provenance,
 		//    the Music category and MusicBrainz on purpose, so real recordings
@@ -527,4 +542,9 @@ object MusicClassifier {
 		//    MusicBrainz is the safety net for untagged uploads of real songs.
 		return video("no music evidence")
 	}
+
+	private val STRONG_NARRATIVE_MOVIE_EDIT = Regex(
+		"""(?=.*(?:^|\s)#movie\b)(?=.*(?:^|\s)#edit\b)""",
+		RegexOption.IGNORE_CASE,
+	)
 }

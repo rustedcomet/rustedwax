@@ -51,6 +51,10 @@ object TrackProgressCarry {
 		val identity: YouTubeProbe.Identity? = null,
 		/** Exact visible YouTube ad label, once bound to this track. */
 		val explicitAdSignal: String? = null,
+		/** Fresh successful root scan, bound to the same token/signature. */
+		val accessibilityCoverage: MediaSessionAccessibilityEvidence.Coverage? = null,
+		/** Unique ordinary-watch track token; carried only with this signature. */
+		val trackInstanceToken: Long? = null,
 	)
 
 	/**
@@ -63,7 +67,11 @@ object TrackProgressCarry {
 	 */
 	const val TTL_MS = 60_000L
 
-	private data class Stored(val token: Long, val progress: Progress)
+	private data class Stored(
+		val token: Long,
+		val progress: Progress,
+		val trackIdentity: TrackIdentity? = null,
+	)
 
 	private val carried = ConcurrentHashMap<String, Stored>()
 	private val nextToken = AtomicLong(1)
@@ -80,6 +88,20 @@ object TrackProgressCarry {
 		prune(progress.atMillis)
 		val token = nextToken.getAndIncrement()
 		carried[keyFor(packageName, trackKey)] = Stored(token, progress)
+		return token
+	}
+
+	/** Semantic variant used by SessionProbe so duration refinements keep time. */
+	fun remember(
+		packageName: String,
+		trackIdentity: TrackIdentity,
+		progress: Progress,
+	): Long? {
+		if (!trackIdentity.isUsable) return null
+		prune(progress.atMillis)
+		val token = nextToken.getAndIncrement()
+		carried[keyFor(packageName, trackIdentity.semanticKey)] =
+			Stored(token, progress, trackIdentity)
 		return token
 	}
 
@@ -100,6 +122,27 @@ object TrackProgressCarry {
 	}
 
 	/**
+	 * Claim only when the replacement metadata is the same semantic track. A
+	 * material duration conflict shares the stable key but fails this predicate.
+	 */
+	fun claim(
+		packageName: String,
+		trackIdentity: TrackIdentity,
+		now: Long = System.currentTimeMillis(),
+	): Progress? {
+		if (!trackIdentity.isUsable) return null
+		val key = keyFor(packageName, trackIdentity.semanticKey)
+		val stored = carried[key] ?: return null
+		if (now - stored.progress.atMillis > TTL_MS) {
+			carried.remove(key, stored)
+			return null
+		}
+		val remembered = stored.trackIdentity ?: return null
+		if (!remembered.sameTrackAs(trackIdentity)) return null
+		return if (carried.remove(key, stored)) stored.progress else null
+	}
+
+	/**
 	 * Take a continuation that no replacement claimed before its grace period.
 	 *
 	 * The token prevents an older delayed callback from consuming a newer
@@ -117,12 +160,22 @@ object TrackProgressCarry {
 		return if (carried.remove(key, stored)) stored.progress else null
 	}
 
+	fun expire(
+		packageName: String,
+		trackIdentity: TrackIdentity,
+		token: Long,
+		now: Long = System.currentTimeMillis(),
+	): Progress? = expire(packageName, trackIdentity.semanticKey, token, now)
+
 	/** Cancel one pending continuation without touching a newer replacement. */
 	fun cancel(packageName: String, trackKey: String, token: Long) {
 		val key = keyFor(packageName, trackKey)
 		val stored = carried[key] ?: return
 		if (stored.token == token) carried.remove(key, stored)
 	}
+
+	fun cancel(packageName: String, trackIdentity: TrackIdentity, token: Long) =
+		cancel(packageName, trackIdentity.semanticKey, token)
 
 	/** Monitoring stopped — nothing observed before it should leak past it. */
 	fun clear() = carried.clear()

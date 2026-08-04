@@ -102,6 +102,8 @@ object YouTubeProbe {
 			val isMusic: Boolean,
 			/** True when the address bar showed a `/shorts/` path. */
 			val isShort: Boolean = false,
+			/** URL generation for address-bar identities; null for metadata URIs. */
+			val urlGeneration: Long? = null,
 			override val source: String,
 		) : Identity
 
@@ -173,6 +175,7 @@ object YouTubeProbe {
 						url = watchUrl(id),
 						isMusic = url.host == YOUTUBE_MUSIC_HOST,
 						isShort = url.isShort,
+						urlGeneration = url.generation.takeIf { it > 0 },
 						source = "$corroboration → $id",
 					)
 				}

@@ -1,5 +1,6 @@
 package com.rustedwax.app.detect
 
+import com.rustedwax.app.scrobble.ScrobbleRules
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -31,6 +32,8 @@ class TrackProgressCarryTest {
 		loopDetected: Boolean = false,
 		identity: YouTubeProbe.Identity? = null,
 		explicitAdSignal: String? = null,
+		accessibilityCoverage: MediaSessionAccessibilityEvidence.Coverage? = null,
+		trackInstanceToken: Long? = null,
 	) = TrackProgressCarry.Progress(
 		playedMs = playedMs,
 		trackStartedAtEpochSec = 1_785_000_000L,
@@ -40,6 +43,8 @@ class TrackProgressCarryTest {
 		loopDetected = loopDetected,
 		identity = identity,
 		explicitAdSignal = explicitAdSignal,
+		accessibilityCoverage = accessibilityCoverage,
+		trackInstanceToken = trackInstanceToken,
 	)
 
 	/**
@@ -118,11 +123,76 @@ class TrackProgressCarryTest {
 				playedMs = 47_000,
 				identity = identity,
 				explicitAdSignal = "Sponsored",
+				trackInstanceToken = 73,
 			),
 		)
 		val carried = TrackProgressCarry.claim(pkg, track, now = 1_010_000)!!
 		assertEquals(identity, carried.identity)
 		assertEquals("Sponsored", carried.explicitAdSignal)
+		assertEquals(73L, carried.trackInstanceToken)
+	}
+
+	@Test
+	fun `watch url organic A ad B organic A keeps evidence and progress separated`() {
+		val organic = TrackIdentity("Organic A", "Artist", null, 180_000)
+		val advert = TrackIdentity("Advert B", "Advertiser", null, 34_000)
+		val organicCoverage = MediaSessionAccessibilityEvidence.Coverage(
+			instance = MediaSessionAdEvidence.TrackInstance(pkg, 101, organic),
+			atMillis = 1_000_000,
+			urlGeneration = 9,
+			videoId = "abcdefghijk",
+		)
+		val advertCoverage = MediaSessionAccessibilityEvidence.Coverage(
+			instance = MediaSessionAdEvidence.TrackInstance(pkg, 202, advert),
+			atMillis = 1_000_001,
+			urlGeneration = 9,
+			videoId = null,
+		)
+
+		TrackProgressCarry.remember(
+			pkg,
+			organic,
+			progress(
+				playedMs = 40_000,
+				accessibilityCoverage = organicCoverage,
+				trackInstanceToken = 101,
+			),
+		)
+		TrackProgressCarry.remember(
+			pkg,
+			advert,
+			progress(
+				playedMs = 34_000,
+				explicitAdSignal = "Sponsored",
+				accessibilityCoverage = advertCoverage,
+				trackInstanceToken = 202,
+			),
+		)
+
+		val resumedAdvert = TrackProgressCarry.claim(pkg, advert, now = 1_010_000)!!
+		assertEquals("Sponsored", resumedAdvert.explicitAdSignal)
+		assertEquals(202L, resumedAdvert.trackInstanceToken)
+		assertEquals(advertCoverage, resumedAdvert.accessibilityCoverage)
+		assertTrue(
+			!ScrobbleRules.decide(
+				playedMs = resumedAdvert.playedMs,
+				durationMs = advert.durationMs,
+				explicitAdSignal = resumedAdvert.explicitAdSignal,
+			).shouldScrobble,
+		)
+
+		val resumedOrganic = TrackProgressCarry.claim(pkg, organic, now = 1_010_000)!!
+		assertEquals(40_000L, resumedOrganic.playedMs)
+		assertNull(resumedOrganic.explicitAdSignal)
+		assertEquals(101L, resumedOrganic.trackInstanceToken)
+		assertEquals(organicCoverage, resumedOrganic.accessibilityCoverage)
+		assertTrue(
+			ScrobbleRules.decide(
+				playedMs = resumedOrganic.playedMs + 80_000,
+				durationMs = organic.durationMs,
+				explicitAdSignal = resumedOrganic.explicitAdSignal,
+			).shouldScrobble,
+		)
 	}
 
 	// region what must not be carried

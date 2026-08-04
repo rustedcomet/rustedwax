@@ -78,7 +78,11 @@ class SessionProbe(context: Context) {
 	 * disprove a latch. Deliberately narrow rather than passing `VideoFacts`
 	 * around: the probe corroborates identity, it doesn't consume metadata.
 	 */
-	data class KnownVideo(val title: String?, val lengthSeconds: Long?)
+	data class KnownVideo(
+		val title: String?,
+		val channel: String?,
+		val lengthSeconds: Long?,
+	)
 
 	/**
 	 * Cached facts for a video id, or null when nothing is known yet. Used to
@@ -88,6 +92,7 @@ class SessionProbe(context: Context) {
 	var knownVideoFor: ((videoId: String) -> KnownVideo?)? = null
 
 	private var started = false
+	private var browserEvidenceEnabledForRun = false
 
 	private val activeSessionsListener =
 		MediaSessionManager.OnActiveSessionsChangedListener { controllers ->
@@ -96,6 +101,7 @@ class SessionProbe(context: Context) {
 
 	fun start() {
 		if (started) return
+		browserEvidenceEnabledForRun = UrlWatcherService.isEnabled(appContext)
 		// A notification hint often arrives *after* we've already judged the
 		// track (measured: ~300 ms later), so re-run identity when one lands.
 		NotificationHints.onHint = { pkg ->
@@ -126,6 +132,45 @@ class SessionProbe(context: Context) {
 				watches.values
 					.filter { it.packageName == evidence.packageName }
 					.forEach { it.noteAdEvidence(evidence) }
+				publish()
+			}
+		}
+		// Ordinary watch labels carry no video id: the address bar names the
+		// organic content behind an in-stream ad. Resolve the observation only
+		// against one active Watch from the same browser package.
+		MediaSessionAdEvidence.onObservation = { observation ->
+			handler.post {
+				val candidates = watches.values.filter {
+					it.packageName == observation.packageName
+				}
+				when {
+					observation.signal == null ->
+						MediaSessionAdEvidence.labelAbsent(observation.packageName)
+					candidates.size != 1 -> {
+						MediaSessionAdEvidence.conflict(observation.packageName)
+						EventLog.append(
+							"ad",
+							"${observation.packageName} → ordinary watch ad label refused: " +
+								"${candidates.size} active MediaSession tracks",
+						)
+					}
+					else -> candidates.single().noteMediaSessionAdEvidence(observation)
+				}
+				publish()
+			}
+		}
+		MediaSessionAccessibilityEvidence.onScan = { scan ->
+			handler.post {
+				val candidates = watches.values.filter { it.packageName == scan.packageName }
+				if (candidates.size == 1) {
+					candidates.single().noteAccessibilityScan(scan)
+				} else {
+					EventLog.append(
+						"evidence",
+						"${scan.packageName} → successful YouTube scan not bound: " +
+							"${candidates.size} active MediaSession tracks",
+					)
+				}
 				publish()
 			}
 		}
@@ -162,6 +207,8 @@ class SessionProbe(context: Context) {
 		NotificationHints.onHint = null
 		UrlEvidence.onEvidence = null
 		AdEvidence.onEvidence = null
+		MediaSessionAdEvidence.onObservation = null
+		MediaSessionAccessibilityEvidence.onScan = null
 		runCatching { sessionManager.removeOnActiveSessionsChangedListener(activeSessionsListener) }
 		// Probe shutdown cannot wait for a replacement session: either score the
 		// last aggregate now (system teardown) or discard it (user Stop).
@@ -175,6 +222,8 @@ class SessionProbe(context: Context) {
 			TrackProgressCarry.clear()
 			AdEvidence.clearAll()
 		}
+		MediaSessionAdEvidence.clearAll()
+		MediaSessionAccessibilityEvidence.clearAll()
 		started = false
 		EventLog.append(
 			"probe",
@@ -220,6 +269,12 @@ class SessionProbe(context: Context) {
 			watch.logPlaybackState(controller.playbackState, "initial")
 		}
 
+		// Two MediaSessions from one browser package are deliberately ambiguous:
+		// accessibility exposes no session token with which to choose between them.
+		watches.values.groupBy { it.packageName }.forEach { (packageName, packageWatches) ->
+			if (packageWatches.size > 1) MediaSessionAdEvidence.conflict(packageName)
+		}
+
 		publish()
 	}
 
@@ -250,6 +305,13 @@ class SessionProbe(context: Context) {
 			.getApplicationLabel(packageManager.getApplicationInfo(packageName, 0))
 			.toString()
 	}.getOrDefault(packageName)
+
+	private fun browserEvidenceEnabledForThisRun(): Boolean {
+		if (!browserEvidenceEnabledForRun && UrlWatcherService.isEnabled(appContext)) {
+			browserEvidenceEnabledForRun = true
+		}
+		return browserEvidenceEnabledForRun
+	}
 
 	/** Per-controller state + callbacks. */
 	private inner class Watch(
@@ -303,9 +365,12 @@ class SessionProbe(context: Context) {
 
 		/** Identity frozen when disappearance opened a continuation window. */
 		private var continuationIdentity: YouTubeProbe.Identity? = null
+		private var continuationAccessibilityCoverage:
+			MediaSessionAccessibilityEvidence.Coverage? = null
 
 		/** Exact visible YouTube ad label bound to this track, if one appeared. */
 		private var explicitAdSignal: String? = null
+		private var accessibilityCoverage: MediaSessionAccessibilityEvidence.Coverage? = null
 
 		/**
 		 * Video ids disproven for this track by the watch page's own title not
@@ -328,7 +393,9 @@ class SessionProbe(context: Context) {
 		/** End-to-start playback reset observed during this continuous viewing. */
 		private var loopDetected: Boolean = false
 		private var playingSince: Long = if (isPlaying(state)) SystemClock.elapsedRealtime() else 0
-		private var trackKey: String = trackKeyOf(metadata)
+		private var trackIdentity: TrackIdentity = trackIdentityOf(metadata)
+		private var trackInstanceToken: Long = MediaSessionAdEvidence.nextTrackToken()
+		private var trackInstanceEstablishedAtMillis: Long = System.currentTimeMillis()
 		private var trackStartedAtEpochSec: Long = System.currentTimeMillis() / 1000
 
 		/** One finalize per track, however many callbacks announce the end. */
@@ -339,12 +406,15 @@ class SessionProbe(context: Context) {
 		 * MediaSession. While present, disappearance is not a track ending.
 		 */
 		private var continuationToken: Long? = null
-		private var continuationTrackKey: String? = null
+		private var continuationTrackIdentity: TrackIdentity? = null
+
+		/** Resolver inputs accumulated while this track was the active Watch. */
+		private var resolverContext: ResolverContext = ResolverContext()
 
 		private val callback = object : MediaController.Callback() {
 			override fun onMetadataChanged(md: MediaMetadata?) {
-				val newKey = trackKeyOf(md)
-				val trackChanged = newKey != trackKey
+				val newIdentity = trackIdentityOf(md)
+				val trackChanged = !trackIdentity.sameTrackAs(newIdentity)
 				if (trackChanged) {
 					EventLog.append(
 						"track",
@@ -355,7 +425,14 @@ class SessionProbe(context: Context) {
 					cancelContinuation()
 					finalizeCurrent("track change")
 					resetForNewTrack()
-					trackKey = newKey
+					trackIdentity = newIdentity
+					trackInstanceToken = MediaSessionAdEvidence.nextTrackToken()
+					trackInstanceEstablishedAtMillis = System.currentTimeMillis()
+					MediaSessionAccessibilityEvidence.activate(
+						mediaSessionAdInstance(), trackInstanceEstablishedAtMillis,
+					)
+				} else {
+					trackIdentity = trackIdentity.refinedWith(newIdentity)
 				}
 				metadata = md
 				if (trackChanged) {
@@ -405,6 +482,9 @@ class SessionProbe(context: Context) {
 		}
 
 		init {
+			MediaSessionAccessibilityEvidence.activate(
+				mediaSessionAdInstance(), trackInstanceEstablishedAtMillis,
+			)
 			controller.registerCallback(callback, handler)
 			// A session that appears already knowing its track is usually a
 			// replacement for one Chrome just tore down.
@@ -422,6 +502,8 @@ class SessionProbe(context: Context) {
 					finalizeCurrent("probe ended")
 				}
 			}
+			MediaSessionAdEvidence.clearInstance(mediaSessionAdInstance())
+			MediaSessionAccessibilityEvidence.deactivate(mediaSessionAdInstance())
 			runCatching { controller.unregisterCallback(callback) }
 		}
 
@@ -437,7 +519,8 @@ class SessionProbe(context: Context) {
 			if (finalized || continuationToken != null || metadata == null) return
 			accumulate()
 			val now = System.currentTimeMillis()
-			val key = trackKey
+			val identityKey = trackIdentity
+			val frozenCoverage = currentAccessibilityCoverage(now)
 			// This Watch leaves the active map immediately after disappearance.
 			// Freeze what it knew while active; the expiry callback must not
 			// acquire whatever id the foreground tab names a minute later.
@@ -446,7 +529,7 @@ class SessionProbe(context: Context) {
 			)
 			val token = TrackProgressCarry.remember(
 				packageName = packageName,
-				trackKey = key,
+				trackIdentity = identityKey,
 				progress = TrackProgressCarry.Progress(
 					playedMs = playedMs,
 					trackStartedAtEpochSec = trackStartedAtEpochSec,
@@ -456,11 +539,14 @@ class SessionProbe(context: Context) {
 					loopDetected = loopDetected,
 					identity = frozenIdentity,
 					explicitAdSignal = explicitAdSignal,
+					accessibilityCoverage = frozenCoverage,
+					trackInstanceToken = trackInstanceToken,
 				),
 			) ?: return
 			continuationIdentity = frozenIdentity
+			continuationAccessibilityCoverage = frozenCoverage
 			continuationToken = token
-			continuationTrackKey = key
+			continuationTrackIdentity = identityKey
 			EventLog.append(
 				"session",
 				"$packageName [$reason] waiting ${TrackProgressCarry.TTL_MS / 1000}s " +
@@ -468,10 +554,10 @@ class SessionProbe(context: Context) {
 			)
 			handler.postDelayed(
 				{
-					val expired = TrackProgressCarry.expire(packageName, key, token)
+					val expired = TrackProgressCarry.expire(packageName, identityKey, token)
 					if (expired != null && continuationToken == token && !finalized) {
 						continuationToken = null
-						continuationTrackKey = null
+						continuationTrackIdentity = null
 						finalizeCurrent("session continuation expired")
 					}
 				},
@@ -481,10 +567,11 @@ class SessionProbe(context: Context) {
 
 		private fun cancelContinuation() {
 			val token = continuationToken ?: return
-			val key = continuationTrackKey ?: trackKey
-			TrackProgressCarry.cancel(packageName, key, token)
+			val identityKey = continuationTrackIdentity ?: trackIdentity
+			TrackProgressCarry.cancel(packageName, identityKey, token)
 			continuationToken = null
-			continuationTrackKey = null
+			continuationTrackIdentity = null
+			continuationAccessibilityCoverage = null
 		}
 
 		/**
@@ -496,7 +583,13 @@ class SessionProbe(context: Context) {
 		 * stable across the restart.
 		 */
 		private fun restoreCarriedProgress() {
-			val carried = TrackProgressCarry.claim(packageName, trackKey) ?: return
+			val carried = TrackProgressCarry.claim(packageName, trackIdentity) ?: return
+			MediaSessionAccessibilityEvidence.deactivate(mediaSessionAdInstance())
+			trackInstanceToken = carried.trackInstanceToken ?: trackInstanceToken
+			trackInstanceEstablishedAtMillis = System.currentTimeMillis()
+			MediaSessionAccessibilityEvidence.activate(
+				mediaSessionAdInstance(), trackInstanceEstablishedAtMillis,
+			)
 			playedMs = carried.playedMs
 			trackStartedAtEpochSec = carried.trackStartedAtEpochSec
 			fastestSpeedSeen = carried.fastestSpeedSeen
@@ -513,6 +606,21 @@ class SessionProbe(context: Context) {
 				}
 			}
 			explicitAdSignal = carried.explicitAdSignal
+			carried.explicitAdSignal?.let { signal ->
+				MediaSessionAdEvidence.restoreAccepted(
+					mediaSessionAdInstance(),
+					signal,
+					carried.atMillis,
+				)
+			}
+			carried.accessibilityCoverage?.let { coverage ->
+				if (MediaSessionAccessibilityEvidence.restore(
+						mediaSessionAdInstance(), coverage, trackInstanceEstablishedAtMillis,
+					)
+				) {
+					accessibilityCoverage = coverage.copy(instance = mediaSessionAdInstance())
+				}
+			}
 			notePositionWrap(
 				previousPositionMs = carried.lastPositionMs,
 				newPositionMs = extrapolatedPosition(state),
@@ -520,7 +628,7 @@ class SessionProbe(context: Context) {
 			)
 			EventLog.append(
 				"session",
-				"$packageName resumed \"$trackKey\" after a session restart — " +
+				"$packageName resumed \"${trackIdentity.semanticKey}\" after a session restart — " +
 					"carrying ${carried.playedMs / 1000}s of play time forward" +
 					when {
 						loopDetected && explicitAdSignal != null ->
@@ -570,7 +678,7 @@ class SessionProbe(context: Context) {
 			if (metadata == null) return
 			finalized = true
 			accumulate()
-			val snapshot = snapshot()
+			val snapshot = snapshot(finalizedTrack = true)
 			EventLog.append(
 				"finalize",
 				"$packageName [$reason] ${snapshot.title ?: "<untitled>"} — " +
@@ -582,6 +690,8 @@ class SessionProbe(context: Context) {
 					if (fastestSpeedSeen > 1.0) " (up to ${fastestSpeedSeen}× speed)" else "",
 			)
 			onTrackFinalized?.invoke(snapshot)
+			MediaSessionAdEvidence.clearInstance(mediaSessionAdInstance())
+			MediaSessionAccessibilityEvidence.deactivate(mediaSessionAdInstance())
 		}
 
 		private fun resetForNewTrack() {
@@ -595,8 +705,11 @@ class SessionProbe(context: Context) {
 			latchedVideo = null
 			lastStableIdentity = null
 			continuationIdentity = null
+			continuationAccessibilityCoverage = null
 			explicitAdSignal = null
+			accessibilityCoverage = null
 			rejectedVideoIds.clear()
+			resolverContext = ResolverContext()
 		}
 
 		/**
@@ -620,6 +733,19 @@ class SessionProbe(context: Context) {
 			// Evidence whose id was disproven for this track is not evidence.
 			val url = UrlEvidence.get(packageName)
 				?.takeUnless { it.videoId != null && it.videoId in rejectedVideoIds }
+			if (url != null) {
+				val firstConcreteId = resolverContext.observedVideoId == null && url.videoId != null
+				resolverContext = resolverContext.copy(
+					playlistId = resolverContext.playlistId ?: url.playlistId,
+					urlGeneration = if (firstConcreteId) {
+						url.generation.takeIf { it > 0 }
+					} else {
+						resolverContext.urlGeneration
+					},
+					observedVideoId = if (firstConcreteId) url.videoId else resolverContext.observedVideoId,
+					observedUrl = if (firstConcreteId) url.raw else resolverContext.observedUrl,
+				)
+			}
 			val live = YouTubeProbe.identify(md, hint, url, soleSession)
 			var rejectedThisPass = false
 
@@ -653,11 +779,30 @@ class SessionProbe(context: Context) {
 			// wrong-url case turned on. See [durationsDisagree].
 			latchedVideo?.let { l ->
 				val known = knownVideoFor?.invoke(l.videoId)
+				val titleEvidence = if (known?.title != null && sessionTitle != null) {
+					VideoTitleMatcher.compare(known.title, sessionTitle)
+				} else {
+					null
+				}
+				val weakEvidenceAllowed = titleEvidence?.let {
+					titleEvidenceMayRetainObservedId(
+						evidence = it,
+						candidateVideoId = l.videoId,
+						candidateGeneration = l.urlGeneration,
+						observedVideoId = resolverContext.observedVideoId,
+						observedGeneration = resolverContext.urlGeneration,
+						sessionDurationMs = durationOf(md),
+						pageDurationSeconds = known?.lengthSeconds,
+					)
+				} == true
 				val disagreement = when {
 					known == null -> null
-					known.title != null && sessionTitle != null &&
-						!titlesMatch(known.title, sessionTitle) ->
+					titleEvidence == VideoTitleMatcher.Evidence.CONTRADICTION ->
 						"page title \"${known.title}\" ≠ session title \"$sessionTitle\""
+					titleEvidence == VideoTitleMatcher.Evidence.WEAK_SHORT_CANONICAL_CORE &&
+						!weakEvidenceAllowed ->
+						"page title \"${known.title}\" is only weak short-title evidence " +
+							"without same-generation duration corroboration"
 					durationsDisagree(durationOf(md), known.lengthSeconds) ->
 						"page is ${known.lengthSeconds}s but the session is playing " +
 							"${(durationOf(md) ?: 0) / 1000}s"
@@ -684,7 +829,14 @@ class SessionProbe(context: Context) {
 			)
 			lastStableIdentity = selected
 			if (selected is YouTubeProbe.Identity.Confirmed && selected.isShort) {
-				AdEvidence.get(packageName, selected.videoId)?.let(::noteAdEvidence)
+				selected.urlGeneration?.let { generation ->
+					AdEvidence.markSessionEstablished(packageName, selected.videoId, generation)
+				}
+				AdEvidence.get(
+					packageName,
+					selected.videoId,
+					selected.urlGeneration,
+				)?.let(::noteAdEvidence)
 			}
 			return selected
 		}
@@ -707,6 +859,76 @@ class SessionProbe(context: Context) {
 				"$packageName bound explicit ad evidence to ${evidence.videoId}: " +
 					"\"${evidence.signal}\"",
 			)
+		}
+
+		/** Bind an id-less ordinary-watch label only to this exact track token. */
+		fun noteMediaSessionAdEvidence(observation: MediaSessionAdEvidence.Observation) {
+			val accepted = MediaSessionAdEvidence.observe(
+				observation = observation,
+				instance = mediaSessionAdInstance(),
+				instanceEstablishedBeforeObservation =
+					trackIdentity.isUsable && isPlaying(state) &&
+						trackInstanceEstablishedAtMillis <= observation.atMillis,
+				unambiguous = true,
+			) ?: return
+			if (explicitAdSignal == accepted.signal) return
+			explicitAdSignal = accepted.signal
+			EventLog.append(
+				"ad",
+				"$packageName bound explicit ad evidence to MediaSession track " +
+					"${accepted.instance.token}: \"${accepted.signal}\"",
+			)
+		}
+
+		/** One successful root scan supplies coverage and, independently, ad input. */
+		fun noteAccessibilityScan(scan: MediaSessionAccessibilityEvidence.Scan) {
+			val coverage = MediaSessionAccessibilityEvidence.observe(
+				scan = scan,
+				instance = mediaSessionAdInstance(),
+				unambiguous = watches.values.count { it.packageName == packageName } == 1,
+			) ?: return
+			accessibilityCoverage = coverage
+			if (scan.isShort) {
+				if (scan.adSignal == null) MediaSessionAdEvidence.labelAbsent(packageName)
+				return
+			}
+			noteMediaSessionAdEvidence(
+				MediaSessionAdEvidence.Observation(
+					packageName = packageName,
+					signal = scan.adSignal,
+					atMillis = scan.atMillis,
+				),
+			)
+		}
+
+		private fun mediaSessionAdInstance() = MediaSessionAdEvidence.TrackInstance(
+			packageName = packageName,
+			token = trackInstanceToken,
+			signature = trackIdentity,
+		)
+
+		private fun currentAccessibilityCoverage(
+			now: Long = System.currentTimeMillis(),
+		): MediaSessionAccessibilityEvidence.Coverage? {
+			MediaSessionAccessibilityEvidence.current(
+				instance = mediaSessionAdInstance(),
+				expectedUrlGeneration = resolverContext.urlGeneration,
+				now = now,
+			)?.let {
+				accessibilityCoverage = it
+				return it
+			}
+			val local = accessibilityCoverage ?: return null
+			val sameInstance = local.instance.packageName == packageName &&
+				local.instance.token == trackInstanceToken &&
+				local.instance.signature.sameTrackAs(trackIdentity)
+			val lifecycleCurrent =
+				MediaSessionAccessibilityEvidence.isLifecycleCurrent(local)
+			val fresh = now >= local.atMillis &&
+				now - local.atMillis <= MediaSessionAccessibilityEvidence.COVERAGE_FRESH_MS
+			val sameGeneration = resolverContext.urlGeneration == null ||
+				local.urlGeneration == null || local.urlGeneration == resolverContext.urlGeneration
+			return local.takeIf { sameInstance && lifecycleCurrent && fresh && sameGeneration }
 		}
 
 		/** The hint the probe is currently bound to, for the diagnostics card. */
@@ -804,15 +1026,35 @@ class SessionProbe(context: Context) {
 		private fun durationOf(md: MediaMetadata?): Long? =
 			MetadataDump.longOrNull(md, MediaMetadata.METADATA_KEY_DURATION)
 
-		fun snapshot(): SessionSnapshot {
+		fun snapshot(finalizedTrack: Boolean = false): SessionSnapshot {
 			val md = metadata
 			val ps = state
 			val duration = MetadataDump.longOrNull(md, MediaMetadata.METADATA_KEY_DURATION)
 			val position = extrapolatedPosition(ps)
 			val played = playedMsNow()
-			// Resolve identity before reading explicitAdSignal: identityOf may
-			// consume fresh id-bound ad evidence from the accessibility bridge.
-			val identity = identityOf(md)
+			// A finalized snapshot may not consult the later foreground URL. Live
+			// diagnostics still re-identify so the Now card remains current.
+			val identity = if (finalizedTrack) {
+				continuationIdentity ?: lastStableIdentity
+					?: YouTubeProbe.Identity.Unconfirmed(
+						"identity was not established before the track ended",
+					)
+			} else {
+				identityOf(md)
+			}
+			val known = (identity as? YouTubeProbe.Identity.Confirmed)
+				?.let { knownVideoFor?.invoke(it.videoId) }
+			val frozenResolver = resolverContext.copy(
+				knownTitle = known?.title,
+				knownChannel = known?.channel,
+				knownDurationSeconds = known?.lengthSeconds,
+				rejectedVideoIds = rejectedVideoIds.toSet(),
+			)
+			val frozenCoverage = if (finalizedTrack) {
+				continuationAccessibilityCoverage ?: currentAccessibilityCoverage()
+			} else {
+				currentAccessibilityCoverage()
+			}
 			return SessionSnapshot(
 				packageName = packageName,
 				appLabel = appLabel,
@@ -825,6 +1067,8 @@ class SessionProbe(context: Context) {
 				playedMs = played,
 				loopDetected = loopDetected,
 				explicitAdSignal = explicitAdSignal,
+				browserEvidenceEnabled = browserEvidenceEnabledForThisRun(),
+				accessibilityCoverage = frozenCoverage,
 				playbackState = stateName(ps?.state ?: PlaybackState.STATE_NONE),
 				isPlaying = isPlaying(ps),
 				// Percent-of-duration using content played — the input the
@@ -833,6 +1077,7 @@ class SessionProbe(context: Context) {
 				// has to be speed-scaled.
 				percentPlayed = duration?.takeIf { it > 0 }?.let { played.toDouble() / it },
 				identity = identity,
+				resolverContext = frozenResolver,
 				notificationHint = boundHint(md),
 				metadataLines = MetadataDump.dump(md),
 				trackStartedAtEpochSec = trackStartedAtEpochSec,
@@ -851,12 +1096,12 @@ class SessionProbe(context: Context) {
 	private fun isPlaying(ps: PlaybackState?): Boolean =
 		ps?.state == PlaybackState.STATE_PLAYING
 
-	private fun trackKeyOf(md: MediaMetadata?): String = listOf(
-		MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_TITLE).orEmpty(),
-		MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_ARTIST).orEmpty(),
-		MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_ALBUM).orEmpty(),
-		MetadataDump.longOrNull(md, MediaMetadata.METADATA_KEY_DURATION)?.toString().orEmpty(),
-	).joinToString("|")
+	private fun trackIdentityOf(md: MediaMetadata?): TrackIdentity = TrackIdentity(
+		title = MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_TITLE),
+		artist = MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_ARTIST),
+		album = MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_ALBUM),
+		durationMs = MetadataDump.longOrNull(md, MediaMetadata.METADATA_KEY_DURATION),
+	)
 
 	private fun stateName(state: Int): String = when (state) {
 		PlaybackState.STATE_NONE -> "NONE"
@@ -919,20 +1164,37 @@ class SessionProbe(context: Context) {
 			identity: YouTubeProbe.Identity.Confirmed?,
 			evidence: AdEvidence.Evidence,
 		): Boolean =
-			identity?.isShort == true && identity.videoId == evidence.videoId
+			identity?.isShort == true &&
+				identity.videoId == evidence.videoId &&
+				(identity.urlGeneration == null || identity.urlGeneration == evidence.urlGeneration)
 
-		/**
-		 * Loose equality for "is the page's video the session's track". Chromium
-		 * sets the media-session title from the video title, so after trimming and
-		 * case-folding they should be equal; containment is allowed because one
-		 * side is sometimes truncated.
-		 */
-		fun titlesMatch(a: String, b: String): Boolean {
-			fun norm(s: String) = s.lowercase().replace(Regex("""\s+"""), " ").trim()
-			val x = norm(a)
-			val y = norm(b)
-			if (x.isEmpty() || y.isEmpty()) return false
-			return x == y || x.contains(y) || y.contains(x)
+		/** Shared presentation-aware evidence for page title versus MediaSession. */
+		fun titleEvidence(a: String, b: String): VideoTitleMatcher.Evidence =
+			VideoTitleMatcher.compare(a, b)
+
+		/** True only when both durations exist and do not materially disagree. */
+		fun durationsCorroborate(sessionMs: Long?, pageSeconds: Long?): Boolean =
+			sessionMs != null && sessionMs > 0 && pageSeconds != null && pageSeconds > 0 &&
+				!durationsDisagree(sessionMs, pageSeconds)
+
+		/** Policy boundary for the weak rank; strong ranks do not need this escape hatch. */
+		fun titleEvidenceMayRetainObservedId(
+			evidence: VideoTitleMatcher.Evidence,
+			candidateVideoId: String,
+			candidateGeneration: Long?,
+			observedVideoId: String?,
+			observedGeneration: Long?,
+			sessionDurationMs: Long?,
+			pageDurationSeconds: Long?,
+		): Boolean = when (evidence) {
+			VideoTitleMatcher.Evidence.EXACT,
+			VideoTitleMatcher.Evidence.STRONG_CONTAINMENT -> true
+			VideoTitleMatcher.Evidence.WEAK_SHORT_CANONICAL_CORE ->
+				candidateVideoId == observedVideoId &&
+					candidateGeneration != null && candidateGeneration > 0 &&
+					candidateGeneration == observedGeneration &&
+					durationsCorroborate(sessionDurationMs, pageDurationSeconds)
+			VideoTitleMatcher.Evidence.CONTRADICTION -> false
 		}
 
 		/**

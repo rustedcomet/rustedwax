@@ -184,6 +184,196 @@ class TitleParserTest {
 		}
 	}
 
+	@Test
+	fun `log 14 song-credit fixtures are structure and channel aware`() {
+		TitleParser.parse(
+			"Ice Spice Performs \"Think You The Sh*t (Fart)\" Live On The BET Stage! | " +
+				"BET Awards '24",
+			"BET International",
+		).let {
+			assertEquals("Ice Spice", it.artist)
+			assertEquals("Think You The Sh*t (Fart)", it.track)
+		}
+
+		TitleParser.parse(
+			"Sexyy Red \"Get It Sexyy\" (Official Video - No Skits)",
+			"Sexyy Red",
+		).let {
+			assertEquals("Sexyy Red", it.artist)
+			assertEquals("Get It Sexyy", it.track)
+		}
+
+		TitleParser.parse(
+			"6IX9INE \"Gotti\" (WSHH Exclusive - Official Music Video)",
+			"WORLDSTARHIPHOP",
+		).let {
+			assertEquals("6IX9INE", it.artist)
+			assertEquals("Gotti", it.track)
+		}
+
+		TitleParser.parse(
+			"TROLLZ - 6ix9ine & Nicki Minaj (Official Music Video)",
+			"Tekashi 6ix9ine",
+		).let {
+			assertEquals("6ix9ine & Nicki Minaj", it.artist)
+			assertEquals("TROLLZ", it.track)
+		}
+	}
+
+	@Test
+	fun `log 16 quoted work with trailing credits is structure aware`() {
+		TitleParser.parse(
+			"W Sound 05 \"LA PLENA\" - Beéle, Westcol, Ovy On The Drums",
+			"W Sound",
+		).let {
+			assertEquals("Beéle, Westcol, Ovy On The Drums", it.artist)
+			assertEquals("LA PLENA", it.track)
+		}
+	}
+
+	@Test
+	fun `quoted work event and promo suffixes never become artist credits`() {
+		TitleParser.parse(
+			"Artist \"Song\" - Official Video",
+			"Artist",
+		).let {
+			assertEquals("Artist", it.artist)
+			assertEquals("Artist \"Song\" - Official Video", it.track)
+		}
+		TitleParser.parse(
+			"Artist \"Song\" - Live at Wembley",
+			"Artist",
+		).let {
+			assertEquals("Artist", it.artist)
+			assertEquals("Artist \"Song\" - Live at Wembley", it.track)
+		}
+		TitleParser.parse(
+			"Publisher \"Song\" - Ambiguous Suffix",
+			"Publisher",
+		).let {
+			assertEquals("Publisher", it.artist)
+			assertEquals("Publisher \"Song\" - Ambiguous Suffix", it.track)
+		}
+	}
+
+	@Test
+	fun `separators inside balanced syntax are never credit boundaries`() {
+		TitleParser.parse(
+			"Sexyy Red \"Get It Sexyy\" (Official Video - No Skits)",
+			"Sexyy Red",
+		).let {
+			assertFalse(it.artist?.contains("Official Video") == true)
+			assertFalse(it.track.contains("No Skits"))
+		}
+		val ambiguous = TitleParser.parse(
+			"Blade II | Sewers of the Damned | ClipZone: Heroes & Villains",
+			"ClipZone",
+		)
+		assertEquals("ClipZone", ambiguous.artist)
+		assertEquals(
+			"Blade II | Sewers of the Damned | ClipZone: Heroes & Villains",
+			ambiguous.track,
+		)
+	}
+
+	@Test
+	fun `log 17 primary dash and pipe fixtures keep their proven work boundary`() {
+		TitleParser.parse(
+			"Bad Bunny (ft. Chencho Corleone) - Me Porto Bonito (Official Video) | Un Verano Sin Ti",
+			"Bad Bunny",
+		).let {
+			assertEquals("Bad Bunny", it.artist) // saGYMhApaH8
+			assertEquals("Me Porto Bonito", it.track)
+		}
+		TitleParser.parse(
+			"BAD BUNNY - YO PERREO SOLA | YHLQMDLG (Official Video)",
+			"Bad Bunny",
+		).let {
+			assertEquals("Bad Bunny", it.artist) // GtSRKwDCaZM
+			assertEquals("YO PERREO SOLA", it.track)
+		}
+	}
+
+	@Test
+	fun `log 17 featured channel cannot reverse conventional artist first input`() {
+		TitleParser.parse(
+			"Anuel - Ayer ft. Dj Nelson [Official Video]",
+			"DJ Nelson",
+		).let {
+			assertEquals("Anuel", it.artist) // AnKdQ5p5Ks8
+			assertEquals("Ayer ft. Dj Nelson", it.track)
+		}
+		TitleParser.parse("Artist - Track ft. Featured Artist", "Featured Artist").let {
+			assertEquals("Artist", it.artist)
+			assertEquals("Track ft. Featured Artist", it.track)
+		}
+	}
+
+	@Test
+	fun `log 17 explicit multi artist lists prove track first orientation`() {
+		TitleParser.parse(
+			"🌡105F RMX - Kevvo FT Chencho Corleone, Farruko , Myke Towers, Arcangel, " +
+				"Ñengo Flow, Darell, Brytiago",
+			"MrPepeQuintana",
+		).let {
+			assertEquals(
+				"Kevvo FT Chencho Corleone, Farruko , Myke Towers, Arcangel, Ñengo Flow, " +
+					"Darell, Brytiago",
+				it.artist,
+			) // qA6FBDYncGk
+			assertEquals("🌡105F RMX", it.track)
+		}
+		TitleParser.parse(
+			"Me Llama Todavía [Remix] - Super Yei × Towy × Osquel × Gotay × Agus Padilla " +
+				"[Video Lyric] 2018",
+			"Superiority",
+		).let {
+			assertEquals("Super Yei × Towy × Osquel × Gotay × Agus Padilla", it.artist)
+			assertEquals("Me Llama Todavía [Remix]", it.track) // lA8OhVn-o7M
+		}
+		TitleParser.parse(
+			"Diles - Bad Bunny, Ozuna, Farruko, Arcangel, Ñengo Flow",
+			"Hear This Music",
+		).let {
+			assertEquals("Bad Bunny, Ozuna, Farruko, Arcangel, Ñengo Flow", it.artist)
+			assertEquals("Diles", it.track) // UWV41yEiGq0
+		}
+		TitleParser.parse("Work - Artist One & Artist Two", "Unrelated Publisher").let {
+			assertEquals("Artist One & Artist Two", it.artist)
+			assertEquals("Work", it.track)
+		}
+	}
+
+	@Test
+	fun `only an exact repeated trailing feature phrase collapses`() {
+		TitleParser.parse(
+			"The Weeknd - Starboy ft. Daft Punk (Official Video) ft. Daft Punk",
+			"TheWeekndVEVO",
+		).let {
+			assertEquals("The Weeknd", it.artist)
+			assertEquals("Starboy ft. Daft Punk", it.track) // 34Na4j8AVgA
+		}
+		assertEquals(
+			"Song ft. Artist One ft. Artist Two",
+			TitleParser.parse(
+				"Lead - Song ft. Artist One ft. Artist Two",
+				"Lead",
+			).track,
+		)
+	}
+
+	@Test
+	fun `unproven multi separator and ambiguous pipe inputs remain conservative`() {
+		TitleParser.parse("Artist - Track | Live at Wembley", null).let {
+			assertNull(it.artist)
+			assertEquals("Artist - Track | Live at Wembley", it.track)
+		}
+		TitleParser.parse("Possible Work | Possible Credit", "Publisher").let {
+			assertEquals("Publisher", it.artist)
+			assertEquals("Possible Work | Possible Credit", it.track)
+		}
+	}
+
 	/** The one common shape where the artist comes second. */
 	@Test
 	fun `splits Track (by Artist)`() {
@@ -194,6 +384,190 @@ class TitleParserTest {
 		TitleParser.parse("Yesterday (performed by The Beatles)", null).let {
 			assertEquals("The Beatles", it.artist)
 			assertEquals("Yesterday", it.track)
+		}
+	}
+
+	@Test
+	fun `MONTERO parenthetical is title text rather than a by-credit`() {
+		TitleParser.parse(
+			"Lil Nas X - MONTERO (Call Me By Your Name) (Official Video)",
+			"LilNasXVEVO",
+		).let {
+			assertEquals("Lil Nas X", it.artist)
+			assertEquals("MONTERO (Call Me By Your Name)", it.track)
+		}
+		TitleParser.parse("Work (inspired by a true story)", "Publisher").let {
+			assertEquals("Publisher", it.artist)
+			assertEquals("Work (inspired by a true story)", it.track)
+		}
+	}
+
+	@Test
+	fun `compound YouTube ownership suffixes normalize one layer at a time`() {
+		assertEquals("Spice", TitleParser.cleanChannel("SpiceOfficialVEVO"))
+		assertEquals("Spice", TitleParser.cleanChannel("Spice Official"))
+		assertEquals("Official", TitleParser.cleanChannel("Official"))
+	}
+
+	@Test
+	fun `log 19 paired promo year group is removed without damaging delimiters`() {
+		TitleParser.parse(
+			"Marlon Asher - Strictly High Grade [Official Video 2024]",
+			"Reggaeville",
+		).let {
+			assertEquals("Marlon Asher", it.artist)
+			assertEquals("Strictly High Grade", it.track)
+		}
+		assertEquals("Song (Summer 2024)", TitleParser.clean("Song (Summer 2024)"))
+		assertEquals("Song [Song 2024]", TitleParser.clean("Song [Song 2024]"))
+		assertEquals("1979", TitleParser.clean("1979"))
+		assertEquals(
+			"Song [Official Video 2024)",
+			TitleParser.clean("Song [Official Video 2024)"),
+		)
+		assertEquals(
+			"Song (Official Video 2024]",
+			TitleParser.clean("Song (Official Video 2024]"),
+		)
+		assertEquals(
+			"DNA [Loving You Is in My DNA) [feat. Hannah Boleyn]",
+			TitleParser.parse(
+				"Billy Gillies - DNA [Loving You Is in My DNA) " +
+					"[feat. Hannah Boleyn] [Official Lyric Video]",
+				"Billy Gillies",
+			).track,
+		)
+	}
+
+	@Test
+	fun `log 19 structurally balanced single quoted work protects its dash`() {
+		TitleParser.parse(
+			"TVXQ! 동방신기 '주문 - MIROTIC' MV",
+			"SMTOWN",
+		).let {
+			assertEquals("TVXQ! 동방신기", it.artist)
+			assertEquals("주문 - MIROTIC", it.track)
+		}
+		TitleParser.parse(
+			"TVXQ! 동방신기 ‘주문 - MIROTIC’ MV",
+			"SMTOWN",
+		).let {
+			assertEquals("TVXQ! 동방신기", it.artist)
+			assertEquals("주문 - MIROTIC", it.track)
+		}
+	}
+
+	@Test
+	fun `apostrophes unmatched quotes and quoted event suffixes stay conservative`() {
+		assertEquals(
+			"Gangsta's Paradise",
+			TitleParser.parse("Gangsta's Paradise", "Coolio").track,
+		)
+		assertEquals(
+			"Don't Start Now",
+			TitleParser.parse("Don't Start Now", "Dua Lipa").track,
+		)
+		assertEquals(
+			"Guns N' Roses",
+			TitleParser.parse("Guns N' Roses", "Publisher").track,
+		)
+		assertEquals(
+			"Artist's Song",
+			TitleParser.parse("Artist's Song", "Artist").track,
+		)
+		assertEquals(
+			"Artist 'Unmatched - Work MV",
+			TitleParser.parse("Artist 'Unmatched - Work MV", "Artist").track,
+		)
+		assertEquals(
+			"Artist 'Song' - Live at Wembley",
+			TitleParser.parse("Artist 'Song' - Live at Wembley", "Artist").track,
+		)
+		assertEquals(
+			"Artist 'Song' - Official Promo",
+			TitleParser.parse("Artist 'Song' - Official Promo", "Artist").track,
+		)
+	}
+
+	@Test
+	fun `log 19 exact collapsed owner proof preserves conventional featured title`() {
+		TitleParser.parse(
+			"DJ Snake - Taki Taki ft. Selena Gomez, Ozuna, Cardi B",
+			"DJSnakeVEVO",
+		).let {
+			assertEquals("DJ Snake", it.artist)
+			assertEquals("Taki Taki ft. Selena Gomez, Ozuna, Cardi B", it.track)
+		}
+	}
+
+	@Test
+	fun `log 20 conventional featured titles remain artist first without owner proof`() {
+		TitleParser.parse(
+			"6IX9INE - SIP ft. Tyga, Nicki Minaj, Blueface (RapKing Music Video)",
+			"RapKing",
+		).let {
+			assertEquals("6IX9INE", it.artist)
+			assertEquals(
+				"SIP ft. Tyga, Nicki Minaj, Blueface (RapKing Music Video)",
+				it.track,
+			)
+		}
+		TitleParser.parse(
+			"Ed Sheeran – Bad Habits Feat. Tion Wayne & Central Cee " +
+				"(Fumez The Engineer Remix) [Official Video]",
+			"Tion Wayne",
+		).let {
+			assertEquals("Ed Sheeran", it.artist)
+			assertEquals(
+				"Bad Habits Feat. Tion Wayne & Central Cee (Fumez The Engineer Remix)",
+				it.track,
+			)
+		}
+	}
+
+	@Test
+	fun `conventional featured title does not invert for substring partial or unrelated channels`() {
+		TitleParser.parse(
+			"DJ Snake - Taki Taki ft. Selena Gomez, Ozuna, Cardi B",
+			"DJ Snake Fan Channel",
+		).let {
+			assertEquals("DJ Snake", it.artist)
+			assertEquals("Taki Taki ft. Selena Gomez, Ozuna, Cardi B", it.track)
+		}
+		TitleParser.parse(
+			"DJ Snake - Taki Taki ft. Selena Gomez, Ozuna, Cardi B",
+			"SnakeVEVO",
+		).let {
+			assertEquals("DJ Snake", it.artist)
+			assertEquals("Taki Taki ft. Selena Gomez, Ozuna, Cardi B", it.track)
+		}
+	}
+
+	@Test
+	fun `log 19 exact owner and bounded version suffix establish only first dash`() {
+		TitleParser.parse(
+			"BENNETT - Mamma Mia (feat. Mentissa) - Techno Mix (Official Lyric Video)",
+			"BENNETT",
+		).let {
+			assertEquals("BENNETT", it.artist)
+			assertEquals("Mamma Mia (feat. Mentissa) - Techno Mix", it.track)
+		}
+	}
+
+	@Test
+	fun `version suffix boundary stays conservative without exact structural proof`() {
+		listOf(
+			"Artist - Album - Song" to "Artist",
+			"Artist - Song - Live at Wembley" to "Artist",
+			"Artist - Song - Official Promo" to "Artist",
+			"Artist - Song - Techno Mix" to null,
+			"Artist - Song - Techno Mix" to "Conflicting Owner",
+			"Label - Artist - Techno Mix" to "Publisher Records",
+			"Artist - Song - 'Techno Mix'" to "Artist",
+			"Artist - Song - Techno Mix [Festival]" to "Artist",
+		).forEach { (raw, channel) ->
+			val parsed = TitleParser.parse(raw, channel)
+			assertEquals(raw, parsed.track)
 		}
 	}
 

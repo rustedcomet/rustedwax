@@ -164,13 +164,21 @@ object ScrobbleRules {
 		videoUnlisted: Boolean? = null,
 		shortClipsEnabled: Boolean = true,
 		explicitAdSignal: String? = null,
+		browserEvidenceEnabled: Boolean = false,
+		resolvedWithoutExactUrl: Boolean = false,
+		accessibilityCovered: Boolean = false,
 	): Decision {
 		// The optional accessibility service observed YouTube's own visible ad
-		// UI and bound it to this exact Short id. This is the mobile analogue of
+		// UI and bound it to this exact track instance. This is the mobile analogue of
 		// the desktop connector refusing while `.ad-showing` is present.
 		explicitAdSignal?.let {
 			return Decision(emptyList(), explicitAdReason(it))
 		}
+		browserEvidenceUnavailableReason(
+			browserEvidenceEnabled = browserEvidenceEnabled,
+			resolvedWithoutExactUrl = resolvedWithoutExactUrl,
+			accessibilityCovered = accessibilityCovered,
+		)?.let { return Decision(emptyList(), it) }
 
 		// Explicit ad evidence is a veto, not merely a reason to withhold the
 		// lowered 10-second floor. v0.8.7 let a 42-second unlisted Shorts
@@ -221,7 +229,18 @@ object ScrobbleRules {
 	}
 
 	private fun explicitAdReason(signal: String): String =
-		"YouTube's visible UI marked this Short as an ad (\"$signal\")"
+		"YouTube's visible UI marked this track as an ad (\"$signal\")"
+
+	/** Shared automatic/manual evidence-availability boundary. */
+	fun browserEvidenceUnavailableReason(
+		browserEvidenceEnabled: Boolean,
+		resolvedWithoutExactUrl: Boolean,
+		accessibilityCovered: Boolean,
+	): String? = if (browserEvidenceEnabled && resolvedWithoutExactUrl && !accessibilityCovered) {
+		"Browser evidence was unavailable for this track; a visible YouTube ad could not be excluded."
+	} else {
+		null
+	}
 
 	/**
 	 * Says which floor was applied *and why that one*, because "under the 30s

@@ -42,7 +42,7 @@ object TitleParser {
 
 	/** Separators between artist and track, longest/most specific first. */
 	private val SEPARATORS = listOf(
-		" -- ", " ~ ", " — ", " – ", " - ", " | ", "「", "『", "｜", "／", "：",
+		" -- ", " ~ ", " — ", " – ", " - ", " | ", "｜", "／", "：",
 	)
 
 	/**
@@ -82,8 +82,10 @@ object TitleParser {
 	 * CJK brackets were added in Phase 4: `【Guitar Cover】` is the same
 	 * construct as `(Guitar Cover)` and was previously invisible to the parser.
 	 */
-	private val BRACKETED =
-		Regex("""\s*[(\[【「『]([^()\[\]【】「」『』]*)[)\]】」』]""")
+	private val BRACKETED = Regex(
+		"""\s*(?:\(([^()]*)\)|\[([^\[\]]*)\]|【([^【】]*)】|""" +
+			"""「([^「」]*)」|『([^『』]*)』)""",
+	)
 
 	/** Trailing `| Official Video`-style suffixes, which use no brackets. */
 	private val PIPE_SUFFIX = Regex("""\s*\|\s*([^|]+)\s*$""")
@@ -110,7 +112,7 @@ object TitleParser {
 	)
 
 	/** A bare year, as cover uploads tend to append (`… Medusa 2023`). */
-	private val TRAILING_YEAR = Regex("""\s+\(?\[?(?:19|20)\d{2}\)?\]?\s*$""")
+	private val TRAILING_YEAR = Regex("""\s+(?:19|20)\d{2}\s*$""")
 
 	/**
 	 * A trailing run of hashtags, plus whatever emoji or punctuation trails it.
@@ -162,14 +164,40 @@ object TitleParser {
 	 * which is stronger than any separator guess. From the extension's
 	 * `ytTitleRegExps`.
 	 */
-	private val QUOTED_TRACK = Regex("""^(.{1,80}?)\s*[-–—:]?\s*"([^"]{1,120})"\s*$""")
+	private val QUOTED_TRACK = Regex(
+		"""^(.{1,80}?)\s*[-–—:]?\s*["“]([^"”]{1,120})["”]""" +
+			"""(?:\s*[(\[].*[)\]])?\s*$""",
+	)
+
+	private data class SingleQuotedShape(
+		val artist: String,
+		val track: String,
+		val trailing: String,
+	)
+
+	/** Bare suffixes that make a balanced single-quoted work structurally explicit. */
+	private val SINGLE_QUOTED_PROMO_SUFFIX = Regex(
+		"""^(?:mv|m/v|official\s+(?:music\s+)?video|music\s+video|lyric\s+video)$""",
+		RegexOption.IGNORE_CASE,
+	)
+
+	/** `Publisher "Track" - Artist, Featured Artist` from channel-led series. */
+	private val QUOTED_TRACK_WITH_TRAILING_CREDITS = Regex(
+		"""^(.{1,80}?)\s*["“]([^"”]{1,120})["”]\s*[-–—]\s*(.{1,160})$""",
+	)
+
+	/** `Artist Performs "Track" ... | Event` — the event is not the track. */
+	private val PERFORMANCE_TITLE = Regex(
+		"""^(.{1,80}?)\s+performs?\s+["“]([^"”]{1,120})["”].*$""",
+		RegexOption.IGNORE_CASE,
+	)
 
 	/**
 	 * `Track (by Artist)` / `Track (performed by Artist)` — the one common shape
 	 * where the artist comes *second*. Also from `ytTitleRegExps`.
 	 */
 	private val TRACK_BY_ARTIST =
-		Regex("""^(.{1,80}?)\s*\((?:[^)]*\s)?by\s+([^)]{1,60})\)\s*$""", RegexOption.IGNORE_CASE)
+		Regex("""^(.{1,80}?)\s*\((?:performed\s+)?by\s+([^)]{1,60})\)\s*$""", RegexOption.IGNORE_CASE)
 
 	private val TRAILING_PUNCT = Regex("""[\s\-–—_|｜/／+＋~]+$""")
 
@@ -181,10 +209,17 @@ object TitleParser {
 			.split(WORD_SPLIT)
 			.filter { it.isNotBlank() }
 		if (words.isEmpty()) return false
+		val promoWords = if (words.lastOrNull()?.matches(GROUP_YEAR) == true) {
+			words.dropLast(1)
+		} else {
+			words
+		}
 		// Require at least one strong marker so a bare "(the)" isn't stripped.
-		if (words.none { it in STRONG_MARKERS }) return false
-		return words.all { it in PROMO_WORDS }
+		if (promoWords.none { it in STRONG_MARKERS }) return false
+		return promoWords.isNotEmpty() && promoWords.all { it in PROMO_WORDS }
 	}
+
+	private val GROUP_YEAR = Regex("""(?:19|20)\d{2}""")
 
 	private val STRONG_MARKERS = setOf(
 		"official", "oficial", "video", "vídeo", "audio", "lyric", "lyrics",
@@ -220,12 +255,50 @@ object TitleParser {
 		// Explicit shapes beat separator guessing, because they name which side
 		// is which instead of assuming artist-first. Both adapted from the
 		// desktop extension's `ytTitleRegExps`.
+		PERFORMANCE_TITLE.find(title)?.let { m ->
+			val artist = tidy(m.groupValues[1])
+			val track = finishTrack(m.groupValues[2])
+			if (artist.isNotEmpty() && track.isNotEmpty()) {
+				return Parsed(artist, track)
+			}
+		}
+		QUOTED_TRACK_WITH_TRAILING_CREDITS.find(title)?.let { m ->
+			val prefix = tidy(m.groupValues[1])
+			val track = finishTrack(m.groupValues[2])
+			val credits = tidy(m.groupValues[3])
+			val prefixAgreement = channelAgreement(prefix, channel)
+			val creditAgreement = channelAgreement(credits, channel)
+			if (prefix.isNotEmpty() && track.isNotEmpty() && credits.isNotEmpty() &&
+				prefixAgreement > 0 && prefixAgreement > creditAgreement &&
+				looksLikeTrailingCredits(credits)
+			) {
+				return Parsed(credits, track)
+			}
+			// Quotes prove the work boundary, but not that arbitrary text after a
+			// dash is an artist. Preserve the whole title rather than turning an
+			// event/format suffix into an immutable credit.
+			return Parsed(cleanChannel(channel), finishTrack(title))
+		}
 		QUOTED_TRACK.find(title)?.let { m ->
 			val artist = tidy(m.groupValues[1])
 			val track = finishTrack(m.groupValues[2])
 			if (artist.isNotEmpty() && track.isNotEmpty()) {
 				return Parsed(artist, track)
 			}
+		}
+		val singleQuoted = singleQuotedShape(title)
+		if (singleQuoted != null) {
+			val safeSuffix = singleQuoted.trailing.isEmpty() ||
+				SINGLE_QUOTED_PROMO_SUFFIX.matches(singleQuoted.trailing)
+			if (safeSuffix) {
+				return Parsed(singleQuoted.artist, finishTrack(singleQuoted.track))
+			}
+			// A balanced quote protects the work, but event/promo text after it
+			// does not prove another artist/work boundary.
+			return Parsed(cleanChannel(channel), finishTrack(title))
+		}
+		if (hasUnbalancedStructuralSingleQuote(title)) {
+			return Parsed(cleanChannel(channel), finishTrack(title))
 		}
 		TRACK_BY_ARTIST.find(title)?.let { m ->
 			val track = finishTrack(m.groupValues[1])
@@ -235,13 +308,56 @@ object TitleParser {
 			}
 		}
 
-		for (sep in SEPARATORS) {
-			val idx = title.indexOf(sep)
-			if (idx <= 0) continue
-			val artist = tidy(title.substring(0, idx))
-			val track = finishTrack(title.substring(idx + sep.length))
-			if (artist.isNotEmpty() && track.isNotEmpty()) {
-				return Parsed(artist, track)
+		topLevelSeparator(title)?.let { (idx, sep) ->
+			val left = tidy(title.substring(0, idx))
+			val rightRaw = tidy(title.substring(idx + sep.length))
+			val right = finishTrack(rightRaw)
+			if (left.isNotEmpty() && right.isNotEmpty()) {
+				val nested = topLevelSeparator(rightRaw)
+				// A conventional primary dash plus a pipe display/album suffix is
+				// still an artist/work boundary when the channel proves the left.
+				// Other multi-separator shapes remain conservative.
+				if (nested != null) {
+					val (nestedIndex, nestedSep) = nested
+					val primaryTrack = finishTrack(rightRaw.substring(0, nestedIndex))
+					val versionSuffix = tidy(
+						rightRaw.substring(nestedIndex + nestedSep.length),
+					)
+					if (isConventionalDash(sep) && isPipe(nestedSep) &&
+						channelAgreement(left, channel) > 0 && primaryTrack.isNotEmpty()
+					) {
+						return Parsed(provenLeftArtist(left, channel), primaryTrack)
+					}
+					if (isConventionalDash(sep) && isConventionalDash(nestedSep) &&
+						exactCollapsedOwnerAgreement(left, channel) &&
+						looksLikeVersionSuffix(versionSuffix)
+					) {
+						return Parsed(left, right)
+					}
+					return Parsed(cleanChannel(channel), finishTrack(title))
+				}
+				val leftAgreement = channelAgreement(left, channel)
+				val rightAgreement = channelAgreement(right, channel)
+				return when {
+					isConventionalDash(sep) && exactCollapsedOwnerAgreement(left, channel) ->
+						Parsed(left, right)
+					isConventionalDash(sep) && looksLikeExplicitMultiArtistCredits(right) &&
+						!looksLikeExplicitMultiArtistCredits(left) &&
+						(!hasWorkPrefixBeforeFeature(right) || looksStronglyWorkShaped(left)) ->
+						Parsed(right, finishTrack(left))
+					// A featured artist named by the uploader/channel on the right
+					// does not reverse conventional `Artist - Track ft. Featured`.
+					isConventionalDash(sep) -> Parsed(provenLeftArtist(left, channel), right)
+					rightAgreement > leftAgreement -> Parsed(right, finishTrack(left))
+					leftAgreement > rightAgreement -> Parsed(left, right)
+					// A pipe has no conventional artist-first orientation. With no
+					// channel agreement, retain the whole title instead of guessing.
+					(sep == " | " || sep == "｜") && !channel.isNullOrBlank() ->
+						Parsed(cleanChannel(channel), finishTrack(title))
+					// Dash/tilde remain conventional Artist - Track shapes unless
+					// the channel positively says the orientation is reversed.
+					else -> Parsed(left, right)
+				}
 			}
 		}
 
@@ -251,6 +367,25 @@ object TitleParser {
 
 	/** Strip noise and collapse whitespace. */
 	fun clean(value: String): String = finishTrack(cleanCore(value))
+
+	/**
+	 * Narrow presentation cleanup for identity corroboration.
+	 *
+	 * Only recognized promo-only brackets and pipe suffixes are removed. Unlike
+	 * payload cleanup this preserves arbitrary leading tags, track numbers,
+	 * hashtags, tab markers and years: those may distinguish two uploads, and an
+	 * identity check must not discard them merely because payload display rules
+	 * would.
+	 */
+	internal fun presentationCore(value: String): String {
+		var out = BRACKETED.replace(value) { m ->
+			if (isPromoOnly(bracketInner(m))) "" else m.value
+		}
+		PIPE_SUFFIX.find(out)?.let { m ->
+			if (isPromoOnly(m.groupValues[1])) out = out.removeRange(m.range)
+		}
+		return tidy(out)
+	}
 
 	/**
 	 * Everything except the trailing year — the part that's safe to do before
@@ -264,7 +399,7 @@ object TitleParser {
 			out = out.removeRange(m.range).ifBlank { out }
 		}
 		out = BRACKETED.replace(out) { m ->
-			if (isPromoOnly(m.groupValues[1])) "" else m.value
+			if (isPromoOnly(bracketInner(m))) "" else m.value
 		}
 		PIPE_SUFFIX.find(out)?.let { m ->
 			if (isPromoOnly(m.groupValues[1])) out = out.removeRange(m.range)
@@ -287,7 +422,11 @@ object TitleParser {
 
 	/** Final pass over whatever ended up being the track. */
 	private fun finishTrack(value: String): String =
-		tidy(stripTrailingYear(tidy(value).trimEnd('】', '」', '』')))
+		tidy(
+			collapseRepeatedTrailingFeature(
+				stripTrailingYear(tidy(value)),
+			),
+		)
 
 	private fun tidy(value: String): String =
 		TRAILING_PUNCT.replace(value.replace(Regex("""\s{2,}"""), " ").trim(), "").trim()
@@ -332,6 +471,38 @@ object TitleParser {
 		return if (words.size >= 2) remainder else value
 	}
 
+	private fun bracketInner(match: MatchResult): String =
+		match.groupValues.drop(1).firstOrNull(String::isNotEmpty).orEmpty()
+
+	private fun singleQuotedShape(value: String): SingleQuotedShape? {
+		val straight = value.indices.filter { value[it] == '\'' }
+		val curlyOpen = value.indices.filter { value[it] == '‘' }
+		val curlyClose = value.indices.filter { value[it] == '’' }
+		val pair = when {
+			straight.size == 2 -> straight[0] to straight[1]
+			straight.isEmpty() && curlyOpen.size == 1 && curlyClose.size == 1 &&
+				curlyOpen.single() < curlyClose.single() -> curlyOpen.single() to curlyClose.single()
+			else -> return null
+		}
+		val (open, close) = pair
+		if (open <= 0 || close <= open + 1) return null
+		val beforeQuote = value[open - 1]
+		if (!beforeQuote.isWhitespace() && beforeQuote !in setOf('-', '–', '—', ':')) return null
+
+		val rawPrefix = value.substring(0, open).trim()
+		val artist = rawPrefix.replace(Regex("""\s*[-–—:]\s*$"""), "").trim()
+		val track = value.substring(open + 1, close).trim()
+		val trailing = value.substring(close + 1).trim()
+		if (artist.isEmpty() || track.isEmpty() || topLevelSeparator(artist) != null) return null
+		return SingleQuotedShape(artist, track, trailing)
+	}
+
+	private fun hasUnbalancedStructuralSingleQuote(value: String): Boolean =
+		value.indices.any { index ->
+			value[index] == '‘' ||
+				(value[index] == '\'' && index > 0 && value[index - 1].isWhitespace())
+		}
+
 	/**
 	 * Whether the *title shape* suggests music — an artist-owned channel, or a
 	 * title that yields an artist through a separator or a leading bracket.
@@ -350,10 +521,184 @@ object TitleParser {
 
 	/** True when the title itself names an artist, rather than the channel doing it. */
 	private fun yieldsArtist(rawTitle: String): Boolean {
-		val title = clean(rawTitle)
+		val title = cleanCore(rawTitle)
 		if (LEADING_BRACKET_ARTIST.containsMatchIn(title)) return true
-		return SEPARATORS.any { title.indexOf(it) > 0 }
+		if (PERFORMANCE_TITLE.containsMatchIn(title) ||
+			QUOTED_TRACK_WITH_TRAILING_CREDITS.containsMatchIn(title) ||
+			QUOTED_TRACK.containsMatchIn(title)
+		) return true
+		return topLevelSeparator(title) != null
 	}
+
+	/** First separator outside balanced brackets and quoted text. */
+	private fun topLevelSeparator(value: String): Pair<Int, String>? {
+		var round = 0
+		var square = 0
+		var cjk = 0
+		var quote: Char? = null
+		var i = 0
+		while (i < value.length) {
+			val ch = value[i]
+			if (quote != null) {
+				if ((quote == '"' && ch == '"') || (quote == '“' && ch == '”')
+				) quote = null
+				i++
+				continue
+			}
+			when (ch) {
+				'"', '“' -> quote = ch
+				'(' -> round++
+				')' -> round = (round - 1).coerceAtLeast(0)
+				'[' -> square++
+				']' -> square = (square - 1).coerceAtLeast(0)
+				'【', '「', '『' -> cjk++
+				'】', '」', '』' -> cjk = (cjk - 1).coerceAtLeast(0)
+			}
+			if (quote == null && round == 0 && square == 0 && cjk == 0) {
+				SEPARATORS.firstOrNull { value.startsWith(it, i) }?.let { return i to it }
+			}
+			i++
+		}
+		return null
+	}
+
+	private fun isConventionalDash(separator: String): Boolean =
+		separator in setOf(" -- ", " — ", " – ", " - ", " ~ ")
+
+	private fun isPipe(separator: String): Boolean = separator == " | " || separator == "｜"
+
+	/** Use the channel's clean spelling only when it exactly proves the left core. */
+	private fun provenLeftArtist(left: String, channel: String?): String {
+		val cleanedChannel = cleanChannel(channel) ?: return left
+		if (SearchKey.of(left) == SearchKey.of(cleanedChannel)) return cleanedChannel
+		val parentheticalFeature = PARENTHETICAL_FEATURE.find(left)?.groupValues?.get(1)
+		if (parentheticalFeature != null &&
+			SearchKey.of(parentheticalFeature) == SearchKey.of(cleanedChannel)
+		) return cleanedChannel
+		return left
+	}
+
+	/** Exact owner proof after removing punctuation and recognized channel suffixes. */
+	private fun exactCollapsedOwnerAgreement(candidate: String, channel: String?): Boolean {
+		val cleanedChannel = cleanChannel(channel) ?: return false
+		val candidateKey = collapsedOwnerKey(candidate)
+		return candidateKey.isNotEmpty() && candidateKey == collapsedOwnerKey(cleanedChannel)
+	}
+
+	private fun collapsedOwnerKey(value: String): String = value
+		.lowercase()
+		.replace(Regex("""[^\p{L}\p{N}]+"""), "")
+
+	private fun looksLikeVersionSuffix(value: String): Boolean {
+		if (value.length !in 3..40 || value.any { it in "()[]【】「」『』\"'‘’" }) return false
+		val words = value.split(Regex("""\s+""")).filter(String::isNotBlank)
+		if (words.size !in 1..4) return false
+		return VERSION_MARKER.matches(words.last())
+	}
+
+	private val VERSION_MARKER = Regex(
+		"""(?:mix|remix|edit|version|rework|dub|remaster|remastered)""",
+		RegexOption.IGNORE_CASE,
+	)
+
+	/** A credit list needs explicit co-artist structure, not a lone `ft.` phrase. */
+	private fun looksLikeExplicitMultiArtistCredits(value: String): Boolean {
+		if (NON_CREDIT_TRAILING_PREFIX.containsMatchIn(value.trim())) return false
+		if (creditTokens(value).size < 2) return false
+		return MULTI_ARTIST_JOINER.containsMatchIn(value)
+	}
+
+	/** `Work ft. A, B` is still a conventional right-hand work, not a byline. */
+	private fun hasWorkPrefixBeforeFeature(value: String): Boolean {
+		val feature = FEATURE_START.find(value) ?: return false
+		return tidy(value.substring(0, feature.range.first)).isNotEmpty()
+	}
+
+	/** Positive work/version grammar that can still establish track-first form. */
+	private fun looksStronglyWorkShaped(value: String): Boolean =
+		WORK_VERSION_MARKER.containsMatchIn(value)
+
+	private val WORK_VERSION_MARKER = Regex(
+		"""(?:^|[\s\[(])(?:rmx|remix|mix|edit|version|rework|dub|remaster(?:ed)?)(?:$|[\s\])])""",
+		RegexOption.IGNORE_CASE,
+	)
+
+	/** Remove only a second, identical feature phrase at the very end. */
+	private fun collapseRepeatedTrailingFeature(value: String): String {
+		val starts = FEATURE_START.findAll(value).toList()
+		if (starts.size < 2) return value
+		val first = starts[starts.lastIndex - 1]
+		val second = starts.last()
+		val firstCredit = value.substring(first.range.last + 1, second.range.first).trim()
+		val secondCredit = value.substring(second.range.last + 1).trim()
+		if (firstCredit.isEmpty() || first.value.trim() != second.value.trim() ||
+			tidy(firstCredit) != tidy(secondCredit)
+		) {
+			return value
+		}
+		return tidy(value.substring(0, second.range.first))
+	}
+
+	private object SearchKey {
+		fun of(value: String): String = value.lowercase()
+			.replace(Regex("""[^\p{L}\p{N}]+"""), " ")
+			.replace(Regex("""\s+"""), " ")
+			.trim()
+	}
+
+	/** Conservative channel agreement used only to orient a generic split. */
+	private fun channelAgreement(candidate: String, channel: String?): Int {
+		val channelTokens = creditTokens(cleanChannel(channel) ?: return 0)
+		val candidateTokens = creditTokens(candidate)
+		if (channelTokens.isEmpty() || candidateTokens.isEmpty()) return 0
+		if (channelTokens == candidateTokens) return 100
+		return channelTokens.intersect(candidateTokens).size
+	}
+
+	private fun looksLikeTrailingCredits(value: String): Boolean {
+		if (NON_CREDIT_TRAILING_PREFIX.containsMatchIn(value.trim())) return false
+		val tokens = creditTokens(value)
+		return tokens.size >= 2 && CREDIT_JOINER.containsMatchIn(value)
+	}
+
+	private val CREDIT_JOINER = Regex(
+		"""(?:,|&|×|\b(?:and|x|feat(?:uring)?|ft)\.?\b)""",
+		RegexOption.IGNORE_CASE,
+	)
+
+	private val MULTI_ARTIST_JOINER = Regex(
+		"""(?:,|&|×|\b(?:and|x)\b)""",
+		RegexOption.IGNORE_CASE,
+	)
+
+	private val FEATURE_START = Regex(
+		"""\b(?:ft|feat(?:uring)?)\.?\s+""",
+		RegexOption.IGNORE_CASE,
+	)
+
+	private val PARENTHETICAL_FEATURE = Regex(
+		"""^(.+?)\s*\(\s*(?:ft|feat(?:uring)?)\.?\s+.+\)\s*$""",
+		RegexOption.IGNORE_CASE,
+	)
+
+	/** Presentation/event suffixes that are not artist-credit structures. */
+	private val NON_CREDIT_TRAILING_PREFIX = Regex(
+		"""^(?:official|oficial|video|audio|lyrics?|visuali[sz]er|live|performance|""" +
+			"""session|concert|festival|awards?|stage|trailer|teaser|clip|remix|""" +
+			"""remaster(?:ed)?|acoustic|cover|karaoke|behind|making|from|at)\b""",
+		RegexOption.IGNORE_CASE,
+	)
+
+	private fun creditTokens(value: String): Set<String> = value
+		.lowercase()
+		.replace(Regex("""[^\p{L}\p{N}]+"""), " ")
+		.split(' ')
+		.filter { it.length >= 3 && it !in GENERIC_CHANNEL_WORDS }
+		.toSet()
+
+	private val GENERIC_CHANNEL_WORDS = setOf(
+		"official", "music", "records", "recordings", "channel", "international",
+	)
 
 	/**
 	 * `"KornVEVO"` → `"Korn"`, `"Korn - Topic"` → `"Korn"`. Returns null for a
@@ -362,10 +707,18 @@ object TitleParser {
 	fun cleanChannel(channel: String?): String? {
 		var out = channel?.trim().orEmpty()
 		if (out.isEmpty()) return null
-		for (suffix in CHANNEL_SUFFIXES) {
-			if (out.length > suffix.length && out.endsWith(suffix, ignoreCase = true)) {
-				out = out.dropLast(suffix.length).trim().trimEnd('-', '–', '—').trim()
-				break
+		// YouTube composes ownership markers (`SpiceOfficialVEVO`). Strip each
+		// recognized trailing layer, while never erasing a channel that consists
+		// only of the marker word itself.
+		var changed = true
+		while (changed) {
+			changed = false
+			for (suffix in CHANNEL_SUFFIXES) {
+				if (out.length > suffix.length && out.endsWith(suffix, ignoreCase = true)) {
+					out = out.dropLast(suffix.length).trim().trimEnd('-', '–', '—').trim()
+					changed = true
+					break
+				}
 			}
 		}
 		return out.ifEmpty { null }

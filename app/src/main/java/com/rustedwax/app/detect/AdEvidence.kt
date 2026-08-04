@@ -3,12 +3,13 @@ package com.rustedwax.app.detect
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * A recent explicit YouTube ad label bound to a `/shorts/` video id.
+ * Explicit visible YouTube ad evidence bound to one URL generation.
  *
- * This store bridges the accessibility service and [SessionProbe]. Evidence is
- * deliberately short-lived: the probe consumes it into the current track, and
- * a later organic viewing of the same public video must not inherit an old ad
- * label merely because YouTube once promoted it.
+ * A Shorts transition is not atomic: the address bar may name the successor
+ * while the previous card's `Sponsored` overlay is still visible. The first
+ * label in a new generation is therefore provisional. It becomes accepted
+ * only when re-observed for the same id/generation, or when the MediaSession
+ * had already established that exact instance before the label appeared.
  */
 object AdEvidence {
 
@@ -16,35 +17,123 @@ object AdEvidence {
 		val packageName: String,
 		val videoId: String,
 		val signal: String,
+		val urlGeneration: Long = 0,
 		val atMillis: Long = System.currentTimeMillis(),
 	)
 
+	private data class Instance(
+		val videoId: String,
+		val generation: Long,
+	)
+
+	private data class State(
+		val instance: Instance,
+		val provisional: Evidence? = null,
+		val accepted: Evidence? = null,
+	)
+
 	private const val FRESH_MS = 30_000L
-	private val byPackage = ConcurrentHashMap<String, Evidence>()
+	private val byPackage = ConcurrentHashMap<String, State>()
+	private val establishedSession = ConcurrentHashMap<String, Instance>()
 
 	@Volatile
 	var onEvidence: ((Evidence) -> Unit)? = null
 
-	fun put(evidence: Evidence) {
-		if (!VIDEO_ID.matches(evidence.videoId) || evidence.signal.isBlank()) return
-		val previous = byPackage.put(evidence.packageName, evidence)
-		if (previous?.videoId == evidence.videoId && previous.signal == evidence.signal) return
-		EventLog.append(
+	/** A different URL/track instance invalidates every package-level label. */
+	fun onUrlObserved(packageName: String, videoId: String?, generation: Long) {
+		val id = videoId?.takeIf(VIDEO_ID::matches)
+		val instance = id?.let { Instance(it, generation) }
+		val previous = byPackage[packageName]
+		if (previous != null && previous.instance != instance) byPackage.remove(packageName)
+		val established = establishedSession[packageName]
+		if (established != null && established != instance) establishedSession.remove(packageName)
+	}
+
+	/**
+	 * Record that the active MediaSession already agreed with this URL instance.
+	 * This never retroactively accepts a provisional label: ordering is the
+	 * evidence that distinguishes a stable ad from the log-14 transition frame.
+	 */
+	fun markSessionEstablished(packageName: String, videoId: String, generation: Long) {
+		if (generation <= 0 || !VIDEO_ID.matches(videoId)) return
+		establishedSession[packageName] = Instance(videoId, generation)
+	}
+
+	/** Observe one literal label. Returns it only once it is an accepted veto. */
+	fun observe(evidence: Evidence): Evidence? {
+		if (!VIDEO_ID.matches(evidence.videoId) || evidence.signal.isBlank() ||
+			evidence.urlGeneration <= 0
+		) return null
+
+		val instance = Instance(evidence.videoId, evidence.urlGeneration)
+		val prior = byPackage[evidence.packageName]
+			?.takeIf { it.instance == instance }
+		val accepted = prior?.accepted
+		if (accepted?.signal == evidence.signal) {
+			val refreshed = evidence.copy(atMillis = evidence.atMillis)
+			byPackage[evidence.packageName] = State(instance, accepted = refreshed)
+			return refreshed
+		}
+
+		val sessionWasEstablished = establishedSession[evidence.packageName] == instance
+		val repeated = prior?.provisional?.signal == evidence.signal
+		if (sessionWasEstablished || repeated) {
+			byPackage[evidence.packageName] = State(instance, accepted = evidence)
+			log(
+				"ad",
+				"${evidence.packageName} → accepted explicit ad evidence for " +
+					"${evidence.videoId} generation ${evidence.urlGeneration} " +
+					"(\"${evidence.signal}\")",
+			)
+			onEvidence?.invoke(evidence)
+			return evidence
+		}
+
+		byPackage[evidence.packageName] = State(instance, provisional = evidence)
+		log(
 			"ad",
-			"${evidence.packageName} → YouTube UI marked ${evidence.videoId} as an ad " +
-				"(\"${evidence.signal}\")",
+			"${evidence.packageName} → provisional ad label for ${evidence.videoId} " +
+				"generation ${evidence.urlGeneration} (\"${evidence.signal}\")",
 		)
-		onEvidence?.invoke(evidence)
+		return null
+	}
+
+	/** A disappeared label cannot survive to poison the next accessibility frame. */
+	fun labelAbsent(packageName: String, videoId: String?, generation: Long) {
+		val state = byPackage[packageName] ?: return
+		if (state.instance.generation == generation && state.instance.videoId == videoId) {
+			byPackage.remove(packageName, state)
+		}
 	}
 
 	fun get(
 		packageName: String,
 		videoId: String,
+		urlGeneration: Long? = null,
 		now: Long = System.currentTimeMillis(),
 	): Evidence? = byPackage[packageName]
-		?.takeIf { it.videoId == videoId && now - it.atMillis <= FRESH_MS }
+		?.accepted
+		?.takeIf {
+			it.videoId == videoId &&
+				(urlGeneration == null || it.urlGeneration == urlGeneration) &&
+				now - it.atMillis <= FRESH_MS
+		}
 
-	fun clearAll() = byPackage.clear()
+	fun clear(packageName: String) {
+		byPackage.remove(packageName)
+		establishedSession.remove(packageName)
+	}
+
+	fun clearAll() {
+		byPackage.clear()
+		establishedSession.clear()
+	}
+
+	private fun log(tag: String, message: String) {
+		// Pure JVM regression tests do not provide android.util.Log. The device
+		// path still records every state transition normally.
+		runCatching { EventLog.append(tag, message) }
+	}
 
 	private val VIDEO_ID = Regex("""[A-Za-z0-9_-]{11}""")
 }

@@ -1,6 +1,8 @@
 package com.rustedwax.app.enrich
 
 import com.rustedwax.app.detect.EventLog
+import com.rustedwax.app.detect.TitleParser
+import com.rustedwax.app.detect.VideoTitleMatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -11,6 +13,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import kotlin.math.abs
 
 /**
  * Recovers a video id by searching YouTube for what the session is playing.
@@ -57,7 +60,14 @@ class VideoIdResolver {
 		title: String,
 		channel: String?,
 		durationSec: Long?,
-	): String? {
+	): String? = resolveEvidenceFromPlaylist(playlistId, title, channel, durationSec)?.videoId
+
+	suspend fun resolveEvidenceFromPlaylist(
+		playlistId: String,
+		title: String,
+		channel: String?,
+		durationSec: Long?,
+	): VideoResolution? {
 		if (title.isBlank() || durationSec == null) return null
 
 		// Mixes and private lists have no fetchable page of entries. `RD…` is a
@@ -103,13 +113,36 @@ class VideoIdResolver {
 			return null
 		}
 		EventLog.append("resolve", "resolved \"$title\" → ${hit.videoId} from playlist $playlistId")
-		return hit.videoId
+		return VideoResolution(
+			videoId = hit.videoId,
+			source = "playlist $playlistId",
+			title = hit.title,
+			channel = hit.channel,
+			lengthSeconds = hit.lengthSeconds,
+			uniquelyResolved = true,
+			collaborativeChannel = hit.collaborativeChannel,
+		)
 	}
 
 	/** Null whenever the video cannot be identified beyond doubt. */
-	suspend fun resolve(title: String, channel: String?, durationSec: Long?): String? {
+	suspend fun resolve(title: String, channel: String?, durationSec: Long?): String? =
+		resolveEvidence(title, channel, durationSec)?.videoId
+
+	suspend fun resolveEvidence(
+		title: String,
+		channel: String?,
+		durationSec: Long?,
+	): VideoResolution? = resolveEvidenceAttempt(title, channel, durationSec).resolution
+
+	suspend fun resolveEvidenceAttempt(
+		title: String,
+		channel: String?,
+		durationSec: Long?,
+	): VideoResolutionAttempt {
 		if (title.isBlank() || channel.isNullOrBlank() || durationSec == null) {
-			return null
+			return VideoResolutionAttempt(
+				refusalReason = "title, channel and duration were not all available for lookup",
+			)
 		}
 
 		val seen = LinkedHashMap<String, SearchResultsParser.Candidate>()
@@ -161,27 +194,90 @@ class VideoIdResolver {
 		// with the same identity title. That would accept the ordinary upload
 		// without ever learning whether the Short is the item actually played.
 		if (needsCompletion) {
-			verifyFromWatchPages(plausible, title, channel, durationSec)?.let { return it }
+			val completed = verifyFromWatchPages(plausible, title, channel, durationSec)
+			completed.resolution?.let { return completed }
+			if (completed.refusalReason?.startsWith("ambiguous identity") == true) {
+				return completed
+			}
 		} else {
 			// Do not return after the first query: a stripped-title query can reveal
 			// a second indistinguishable upload. The immutable URL is accepted only
 			// if the complete recovery set still has exactly one match.
-			SearchResultsParser.bestMatch(plausible, title, channel, durationSec)
-				?.let { match ->
+			val matches = SearchResultsParser.identityMatches(
+				plausible, title, channel, durationSec,
+			)
+			if (matches.size > 1) {
+				val reason = "ambiguous identity — ${matches.size} uploads match " +
+					"title+channel+duration (${matches.joinToString { it.videoId }}); refusing every id"
+				EventLog.append("resolve", reason)
+				return VideoResolutionAttempt(refusalReason = reason)
+			}
+			matches.singleOrNull()?.let { match ->
 					EventLog.append(
 						"resolve",
 						"resolved \"$title\" → ${match.videoId} by title+channel+duration",
 					)
-					return match.videoId
+					return VideoResolutionAttempt(
+						resolution = VideoResolution(
+							videoId = match.videoId,
+							source = "title+channel+duration search",
+							title = match.title,
+							channel = match.channel,
+							lengthSeconds = match.lengthSeconds,
+							uniquelyResolved = true,
+							collaborativeChannel = match.collaborativeChannel,
+						),
+					)
 				}
 		}
 
-		EventLog.append(
-			"resolve",
-			"no verified id for \"$title\" / \"$channel\" (${durationSec}s) " +
-				"among ${seen.size} unique search candidates",
-		)
-		return null
+		val reason = "no verified id for \"$title\" / \"$channel\" (${durationSec}s) " +
+			"among ${seen.size} unique search candidates"
+		EventLog.append("resolve", reason)
+		return VideoResolutionAttempt(refusalReason = reason)
+	}
+
+	/** Re-fetch candidates from the run-local cache; the cache itself is never authority. */
+	suspend fun resolveVerifiedCandidates(
+		videoIds: List<String>,
+		title: String,
+		channel: String?,
+		durationSec: Long?,
+	): VideoResolutionAttempt {
+		if (videoIds.isEmpty() || channel.isNullOrBlank() || durationSec == null) {
+			return VideoResolutionAttempt(refusalReason = "no run-local verified candidate")
+		}
+		val fetched = coroutineScope {
+			videoIds.distinct().take(MAX_CACHED_CANDIDATES).map { videoId ->
+				async(Dispatchers.IO) { fetchCanonicalResolution(videoId, "run-local verified candidate") }
+			}.awaitAll().filterNotNull()
+		}
+		val matches = fetched.filter { candidate ->
+			val candidateTitle = candidate.title ?: return@filter false
+			val evidence = VideoTitleMatcher.compare(title, candidateTitle)
+			(evidence == VideoTitleMatcher.Evidence.EXACT ||
+				evidence == VideoTitleMatcher.Evidence.STRONG_CONTAINMENT) &&
+				SearchResultsParser.channelKey(channel) ==
+					SearchResultsParser.channelKey(candidate.channel) &&
+				candidate.lengthSeconds?.let { abs(it - durationSec) <= DURATION_TOLERANCE_SEC } == true
+		}.distinctBy { it.videoId }
+		return when (matches.size) {
+			1 -> VideoResolutionAttempt(
+				resolution = matches.single().copy(
+					source = "re-fetched run-local verified candidate",
+					uniquelyResolved = true,
+				),
+			)
+			0 -> VideoResolutionAttempt(
+				refusalReason = "run-local candidate was re-fetched but did not fully corroborate",
+			)
+			else -> {
+				val reason = "ambiguous identity — ${matches.size} re-fetched run-local candidates " +
+					"match (${matches.joinToString { it.videoId }}); refusing every id"
+				EventLog.append("resolve", reason)
+				VideoResolutionAttempt(refusalReason = reason)
+			}
+		}
 	}
 
 	private suspend fun verifyFromWatchPages(
@@ -189,37 +285,38 @@ class VideoIdResolver {
 		title: String,
 		channel: String,
 		durationSec: Long,
-	): String? {
+	): VideoResolutionAttempt {
 		val plausible = candidates
 			// A query already contains title + channel. Eight page checks is a
 			// generous recovery budget while bounding data use and latency when a
 			// heavily reposted Short has dozens of near-identical cards.
 			.take(MAX_WATCH_PAGE_CANDIDATES)
-		if (plausible.isEmpty()) return null
+		if (plausible.isEmpty()) {
+			return VideoResolutionAttempt(refusalReason = "no plausible watch-page candidate")
+		}
 
 		val matches = coroutineScope {
 			plausible.map { candidate ->
 				async(Dispatchers.IO) {
 					verifyWatchPage(candidate, title, channel, durationSec)
 				}
-			}.awaitAll().filterNotNull().distinct()
+			}.awaitAll().filterNotNull().distinctBy { it.videoId }
 		}
 
 		return when (matches.size) {
-			0 -> null
-			1 -> matches.single().also {
+			0 -> VideoResolutionAttempt(refusalReason = "no watch-page candidate fully corroborated")
+			1 -> matches.single().let {
 				EventLog.append(
 					"resolve",
-					"resolved \"$title\" → $it after Shorts watch-page corroboration",
+					"resolved \"$title\" → ${it.videoId} after Shorts watch-page corroboration",
 				)
+				VideoResolutionAttempt(resolution = it.copy(uniquelyResolved = true))
 			}
 			else -> {
-				EventLog.append(
-					"resolve",
-					"ambiguous identity — ${matches.size} uploads match title+channel+duration " +
-						"(${matches.joinToString()}); refusing every id",
-				)
-				null
+				val reason = "ambiguous identity — ${matches.size} uploads match " +
+					"title+channel+duration (${matches.joinToString { it.videoId }}); refusing every id"
+				EventLog.append("resolve", reason)
+				VideoResolutionAttempt(refusalReason = reason)
 			}
 		}
 	}
@@ -229,37 +326,63 @@ class VideoIdResolver {
 		title: String,
 		channel: String,
 		durationSec: Long,
-	): String? {
-		val html = fetchUrl(WATCH_URL + candidate.videoId) ?: return null
+	): VideoResolution? {
+		val resolution = fetchCanonicalResolution(candidate.videoId, "Shorts watch-page completion")
+			?: return null
+		val completed = SearchResultsParser.Candidate(
+			videoId = resolution.videoId,
+			title = resolution.title ?: return null,
+			channel = resolution.channel ?: return null,
+			lengthSeconds = resolution.lengthSeconds ?: return null,
+		)
+		if (!SearchResultsParser.matchesIdentity(completed, title, channel, durationSec)) return null
+		return resolution.copy(collaborativeChannel = candidate.collaborativeChannel)
+	}
+
+	private suspend fun fetchCanonicalResolution(videoId: String, source: String): VideoResolution? {
+		val html = fetchUrl(WATCH_URL + videoId) ?: return null
 		val player = WatchPageParser.extractJson(html, PLAYER_RESPONSE) ?: return null
 		val reportedId = runCatching {
 			JSONObject(player).optJSONObject("videoDetails")?.optString("videoId")
 		}.getOrNull()
-		if (reportedId != candidate.videoId) return null
+		if (reportedId != videoId) return null
 
 		val facts = runCatching {
-			WatchPageParser.parsePlayerResponse(candidate.videoId, player)
+			WatchPageParser.parsePlayerResponse(videoId, player)
 		}.getOrNull() ?: return null
-		val completed = SearchResultsParser.Candidate(
-			videoId = candidate.videoId,
+		return VideoResolution(
+			videoId = videoId,
+			source = source,
 			title = facts.title ?: return null,
 			channel = facts.author ?: return null,
 			lengthSeconds = facts.lengthSeconds ?: return null,
 		)
-		return candidate.videoId.takeIf {
-			SearchResultsParser.matchesIdentity(completed, title, channel, durationSec)
-		}
 	}
 
-	private fun searchQueries(title: String, channel: String): List<String> {
-		val cleaned = SearchResultsParser.searchTitle(title)
+	internal fun searchQueries(title: String, channel: String): List<String> {
+		val variants = linkedSetOf<String>()
+		fun addVariant(value: String?) {
+			value?.trim()?.takeIf(String::isNotBlank)?.let(variants::add)
+		}
+		addVariant(title)
+		addVariant(SearchResultsParser.searchTitle(title))
+		addVariant(TitleParser.presentationCore(title))
+		addVariant(TitleParser.parse(title, channel).track)
+
+		val titleWords = SearchResultsParser.titleKey(title).split(' ').filter(String::isNotBlank)
+		val channelWords = SearchResultsParser.titleKey(channel).split(' ').filter(String::isNotBlank)
+		if (channelWords.isNotEmpty() && titleWords.size > channelWords.size &&
+			titleWords.take(channelWords.size) == channelWords
+		) {
+			addVariant(titleWords.drop(channelWords.size).joinToString(" "))
+		}
+
 		return linkedSetOf<String>().apply {
-			add("$title $channel")
-			if (cleaned.isNotBlank()) {
-				add("$cleaned $channel")
-				add(cleaned)
+			variants.forEach { variant ->
+				add("$variant $channel")
+				add(variant)
 			}
-		}.toList()
+		}.take(MAX_SEARCH_QUERIES)
 	}
 
 	private suspend fun fetch(query: String): String? =
@@ -307,6 +430,9 @@ class VideoIdResolver {
 		const val NETWORK_ATTEMPTS = 2
 		const val RETRY_DELAY_MS = 500L
 		const val MAX_WATCH_PAGE_CANDIDATES = 8
+		const val MAX_CACHED_CANDIDATES = 8
+		const val MAX_SEARCH_QUERIES = 6
+		const val DURATION_TOLERANCE_SEC = 5L
 		const val USER_AGENT =
 			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
 				"(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"

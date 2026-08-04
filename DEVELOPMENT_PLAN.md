@@ -5,9 +5,30 @@
 > later replaced: OkHttp, Room, a foreground service, finalize-only identity, the proposed directory
 > layout, and an unverified first broadcast. For current behavior use [README.md](README.md), for the
 > current verification matrix use [TESTING.md](TESTING.md), and treat source plus tests as
-> authoritative where this history disagrees with them. The next documented
-> implementation target is the v0.8.11 patch contract produced by the v0.8.10
-> log-14 field run; it is planned, not implemented.
+> authoritative where this history disagrees with them. The v0.8.11 patch
+> contract produced by the v0.8.10 log-14 field run is implemented and covered
+> by automated regressions. The first APK's physical-device gate failed in log
+> 16. The generic follow-up is now implemented, passed the complete automated
+> gate, and produced a corrected APK. Log 17 tested that artifact: transport and
+> the exact log-16 cases passed, but the second device gate failed on newly
+> exposed identity, parser and kind defects. The bounded v0.8.12 correction is
+> implemented, passed its 314-test/build/lint gate and produced a review APK;
+> log 18 then passed transport/profile reconciliation but failed the third
+> physical gate on two permanent payload defects and incomplete coverage. The
+> targeted v0.8.13 correction passed 320 tests plus build/lint and produced a
+> new review APK. Log 19 then reconciled all 53 RustedWax operations but failed
+> the fourth device gate on two ordinary watch-page ad leaks, four parser
+> defects/limitations and incomplete fixture coverage. The bounded v0.8.14
+> correction passed its 338-test/build/lint gate. Log 20 reconciled 108 scoped
+> operations exactly but failed the fifth physical gate on a Namecheap leak
+> during a silent accessibility-observation outage, one qualifying resolver
+> refusal, two reversed song payloads and another incomplete fixture matrix.
+> The bounded v0.8.15 correction passed its 349-test uncached source/build/lint
+> gate. Final device log 21 then reconciled 98/98 unique broadcasts with no new
+> ad payload or crash signature. Four resolver misses and one conservative
+> ad-transition veto remain documented exceptions. The user accepted that
+> practical field result and incomplete historical fixture replay as the Phase
+> 4 final product. The next development line is v0.9 native YouTube app input.
 >
 > The current concept-test also performs optional unsupported YouTube page extraction and an
 > undocumented YouTube Music request. The policy and distribution tradeoff is recorded in
@@ -273,8 +294,9 @@ service-owned probe through `ProbeHolder` rather than owning one.
 Not carried over from the original plan: **cross-device dedup (§8)**. Desktop and phone running
 together will still double-scrobble the same listen.
 
-**Phase 4 — Control, exclusivity, metadata fidelity** — *implemented through v0.8.10;
-v0.8.11 planned; see
+**Phase 4 — Control, exclusivity, metadata fidelity** — *closed at v0.8.15;
+source/artifact gate passed and log 21 was accepted with documented conservative
+omissions and incomplete strict-fixture replay; see
 [BEHAVIOR_CONTRACT.md](BEHAVIOR_CONTRACT.md) for current invariants and PHASE4.md for chronology*
 Stop switch, browser-only watching with per-session hint binding, evidence-layered kind
 classification (format evidence > category Music > hard music evidence > non-music category >
@@ -287,8 +309,8 @@ playlist advances behind a hidden toolbar. Identity and explicit ad evidence are
 played time across the one-minute Chrome session-continuation window.
 
 The log-14 release gate passed transport, section placement and mandatory
-hyperlinks for all 109 emitted payloads, but Phase 4 is not complete. v0.8.11 is
-limited to four evidence-backed corrections:
+hyperlinks for all 109 emitted payloads. v0.8.11 implements four
+evidence-backed corrections:
 
 1. extend identity freezing from the probe through asynchronous resolver,
    enrichment and payload construction, with final candidate corroboration
@@ -301,12 +323,169 @@ limited to four evidence-backed corrections:
 4. make song-credit parsing top-level-separator and channel aware, pinned by the
    four malformed log-14 payloads.
 
-Phase 4 does not advance to another feature until targeted regressions, the
-complete unit/build/lint gates, and a second physical-device reconciliation all
-pass. The next run must again compare the event log, signed-in YouTube History,
-block evidence, both profile sections, ad outcomes, loop caps and hyperlink
-targets by video id. No historical transaction is repaired or rebroadcast as
-part of this work.
+The targeted log-14 regressions are implemented, and the complete unit/build/
+lint gate generated the v0.8.11 APK. Log 16 then failed the first device gate:
+the older live-latch title comparison rejected the correct Soy Peor, Me Porto
+Bonito and DÁKITI ids before final snapshot isolation safely refused their
+successors, and the LA PLENA quoted-work/trailing-credit shape broadcast
+reversed credits. Screen-off MediaSession carry, mandatory links, block
+confirmation and adjacent-track refusal behaved correctly.
+
+The generic shared-title corroborator and conservative
+quoted-work/trailing-credit grammar documented in the behavior contract are now
+implemented. The complete gate passed 295 tests with no skips, failures or
+errors, and debug assembly/lint succeeded. The corrected version 0.8.11,
+version-code 31 APK has SHA-256
+`1b682f582dd17f287d69acd2b22313c227acffb13f13d266288c4e6df65639d5`.
+At that point Phase 4 did not advance: the corrected artifact still required a
+second physical-device reconciliation comparing the event log, signed-in
+YouTube History, block evidence, both profile sections, ad outcomes,
+screen-off/session carry, loop caps and hyperlink targets by video id, after
+waiting through the final continuation window before export. Production code
+could not embed fixture ids, songs, titles or artists, and no historical
+transaction could be repaired or rebroadcast as part of the work.
+
+Log 17 completed that second reconciliation for the corrected v0.8.11 APK.
+All 67 emitted payloads were exact and block-confirmed on two Hive nodes, with
+60 songs and seven videos in the expected profile sections. Snapshot isolation,
+the corrected Soy Peor/Me Porto Bonito/DÁKITI/LA PLENA cases, canonical links,
+loop caps and the no-ad-payload boundary all improved or passed. Phase 4 still
+cannot close: History confirmed eight qualifying organic omissions, seven
+emitted payloads had malformed credits, and one narrative movie Short was
+likely filed as music. The complete log-14 fixture matrix also was not repeated.
+
+The implemented v0.8.12/version-code 32 patch is limited to five generic changes:
+evidence-ranked validation for one/two-word canonical titles already bound to
+the current URL generation; role-aware channel corroboration; a bounded
+memory-only verified-id candidate cache plus cleaned resolver query variants;
+multi-separator/orientation/duplicate-credit parser corrections; and strong
+movie-format evidence above bare uploader category when no hard music
+provenance exists. Exact field values remain test/history fixtures only. The
+automated result and pending field gate are in
+[TESTING.md §17](TESTING.md#17-v0812-correction-implemented-log-18-result-in-18)
+and the canonical implemented contract is in
+[BEHAVIOR_CONTRACT.md](BEHAVIOR_CONTRACT.md#v0812-field-correction-contract-implemented-automated-gate-passed).
+
+Log 18 tested v0.8.12 broadly. Seventy-three logged payloads and the post-export
+Amarillo completion produced 74 block operations; four Hive nodes, signed-in
+History and both profile sections reconciled exactly. Snapshot isolation,
+canonical links, loop caps and no-ad-payload behavior remained clean. The gate
+still failed because MONTERO's ordinary `(Call Me By Your Name)` title text was
+parsed as artist `Your Name`, Te Bote's YouTube Music OMV was demoted by the
+generic `movie` channel word, and the complete required fixture matrix was not
+run. Three unique resolver matches also failed closed on compound/collaborative
+byline presentation; Classy 101's two-upload ambiguity was correctly refused.
+
+v0.8.13/version code 33 implements only the generic correction: literal
+`(by Artist)`/`(performed by Artist)` grammar, hard music provenance above
+generic channel vocabulary, repeated recognized owner-suffix cleanup and
+YouTube-marker-proven collaborator leaders under unchanged exact title,
+duration and uniqueness checks. The full gate passed 320 tests with no skips,
+failures or errors; assembly succeeded and lint reported 0 errors/23 warnings.
+`dist/rustedwax-0.8.13.apk` has SHA-256
+`ddfeb3e51cfe60fcf8fa2f13c05891989215154da948686650ae720e4ca9e026`.
+The exact field record and next device gate are in
+[TESTING.md §§18–19](TESTING.md#18-v0812-physical-device-field-record-log-18)
+and the canonical contract is
+[BEHAVIOR_CONTRACT.md](BEHAVIOR_CONTRACT.md#v0813-log-18-targeted-correction-contract).
+
+Log 19 tested v0.8.13 broadly for almost eight hours. Its 114 finalizations
+produced 53 exact RustedWax operations and 61 visible refusals. All four Hive
+nodes, the durable queue and both profile sections reconciled; canonical links,
+snapshot isolation, threshold/floor behavior, loop caps, dedup and Stop teardown
+remained sound. The field gate still failed because Namecheap and KaoJapan
+ordinary watch-page ads reached Hive without any `[ad]` event, four song
+payloads exposed paired-delimiter/quote/orientation/multi-dash defects, and the
+mandatory v0.8.13 plus combined historical fixture matrix was not run.
+
+The v0.8.14/version-code 34 patch is implemented within its fixed scope:
+
+1. introduce pure track-instance-bound ad evidence for non-Short YouTube
+   playback while preserving the existing Short URL-generation store;
+2. scan only the existing exact/localized YouTube accessibility labels on a
+   visible YouTube host and route non-Short observations to the one unique
+   active browser MediaSession track;
+3. keep first observations provisional unless that track is established,
+   require re-observation otherwise, clear at lifecycle/conflict boundaries,
+   and freeze accepted evidence through carry/snapshot/manual/automatic paths;
+4. implement the four generic log-19 parser corrections with paired delimiters,
+   safe single quotes, exact collapsed owner proof and bounded version suffixes;
+5. focused tests passed, the version is v0.8.14/code 34, and documentation
+   records only behavior actually implemented;
+6. the full uncached gate passed 338 tests with no skips/failures/errors plus
+   assembly and lint with 0 errors/23 warnings; the tested APK is
+   `dist/rustedwax-0.8.14.apk`, SHA-256
+   `a9507c733b188f9cf3a481c8b1446535da22449343181cc17ccf556890f298b8`; and
+7. repeat the combined device gate including both watch ads with literal label
+   evidence, the ad-to-organic same-URL transition, all four new parser ids, all
+   missing v0.8.13 fixtures, cache recovery/clear, manual parity, loops, queue,
+   speed and screen-off churn.
+
+No production field catalog, History scraping, brand/title/channel/duration ad
+guessing, ambiguity loosening or historical rewrite is allowed. The exact
+implementation and verification matrix is [TESTING.md §20](TESTING.md#20-v0813-physical-device-field-record-log-19-and-v0814-implementation);
+the canonical implemented behavior is
+[BEHAVIOR_CONTRACT.md](BEHAVIOR_CONTRACT.md#v0814-log-19-correction-contract).
+
+Log 20 then tested v0.8.14 across 227 completed finalizations. The exact ledger
+is 107 automatic broadcasts plus 120 skips; one fixed test makes 108 scoped
+Hive operations. Two offline queue items later reached blocks. All four nodes
+returned the same exact rows, profile growth was +80 Music/+28 Videos, all
+automatic URLs were canonical and no duplicate broadcast id was found. All 89
+tracks with accepted exact ad evidence were vetoed; threshold/floor behavior,
+loop caps, 2× playback, progress carry and the queue remained sound.
+
+The fifth device gate failed. Three Namecheap appearances with literal labels
+were refused, but a fourth became a new immutable transaction during a roughly
+36-minute interval in which the accessibility service remained nominally
+connected while URL/ad observations silently stopped. The public 30-second ad
+was uniquely recovered by the ordinary resolver and met every non-ad rule.
+CENTRAL CEE — BOOGA was a qualifying History-confirmed Music/OMV omission after
+`Central Cee and LIVE YOURS` was treated as contradicting `Central Cee`.
+6IX9INE/SIP and Ed Sheeran/Bad Habits reached the right ids with artist/title
+reversed. The mandatory correction matrix was still absent and the export ended
+inside its final continuation window.
+
+The implemented v0.8.15/version-code 35 scope is:
+
+1. represent a successful visible YouTube accessibility-root scan as a pure
+   package/track-instance coverage fact, distinct from watcher connection and
+   from positive ad evidence;
+2. route normal callbacks and a bounded periodic watcher refresh through the
+   same root-observation routine, logging a single evidence-outage transition
+   while target sessions continue without successful scans;
+3. when Browser evidence is enabled, fail closed for a resolver-only automatic
+   or manual track with no current-track scan, using an evidence-unavailable
+   reason rather than claiming it is an ad; carry coverage only across genuine
+   same-track recreation and clear it at every existing lifecycle boundary;
+4. keep conventional `Artist - Work ft./feat. A, B` orientation even with an
+   unrelated/featured uploader, while preserving bare trailing credit lists and
+   the exact log-17 track-first fixtures;
+5. accept a collaborative candidate byline only under unique exact-title/
+   duration resolution, hard music provenance and exact complete leading-owner
+   agreement, preserving all partial/publisher/ambiguity refusals;
+6. focused regressions were added first; 176 focused evidence/probe/carry/rules/
+   manual/parser/resolver tests pass with no skips, failures or errors, after
+   which the version moved to v0.8.15/code 35;
+7. the full uncached gate passed 349 tests with no skips/failures/errors plus
+   debug assembly and lint with 0 errors/23 warnings; the tested
+   `dist/rustedwax-0.8.15.apk` has SHA-256
+   `242d1b76d473754494dec74e035a7731ee1311c4920458926c5dd769e7ee365c`.
+
+The later log-21 device round reconciled 98/98 unique block-confirmed
+broadcasts to the signed-in profile, created no new ad payload and exposed no
+RustedWax crash signature. It also exposed four full organic resolver omissions
+and one organic successor conservatively vetoed by carried ad evidence. The
+strict TESTING §21f historical matrix was not completely replayed. The user
+accepted these recorded exceptions under the practical Phase 4 release bar;
+the authoritative final ledger is [TESTING.md §22](TESTING.md#22-v0815-final-physical-device-field-record-log-21).
+
+No History runtime access, fixture catalog, brand/title/channel/duration ad
+heuristic, ambiguity loosening or historical rewrite is allowed. The exact
+field record and implementation order are
+[TESTING.md §§21–22](TESTING.md#21-v0814-physical-device-field-record-log-20-and-implemented-v0815-correction);
+the canonical implemented behavior is
+[BEHAVIOR_CONTRACT.md](BEHAVIOR_CONTRACT.md#v0815-log-20-correction-contract-implemented).
 
 **Phase 5 — Privacy mode**
 `PrivacySecret`, `PrivacyCipher`, `PrivacyEnvelope`, four per-kind toggles matching the extension's
@@ -316,7 +495,7 @@ option keys. Gates G1, G2.
 Recent-scrobbles list with tx links, metadata-filter port (`normalize`, `regex-edits`,
 `blocked-tags`), manual edit-before-broadcast, RC/authority error surfacing.
 
-**Phase 6b — Native YouTube apps** *(evaluated 2026-07-24, not started)*
+**v0.9 / next phase — Native YouTube apps** *(planned after Phase 4 closure)*
 Scrobble `com.google.android.youtube` and `…apps.youtube.music` directly, per-app and off by
 default. Structurally *easier* than the browser path: the package name is the origin proof, so
 notification-hint binding, cross-tab taint and the address-bar watcher are all unnecessary, and
@@ -327,6 +506,10 @@ URI, both of which `YouTubeProbe` routes 1–2 would consume unchanged)? If not,
 lose `url` and category enrichment and fall back to classifier + MusicBrainz — the same position
 browser shorts are already in. Also to measure: ad handling inside the session, and whether native
 Shorts publish a session at all. No new permissions; the notification-access grant covers it.
+Begin with a read-only instrumentation build and captured native-app fixtures;
+do not generalize the browser accessibility watcher to native packages or
+weaken the canonical-link/ad/threshold/immutability rules before the measured
+metadata and ad boundaries are understood.
 
 **Phase 7 — Stretch**
 Platform/URL inference table, cross-device dedup v2, a personal correction list, and — only if
