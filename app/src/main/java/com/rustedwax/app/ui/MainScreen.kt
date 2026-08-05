@@ -74,9 +74,11 @@ fun MainScreen(
 	nativeYouTube: Boolean,
 	nativeYouTubeMusic: Boolean,
 	nativeShortsGranted: Boolean,
+	nativeShortsDropped: Boolean,
 	nativeShortsStatus: NativeShortsObserver.Status,
 	thresholdPercent: Int,
 	urlWatcherEnabled: Boolean,
+	urlWatcherDropped: Boolean,
 	enrichment: Boolean,
 	shortClips: Boolean,
 	recent: List<ScrobbleEngine.ScrobbleRecord>,
@@ -262,11 +264,13 @@ fun MainScreen(
 						nativeYouTube = nativeYouTube,
 						nativeYouTubeMusic = nativeYouTubeMusic,
 						nativeShortsGranted = nativeShortsGranted,
+						nativeShortsDropped = nativeShortsDropped,
 						nativeShortsStatus = nativeShortsStatus,
 						thresholdPercent = thresholdPercent,
 						hasKey = account != null,
 						queuedCount = queuedCount,
 						urlWatcherEnabled = urlWatcherEnabled,
+						urlWatcherDropped = urlWatcherDropped,
 						enrichment = enrichment,
 						shortClips = shortClips,
 						youTubeAccount = youTubeAccount,
@@ -368,11 +372,13 @@ private fun ScrobbleControls(
 	nativeYouTube: Boolean,
 	nativeYouTubeMusic: Boolean,
 	nativeShortsGranted: Boolean,
+	nativeShortsDropped: Boolean,
 	nativeShortsStatus: NativeShortsObserver.Status,
 	thresholdPercent: Int,
 	hasKey: Boolean,
 	queuedCount: Int,
 	urlWatcherEnabled: Boolean,
+	urlWatcherDropped: Boolean,
 	enrichment: Boolean,
 	shortClips: Boolean,
 	youTubeAccount: YouTubeSessionVault.Session?,
@@ -444,6 +450,11 @@ private fun ScrobbleControls(
 					Text("Foreground Shorts evidence", style = MaterialTheme.typography.titleSmall)
 					Text(
 						when {
+							nativeShortsDropped ->
+								"Stopped on its own — this was granted and Android has since " +
+									"disabled it, which is what happens when the service crashes. " +
+									"No foreground Short has been read since. Re-enable RustedWax — " +
+									"Native Shorts in Accessibility."
 							!nativeShortsGranted ->
 								"Experimental grant off — enable RustedWax — Native Shorts in " +
 									"Accessibility. It is OS-scoped only to com.google.android.youtube."
@@ -512,10 +523,14 @@ private fun ScrobbleControls(
 				Column(Modifier.weight(1f)) {
 					Text("Browser evidence access", style = MaterialTheme.typography.titleSmall)
 					Text(
-						if (urlWatcherEnabled) {
-							"On — exact site/video link and visible YouTube ad labels"
-						} else {
-							"Off — no video link or visible ad-label detection"
+						when {
+							urlWatcherDropped ->
+								"Stopped on its own — this was granted and Android has since " +
+									"disabled it, which is what happens when the service crashes. " +
+									"Nothing watched in Chrome or Brave has been recorded since."
+							urlWatcherEnabled ->
+								"On — exact site/video link and visible YouTube ad labels"
+							else -> "Off — no video link or visible ad-label detection"
 						},
 						style = MaterialTheme.typography.bodySmall,
 					)

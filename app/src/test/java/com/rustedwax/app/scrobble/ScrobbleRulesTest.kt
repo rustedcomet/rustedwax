@@ -19,6 +19,39 @@ class ScrobbleRulesTest {
 	}
 
 	@Test
+	fun `a lost progress surface refuses without claiming a percentage`() {
+		// Measured 2026-08-05 in picture-in-picture: the accessibility tree keeps
+		// the Shorts root, player and time bar but loses the SeekBar, and
+		// YouTube's MediaSession reports STATE_NONE with position 0. Nothing can
+		// be measured, which is not the same fact as "0% was played" — and
+		// reporting it as the latter hid the cause for most of a day.
+		val lost = ScrobbleRules.decide(
+			playedMs = 0,
+			durationMs = fourMinutes,
+			progressSurfaceLost = true,
+		)
+		assertFalse(lost.shouldScrobble)
+		assertFalse(lost.skippedBecause!!.contains("%"))
+		assertTrue(lost.skippedBecause!!.contains("cannot be measured"))
+
+		// Same numbers without the marker still report the percentage.
+		val ordinary = ScrobbleRules.decide(playedMs = 0, durationMs = fourMinutes)
+		assertTrue(ordinary.skippedBecause!!.contains("below"))
+	}
+
+	@Test
+	fun `a lost progress surface cannot rescue a listen that did clear the bar`() {
+		// The marker only ever changes the wording of a refusal. It must never
+		// admit or block a decision that the measurement already settled.
+		val d = ScrobbleRules.decide(
+			playedMs = 145_000,
+			durationMs = fourMinutes,
+			progressSurfaceLost = true,
+		)
+		assertEquals(listOf(60), d.percentages)
+	}
+
+	@Test
 	fun `just past 60 percent scrobbles once`() {
 		val d = ScrobbleRules.decide(playedMs = 145_000, durationMs = fourMinutes)
 		assertEquals(listOf(60), d.percentages)

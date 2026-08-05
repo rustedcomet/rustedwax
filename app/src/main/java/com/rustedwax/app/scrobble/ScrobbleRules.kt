@@ -167,6 +167,7 @@ object ScrobbleRules {
 		browserEvidenceEnabled: Boolean = false,
 		resolvedWithoutExactUrl: Boolean = false,
 		accessibilityCovered: Boolean = false,
+		progressSurfaceLost: Boolean = false,
 	): Decision {
 		// The optional accessibility service observed YouTube's own visible ad
 		// UI and bound it to this exact track instance. This is the mobile analogue of
@@ -210,6 +211,23 @@ object ScrobbleRules {
 
 		val progress = playedMs.toDouble() / durationMs
 		if (progress < threshold) {
+			// A percentage here would be a claim we cannot support. When the
+			// progress surface is gone there is no measurement at all, not a
+			// measurement of zero, and the two must not read alike: on
+			// 2026-08-05 a picture-in-picture session reported "played 0%,
+			// below 60% threshold" and was indistinguishable from a parser
+			// bug for most of a day. Refuses either way — the difference is
+			// only whether the log tells the truth about why.
+			if (progressSurfaceLost) {
+				return Decision(
+					emptyList(),
+					"the Short left the foreground player — in picture-in-picture " +
+						"and in the background YouTube publishes no seekbar and no " +
+						"MediaSession position, so playback cannot be measured. " +
+						"Only ${playedMs / 1000}s was measured before it left; " +
+						"nothing is assumed about the rest.",
+				)
+			}
 			return Decision(
 				emptyList(),
 				"played ${(progress * 100).roundToInt()}%, below " +

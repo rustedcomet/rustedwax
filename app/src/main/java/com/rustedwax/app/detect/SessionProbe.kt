@@ -491,7 +491,13 @@ class SessionProbe(context: Context) {
 			EventLog.append(
 				"finalize",
 				"${ended.packageName} [foreground Short lifecycle] ${ended.title} — " +
-					"measured ${ended.playedMs / 1000}s of ${(ended.durationMs ?: 0) / 1000}s",
+					"measured ${ended.playedMs / 1000}s of ${(ended.durationMs ?: 0) / 1000}s" +
+					if (ended.foregroundProgressLost) {
+						" (progress surface lost — the Short left the foreground " +
+							"player, so the remainder is unmeasured, not zero)"
+					} else {
+						""
+					},
 			)
 			onTrackFinalized?.invoke(ended)
 		}

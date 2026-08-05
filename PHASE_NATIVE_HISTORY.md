@@ -496,15 +496,46 @@ directly — the same three Shorts refused in PiP and then scrobbled on replay i
 This is very probably what the 13h run was too, though that log predates the split and cannot be
 re-read to prove it.
 
-**Not fixed here, deliberately.** The repair is a fallback from foreground proof to MediaSession
-when the seekbar becomes unreadable mid-Short, and that is a change to *measurement*, which is what
-gates every on-chain write. It wants its own measurement and its own decision, not a follow-on edit
-to a title fix.
+**Measured, and the obvious repair does not exist.** The first instinct was a fallback from
+foreground proof to MediaSession when the seekbar goes unreadable. Measured on the device with a
+Short live in PiP, both sources are empty:
+
+| source | in PiP |
+| --- | --- |
+| MediaSession | `active=true`, 3 controllers — but `state=0` (`STATE_NONE`), `position=0` |
+| accessibility tree | keeps `reel_watch_fragment_root`, `reel_watch_player`, `reel_time_bar` — but the time bar has **no `SeekBar` child**, and no time text exists anywhere in the window |
+
+Window state confirms the mode (`mWindowingMode=pinned`,
+`mLastReportedPictureInPictureMode=true`). So PiP has no readable progress in either direction.
+Measuring it would mean estimating from wall clock, and a pause in PiP is invisible (`STATE_NONE`
+never changes) while Shorts auto-loop, so the estimate would credit paused and repeated time alike —
+a guess feeding `percent_played` onto a chain. Declined. *(An earlier objection about 2× playback
+was dropped: that is a test-rig artefact, not a real listener.)*
+
+**What was fixed instead: the lie, not the limitation.** PiP still does not scrobble — the UI has
+always said so ("Foreground Shorts only; PiP/background time is not counted"). What was wrong is
+that it *reported* `measured 0s` → `played 0%, below 60% threshold`, which is a claim about
+playback rather than an admission of ignorance, and is indistinguishable from a parser bug. That is
+precisely what cost a day. `SessionSnapshot.foregroundProgressLost` now carries the state from the
+tracker to `ScrobbleRules`, which refuses with an exact reason and **no percentage**. The refusal
+itself is unchanged; only its honesty is. A test asserts the marker can never rescue or block a
+listen the measurement already settled — it may only change wording.
 - **Both accessibility services appeared under `dumpsys accessibility`'s `crashed services`**, and
   `UrlWatcherService` had been dropped from `enabled_accessibility_services` without the owner
   touching it — Android removes a crashed service from the enabled set. Browser scrobbling was dead
-  and nothing surfaced it. §9.3's `isEnabled` defect means the app would still have reported it
-  granted. Worth a visible health line, and it raises the priority of §9.3.
+  and nothing surfaced it.
+
+  **Fixed on the owner's sign-off.** §9.3 is closed: `UrlWatcherService.isEnabled` now requires
+  `accessibility_enabled == 1` as well, so it can no longer report "On" for a watcher Android has
+  stopped feeding. No capture logic changed — while the service is live, Chrome and Brave behave
+  exactly as before. On top of that, `AccessibilityGrantHealth` classifies a grant as `LIVE`,
+  `NEVER_GRANTED` or `DROPPED`, backed by a one-way "was once live" flag in `Settings` that a crash
+  cannot erase. The Settings rows now distinguish "you have not enabled this" from "this stopped on
+  its own", and a single `[health]` line is written per transition — once, not once per poll, since
+  a wall of identical lines is what buried the previous two diagnoses.
+
+  This is the item that mattered most: it is the likeliest reason roughly half of 2026-08-05's watch
+  history never reached the app, and nothing anywhere reported it.
 
 ---
 
@@ -540,11 +571,13 @@ Note what must **not** be removed on the same reasoning: the browser address bar
 works signed out), the playlist route (one fetch per hundred tracks, no credentials) and all
 MediaSession measurement (history says a video was *started*, never how much was played).
 
-### 9.3 `UrlWatcherService.isEnabled`
+### 9.3 `UrlWatcherService.isEnabled` — **closed 2026-08-05**
 
-Has the §2.3 defect — reads only `enabled_accessibility_services`, so a revoked service still
-reports as granted. One line, deliberately untouched here because §11.1 forbids changing
-browser-path files without the owner's sign-off.
+Had the §2.3 defect — read only `enabled_accessibility_services`, so a revoked service still
+reported as granted. Left alone at the time because §11.1 fenced the file; the owner signed it off
+after the defect hid a day-long browser outage. Now requires `accessibility_enabled == 1` as well,
+matching `NativeShortsAccessibilityService.isEnabled`. Reporting only — no change to capture, so
+Chrome and Brave are untouched whenever the service is actually live. See §8b.
 
 ### 9.4 The translated-title gap outside Shorts
 

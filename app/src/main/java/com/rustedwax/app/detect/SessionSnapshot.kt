@@ -42,6 +42,20 @@ data class SessionSnapshot(
 	/** Fresh successful visible-YouTube-root scan frozen for this exact track. */
 	val accessibilityCoverage: MediaSessionAccessibilityEvidence.Coverage? = null,
 	val playbackState: String,
+	/**
+	 * The Short is still playing but its progress surface has gone away, so
+	 * nothing further can be measured.
+	 *
+	 * Measured on 2026-08-05 in picture-in-picture: the accessibility tree keeps
+	 * `reel_watch_fragment_root`, `reel_watch_player` and `reel_time_bar`, but
+	 * the time bar loses its `SeekBar` child and no time text exists anywhere in
+	 * the window, while YouTube's MediaSession reports `STATE_NONE` with
+	 * `position=0`. Neither source can say how much was played.
+	 *
+	 * This is not the same as "0% was played", and reporting it as such is what
+	 * made a PiP session indistinguishable from a parser bug for most of a day.
+	 */
+	val foregroundProgressLost: Boolean = false,
 	val isPlaying: Boolean,
 	/** playedMs / durationMs; null when duration is unknown. */
 	val percentPlayed: Double?,

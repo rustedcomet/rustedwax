@@ -343,6 +343,7 @@ object ScrobbleEngine {
 				browserEvidenceEnabled = session.browserEvidenceEnabled,
 				resolvedWithoutExactUrl = session.confirmed == null,
 				accessibilityCovered = session.accessibilityCoverage != null,
+				progressSurfaceLost = session.foregroundProgressLost,
 			)
 			if (!decision.shouldScrobble) {
 				skip(session, decision.skippedBecause ?: "no reason given", durationMs)

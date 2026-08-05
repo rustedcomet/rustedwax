@@ -24,6 +24,8 @@ import com.rustedwax.app.hive.HiveScrobblePayload
 import com.rustedwax.app.hive.KeyValidator
 import com.rustedwax.app.scrobble.ScrobbleEngine
 import com.rustedwax.app.scrobble.ScrobbleRules
+import com.rustedwax.app.detect.AccessibilityGrantHealth
+import com.rustedwax.app.detect.GrantHealth
 import com.rustedwax.app.detect.MonitorSwitch
 import com.rustedwax.app.detect.NativeShortsAccessibilityService
 import com.rustedwax.app.detect.NativeShortsObserver
@@ -78,6 +80,12 @@ class MainActivity : ComponentActivity() {
 				var nativeShortsGranted by remember {
 					mutableStateOf(NativeShortsAccessibilityService.isEnabled(this))
 				}
+				// "Off" and "was on and stopped on its own" are the same boolean
+				// but very different messages: Android drops a crashed
+				// accessibility service from the enabled list, and on 2026-08-05
+				// that silently cost most of a day's browser evidence.
+				var urlWatcherDropped by remember { mutableStateOf(false) }
+				var nativeShortsDropped by remember { mutableStateOf(false) }
 				var enrichment by remember { mutableStateOf(settings.enrichment) }
 				var shortClips by remember { mutableStateOf(settings.shortClips) }
 				// Read once per composition rather than held in a flow: mutes change
@@ -115,6 +123,20 @@ class MainActivity : ComponentActivity() {
 						urlWatcher = UrlWatcherService.isEnabled(this@MainActivity)
 						nativeShortsGranted =
 							NativeShortsAccessibilityService.isEnabled(this@MainActivity)
+						urlWatcherDropped = noteGrant(
+							live = urlWatcher,
+							everGranted = settings.browserEvidenceEverGranted,
+							remember = { settings.browserEvidenceEverGranted = it },
+							alreadyReported = urlWatcherDropped,
+							label = "Browser evidence access",
+						)
+						nativeShortsDropped = noteGrant(
+							live = nativeShortsGranted,
+							everGranted = settings.nativeShortsEverGranted,
+							remember = { settings.nativeShortsEverGranted = it },
+							alreadyReported = nativeShortsDropped,
+							label = "Foreground Shorts evidence",
+						)
 						youTubeAccount = ScrobbleEngine.youTubeSession()
 						watchHistory = ScrobbleEngine.watchHistoryEnabled()
 						watchHistoryRefusal = ScrobbleEngine.watchHistoryRefusal()
@@ -145,9 +167,11 @@ class MainActivity : ComponentActivity() {
 					nativeYouTube = nativeSources.youtubeEnabled,
 					nativeYouTubeMusic = nativeSources.youtubeMusicEnabled,
 					nativeShortsGranted = nativeShortsGranted,
+					nativeShortsDropped = nativeShortsDropped,
 					nativeShortsStatus = nativeShortsStatus,
 					thresholdPercent = settings.thresholdPercent,
 					urlWatcherEnabled = urlWatcher,
+					urlWatcherDropped = urlWatcherDropped,
 					enrichment = enrichment,
 					shortClips = shortClips,
 					recent = recent,
@@ -507,5 +531,47 @@ class MainActivity : ComponentActivity() {
 			addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
 		}
 		startActivity(Intent.createChooser(send, "Export log"))
+	}
+}
+
+/**
+ * Classifies an accessibility grant as live, never granted, or **dropped**.
+ *
+ * Android removes a crashed accessibility service from
+ * `enabled_accessibility_services`, which is indistinguishable from the user
+ * switching it off. On 2026-08-05 the browser watcher was dropped exactly that
+ * way, stayed off for most of a day, and nothing anywhere said so — roughly
+ * half that day's watch history never reached the app. Remembering that a
+ * grant was once live turns one boolean into two very different messages.
+ *
+ * Logged once per transition rather than once per poll, which runs every
+ * second: a run of identical lines is what buried the last two diagnoses.
+ *
+ * @return whether the grant was once live and is not live now.
+ */
+private fun noteGrant(
+	live: Boolean,
+	everGranted: Boolean,
+	remember: (Boolean) -> Unit,
+	alreadyReported: Boolean,
+	label: String,
+): Boolean = when (AccessibilityGrantHealth.classify(live, everGranted)) {
+	GrantHealth.LIVE -> {
+		if (!everGranted) remember(true)
+		false
+	}
+
+	GrantHealth.NEVER_GRANTED -> false
+
+	GrantHealth.DROPPED -> {
+		if (!alreadyReported) {
+			EventLog.append(
+				"health",
+				"$label was granted and is no longer enabled. Android disables an " +
+					"accessibility service when it crashes, so this can happen without " +
+					"anyone changing a setting. Nothing is being read through it.",
+			)
+		}
+		true
 	}
 }

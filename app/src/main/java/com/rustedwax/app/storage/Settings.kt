@@ -116,6 +116,29 @@ class Settings internal constructor(
 		get() = store.getBoolean(KEY_WATCH_HISTORY, false)
 		set(value) = store.putBoolean(KEY_WATCH_HISTORY, value)
 
+	/**
+	 * Whether each accessibility grant has ever been observed as live.
+	 *
+	 * Android drops a service from `enabled_accessibility_services` when it
+	 * crashes, which looks exactly like the user turning it off — and on
+	 * 2026-08-05 that happened to the browser watcher and went unnoticed for a
+	 * day, with roughly half the day's watch history never reaching the app.
+	 * Remembering that a grant was once live is what lets the UI distinguish
+	 * "you have not enabled this yet" from "this stopped on its own", which are
+	 * the same boolean but very different messages.
+	 *
+	 * Deliberately one-way: only cleared when the user re-grants and it goes
+	 * live again, so a crash cannot quietly reset the evidence of itself.
+	 */
+	var browserEvidenceEverGranted: Boolean
+		get() = store.getBoolean(KEY_BROWSER_EVER_GRANTED, false)
+		set(value) = store.putBoolean(KEY_BROWSER_EVER_GRANTED, value)
+
+	/** As [browserEvidenceEverGranted], for the native Shorts observer. */
+	var nativeShortsEverGranted: Boolean
+		get() = store.getBoolean(KEY_SHORTS_EVER_GRANTED, false)
+		set(value) = store.putBoolean(KEY_SHORTS_EVER_GRANTED, value)
+
 	/** `scrobblePercent` upstream — stored as a percentage, used as a fraction. */
 	var scrobbleThreshold: Double
 		get() = store.getInt(KEY_PERCENT, 60).coerceIn(20, 95) / 100.0
@@ -131,6 +154,8 @@ class Settings internal constructor(
 		const val KEY_NATIVE_YOUTUBE_MUSIC = "nativeYouTubeMusic"
 		const val KEY_SHORT_CLIPS = "shortClipScrobbling"
 		const val KEY_WATCH_HISTORY = "watchHistoryLookup"
+		const val KEY_BROWSER_EVER_GRANTED = "browserEvidenceEverGranted"
+		const val KEY_SHORTS_EVER_GRANTED = "nativeShortsEverGranted"
 
 		/** Same key the extension uses. */
 		const val KEY_PERCENT = "scrobblePercent"

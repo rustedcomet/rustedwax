@@ -301,6 +301,15 @@ class UrlWatcherService : AccessibilityService() {
 
 		/** Whether the user has enabled this service in system settings. */
 		fun isEnabled(context: Context): Boolean {
+			// Both halves, matching NativeShortsAccessibilityService.isEnabled.
+			// The list alone keeps naming a service Android has stopped sending
+			// events to, so it reports "On" for a watcher that is reading
+			// nothing. This is the §2.3 defect, left alone at the time because
+			// the file was fenced; the owner signed it off on 2026-08-05 after a
+			// day in which the service had been dropped and nothing said so.
+			if (Settings.Secure.getInt(context.contentResolver, ACCESSIBILITY_ENABLED, 0) != 1) {
+				return false
+			}
 			val enabled = Settings.Secure.getString(
 				context.contentResolver,
 				Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
@@ -308,5 +317,8 @@ class UrlWatcherService : AccessibilityService() {
 			val target = "${context.packageName}/${UrlWatcherService::class.java.name}"
 			return enabled.split(':').any { it.equals(target, ignoreCase = true) }
 		}
+
+		/** `Settings.Secure.ACCESSIBILITY_ENABLED`, which has no public constant. */
+		private const val ACCESSIBILITY_ENABLED = "accessibility_enabled"
 	}
 }

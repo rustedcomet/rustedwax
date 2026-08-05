@@ -303,6 +303,7 @@ class ForegroundShortTracker {
 				else -> "FOREGROUND_SHORT"
 			},
 			isPlaying = !finalized && !proofMissing,
+			foregroundProgressLost = proofMissing,
 			percentPlayed = playedMs.toDouble() / durationMs,
 			identity = YouTubeProbe.Identity.SiteOnly(
 				host = YouTubeProbe.YOUTUBE_PACKAGE,
