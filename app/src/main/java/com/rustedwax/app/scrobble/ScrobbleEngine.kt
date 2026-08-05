@@ -20,6 +20,9 @@ import com.rustedwax.app.detect.SessionProbe
 import com.rustedwax.app.detect.SessionSnapshot
 import com.rustedwax.app.detect.TitleParser
 import com.rustedwax.app.detect.EventLog
+import com.rustedwax.app.detect.NativeSourceSwitches
+import com.rustedwax.app.detect.NativePreResolvedRoute
+import com.rustedwax.app.detect.YouTubeProbe
 import com.rustedwax.app.enrich.FactsCache
 import com.rustedwax.app.enrich.MetadataResolver
 import com.rustedwax.app.enrich.MusicBrainzVerifier
@@ -29,10 +32,12 @@ import com.rustedwax.app.enrich.VideoIdentityCorroborator
 import com.rustedwax.app.enrich.VideoResolution
 import com.rustedwax.app.enrich.VideoResolutionAttempt
 import com.rustedwax.app.enrich.VerifiedIdentityCandidateCache
+import com.rustedwax.app.enrich.WatchHistoryResolver
 import com.rustedwax.app.enrich.YouTubePageResolver
 import com.rustedwax.app.storage.KeyVault
 import com.rustedwax.app.storage.MutedVideos
 import com.rustedwax.app.storage.Settings
+import com.rustedwax.app.storage.YouTubeSessionVault
 
 /**
  * Turns finished tracks into on-chain scrobbles.
@@ -65,6 +70,8 @@ object ScrobbleEngine {
 	private lateinit var factsCache: FactsCache
 	private lateinit var musicBrainz: MusicBrainzVerifier
 	private lateinit var muted: MutedVideos
+	private lateinit var youtubeSession: YouTubeSessionVault
+	private lateinit var history: WatchHistoryResolver
 	private val idResolver = VideoIdResolver()
 	private val broadcaster = HiveBroadcaster()
 
@@ -173,6 +180,8 @@ object ScrobbleEngine {
 		resolver = YouTubePageResolver(factsCache)
 		musicBrainz = MusicBrainzVerifier(appContext)
 		muted = MutedVideos(appContext)
+		youtubeSession = YouTubeSessionVault(appContext)
+		history = WatchHistoryResolver(youtubeSession)
 		initialised = true
 		ledger.prune()
 		_queueSize.value = queue.size()
@@ -204,6 +213,13 @@ object ScrobbleEngine {
 			return
 		}
 		if (!session.isTarget) return
+		if (!NativeSourceSwitches.isSnapshotCurrent(session.packageName, session.sourceEpoch)) {
+			EventLog.append(
+				"native",
+				"${session.packageName} finalized after its opt-in/lifecycle boundary — discarded",
+			)
+			return
+		}
 
 		if (!session.isYouTube) {
 			skip(session, "source not proven YouTube")
@@ -228,6 +244,10 @@ object ScrobbleEngine {
 		// including the dedup claim, which must be computed from the *corrected*
 		// title and artist or a fixed parse would look like a new track.
 		scope.launch {
+			if (!NativeSourceSwitches.isSnapshotCurrent(session.packageName, session.sourceEpoch)) {
+				EventLog.append("native", "${session.packageName} stale finalization refused")
+				return@launch
+			}
 			// The address bar is the exact source when it spoke; searching is
 			// the fallback for when it never did (a playlist advancing behind a
 			// hidden toolbar fires no accessibility event at all).
@@ -238,13 +258,14 @@ object ScrobbleEngine {
 						source = "frozen ${confirmed.source}",
 						title = session.resolverContext.knownTitle,
 						channel = session.resolverContext.knownChannel,
+						ownerHandle = session.ownerHandle,
 						lengthSeconds = session.resolverContext.knownDurationSeconds,
 					),
 				)
 			} ?: resolveVideoId(session)
 			val resolution = attempt.resolution
 			if (resolution == null) {
-				noteVideoIdOutcome(null)
+				noteVideoIdOutcome(session, null)
 				skip(
 					session,
 					"video id could not be verified — " +
@@ -256,7 +277,7 @@ object ScrobbleEngine {
 			val videoId = resolution.videoId
 			val facts = enrich(videoId)
 			VideoIdentityCorroborator.contradiction(session, resolution, facts)?.let { mismatch ->
-				noteVideoIdOutcome(null)
+				noteVideoIdOutcome(session, null)
 				skip(
 					session,
 					"video id could not be verified against the finalized snapshot — $mismatch",
@@ -270,13 +291,26 @@ object ScrobbleEngine {
 					title = session.title,
 					channel = session.artist,
 					durationMs = session.durationMs,
+					ownerHandle = session.ownerHandle,
 				)
 				EventLog.append(
 					"resolve",
 					"remembered $videoId as a bounded run-local verified candidate",
 				)
 			}
-			noteVideoIdOutcome(videoId)
+			noteVideoIdOutcome(session, videoId)
+			if (session.isNative) {
+				val route = session.confirmed?.exactIdRoute
+				EventLog.append(
+					"native-id",
+					if (route != null) {
+						"${session.packageName} verified $videoId via $route"
+					} else {
+						"${session.packageName} verified $videoId via corroborated resolver " +
+							"(${resolution.source})"
+					},
+				)
+			}
 
 			// Once the frozen snapshot has verified the id, honor the user's mute
 			// before MusicBrainz, rules, payload construction or signing.
@@ -301,7 +335,7 @@ object ScrobbleEngine {
 				playedMs = session.playedMs,
 				durationMs = durationMs,
 				threshold = settings.scrobbleThreshold,
-				isShort = session.confirmed?.isShort == true,
+				isShort = session.hasShortSourceProof,
 				videoResolved = facts?.resolvedOnWatchPage == true,
 				videoUnlisted = facts?.isUnlisted,
 				shortClipsEnabled = settings.shortClips,
@@ -332,6 +366,13 @@ object ScrobbleEngine {
 				)
 				return@launch
 			}
+			if (!NativeSourceSwitches.isSnapshotCurrent(session.packageName, session.sourceEpoch)) {
+				EventLog.append(
+					"native",
+					"${session.packageName} opt-in/lifecycle changed before dedup or signing — discarded",
+				)
+				return@launch
+			}
 
 			val dedupKey = DedupLedger.keyFor(
 				basePayload.title,
@@ -348,7 +389,7 @@ object ScrobbleEngine {
 				val percentages = ScrobbleRules.capForKind(
 					decision.percentages,
 					basePayload.kind,
-					isShort = session.confirmed?.isShort == true,
+					isShort = session.hasShortSourceProof,
 					loopDetected = session.loopDetected,
 				)
 				if (session.loopDetected) {
@@ -370,8 +411,69 @@ object ScrobbleEngine {
 					)
 				}
 			percentages.forEach { percent ->
-				enqueueAndSend(basePayload.copy(percentPlayed = percent), videoId)
+				enqueueAndSend(
+					payload = basePayload.copy(percentPlayed = percent),
+					videoId = videoId,
+					sourcePackage = session.packageName,
+					sourceEpoch = session.sourceEpoch,
+				)
 			}
+		}
+	}
+
+	/**
+	 * Resolve a stable native track early enough to authorize a controller
+	 * handoff. This never builds, deduplicates, signs or queues a payload.
+	 */
+	fun resolveNativeCarryIdentity(
+		session: SessionSnapshot,
+		callback: (SessionProbe.NativeResolvedIdentity?) -> Unit,
+	) {
+		if (!initialised || !settings.monitoringEnabled || !settings.enrichment ||
+			!session.isNative || session.isForegroundShort ||
+			!NativeSourceSwitches.isSnapshotCurrent(session.packageName, session.sourceEpoch)
+		) {
+			callback(null)
+			return
+		}
+		scope.launch {
+			val attempt = resolveVideoId(session)
+			val resolution = attempt.resolution
+			if (resolution == null) {
+				EventLog.append(
+					"native-carry",
+					"${session.packageName} pre-resolution refused \"${session.title}\": " +
+						(attempt.refusalReason ?: "no unique candidate corroborated"),
+				)
+				callback(null)
+				return@launch
+			}
+			val facts = enrich(resolution.videoId)
+			val contradiction = VideoIdentityCorroborator.contradiction(session, resolution, facts)
+			if (contradiction != null ||
+				!NativeSourceSwitches.isSnapshotCurrent(session.packageName, session.sourceEpoch)
+			) {
+				EventLog.append(
+					"native-carry",
+					"${session.packageName} pre-resolution refused \"${session.title}\": " +
+						(contradiction ?: "native source generation changed"),
+				)
+				callback(null)
+				return@launch
+			}
+			callback(
+				SessionProbe.NativeResolvedIdentity(
+					videoId = resolution.videoId,
+					route = when {
+						resolution.playlistVerified -> NativePreResolvedRoute.PLAYLIST
+						resolution.historyVerified -> NativePreResolvedRoute.HISTORY
+						resolution.structuredNativeMusic ->
+							NativePreResolvedRoute.STRUCTURED_MUSIC
+
+						else -> NativePreResolvedRoute.RAW_TITLE_CHANNEL
+					},
+				),
+			)
 		}
 	}
 
@@ -529,6 +631,55 @@ object ScrobbleEngine {
 	 * — and fails closed. If the match is not certain, finalization records the
 	 * item in Not logged and never constructs an on-chain entry.
 	 */
+	/**
+	 * The playlist entry this session is playing, or null.
+	 *
+	 * Browsers supply the playlist id from the address bar. Native YouTube
+	 * supplies only the playlist *name*, read off the watch screen, so it is
+	 * resolved to an id here — once per playlist, cached including the misses.
+	 * After the first fetch every remaining track in that playlist is free.
+	 */
+	private suspend fun nativePlaylistResolution(
+		session: SessionSnapshot,
+		title: String,
+		durationSec: Long?,
+	): VideoResolution? {
+		val list = session.resolverContext.playlistId
+			?: session.resolverContext.nativePlaylistName?.let { name ->
+				idResolver.resolveNativePlaylistId(
+					playlistName = name,
+					ownerName = session.resolverContext.nativePlaylistOwner,
+					total = session.resolverContext.nativePlaylistTotal,
+				)
+			}
+			?: return null
+		return idResolver.resolveEvidenceFromPlaylist(list, title, session.artist, durationSec)
+	}
+
+	/**
+	 * The exact id from the signed-in account's watch history, or null when the
+	 * route does not apply at all.
+	 *
+	 * Null and a refusal are different answers: null means "this session is not
+	 * eligible for the route", which must fall through to search silently, while
+	 * a [VideoResolutionAttempt] with a reason means the route ran and declined,
+	 * which is worth reading in the log.
+	 *
+	 * Native `com.google.android.youtube` only. Browsers have the address bar
+	 * and their behaviour is not allowed to change (§11.1); YouTube Music keeps
+	 * a separate history and is out of scope (§7.1).
+	 */
+	private suspend fun watchHistoryResolution(
+		session: SessionSnapshot,
+		title: String,
+		durationSec: Long?,
+	): VideoResolutionAttempt? {
+		if (!settings.watchHistory || !session.isNative ||
+			session.packageName != YouTubeProbe.YOUTUBE_PACKAGE || !history.hasSession
+		) return null
+		return history.resolveEvidence(title, session.artist, durationSec)
+	}
+
 	private suspend fun resolveVideoId(session: SessionSnapshot): VideoResolutionAttempt {
 		if (!settings.enrichment) {
 			return VideoResolutionAttempt(refusalReason = "video lookup is disabled")
@@ -536,12 +687,84 @@ object ScrobbleEngine {
 		val title = session.title
 			?: return VideoResolutionAttempt(refusalReason = "the finalized title is missing")
 		val durationSec = session.durationMs?.div(1000)
+		val preResolvedNativeId = session.resolverContext.preResolvedNativeVideoId
+		if (preResolvedNativeId != null) {
+			val artist = session.artist ?: return VideoResolutionAttempt(
+				refusalReason = "the finalized native artist is missing",
+			)
+			val duration = durationSec ?: return VideoResolutionAttempt(
+				refusalReason = "the finalized native duration is missing",
+			)
+			val preResolvedRoute = session.resolverContext.preResolvedNativeRoute
+				?: return VideoResolutionAttempt(
+					refusalReason = "pre-resolved native authority omitted its resolver route",
+				)
+			EventLog.append(
+				"resolve",
+				"re-fetching pre-resolved native carry authority $preResolvedNativeId " +
+					"($preResolvedRoute) for \"$title\"",
+			)
+			return runCatching {
+				when (preResolvedRoute) {
+					NativePreResolvedRoute.STRUCTURED_MUSIC ->
+						idResolver.revalidatePreResolvedNativeMusic(
+							preResolvedNativeId, title, artist, duration,
+						)
+					NativePreResolvedRoute.RAW_TITLE_CHANNEL ->
+						idResolver.resolveVerifiedCandidates(
+							listOf(preResolvedNativeId), title, artist, duration,
+						)
+
+					// Re-ask the feed that produced it. History is a live list,
+					// so a listen it has since re-described must refuse rather
+					// than carry a stale answer onto a chain nothing can edit.
+					NativePreResolvedRoute.HISTORY -> {
+						val revalidated = if (settings.watchHistory && history.hasSession) {
+							history.revalidate(preResolvedNativeId, title, artist, duration)
+						} else {
+							VideoResolutionAttempt(
+								refusalReason = "watch history was disconnected while " +
+									"\"$title\" was playing, so the id it supplied " +
+									"cannot be re-verified",
+							)
+						}
+						revalidated
+					}
+
+					// Re-verify against the authority that produced it. The
+					// playlist entry list is already cached, so this is a lookup,
+					// and requiring the same id back preserves the immutability
+					// the carry depends on.
+					NativePreResolvedRoute.PLAYLIST -> {
+						val revalidated = nativePlaylistResolution(session, title, duration)
+						when {
+							revalidated == null -> VideoResolutionAttempt(
+								refusalReason = "pre-resolved playlist id $preResolvedNativeId " +
+									"no longer matches any entry of the playlist being played",
+							)
+
+							revalidated.videoId != preResolvedNativeId -> VideoResolutionAttempt(
+								refusalReason = "playlist now resolves \"$title\" to " +
+									"${revalidated.videoId}, not the carried $preResolvedNativeId",
+							)
+
+							else -> VideoResolutionAttempt(resolution = revalidated)
+						}
+					}
+				}
+			}.getOrElse {
+				VideoResolutionAttempt(
+					refusalReason = "pre-resolved native revalidation failed: ${it.message}",
+				)
+			}
+		}
 		return runCatching {
 			val cachedIds = VerifiedIdentityCandidateCache.candidates(
 				packageName = session.packageName,
 				title = session.title,
 				channel = session.artist,
 				durationMs = session.durationMs,
+				ownerHandle = session.ownerHandle,
 			)
 			if (cachedIds.isNotEmpty()) {
 				EventLog.append(
@@ -549,7 +772,7 @@ object ScrobbleEngine {
 					"${cachedIds.size} run-local candidate(s) for \"$title\" — re-fetching",
 				)
 				val cachedAttempt = idResolver.resolveVerifiedCandidates(
-					cachedIds, title, session.artist, durationSec,
+					cachedIds, title, session.artist, durationSec, session.ownerHandle,
 				)
 				if (cachedAttempt.resolution != null ||
 					cachedAttempt.refusalReason?.startsWith("ambiguous identity") == true
@@ -563,14 +786,31 @@ object ScrobbleEngine {
 			}
 			// The playlist is exact where search is only plausible, and after
 			// the first fetch it costs nothing for the rest of the playlist.
-			val playlistResolution = session.resolverContext.playlistId?.let { list ->
-				idResolver.resolveEvidenceFromPlaylist(list, title, session.artist, durationSec)
-			}
+			//
+			val playlistResolution = nativePlaylistResolution(session, title, durationSec)
 			if (playlistResolution != null) {
-				VideoResolutionAttempt(resolution = playlistResolution)
-			} else {
-				idResolver.resolveEvidenceAttempt(title, session.artist, durationSec)
+				return@runCatching VideoResolutionAttempt(resolution = playlistResolution)
 			}
+
+			// Then the account's own watch history, which is the only route that
+			// names an exact id for native playback with no playlist around it —
+			// a single video, or anything played with the screen off. Ahead of
+			// search because search has been measured choosing a
+			// duration-identical wrong upload (§10.1); behind the playlist
+			// because the playlist needs no credentials and is already proven.
+			val historyAttempt = watchHistoryResolution(session, title, durationSec)
+			if (historyAttempt?.resolution != null) {
+				return@runCatching historyAttempt
+			}
+
+			idResolver.resolveEvidenceAttempt(
+				title,
+				session.artist,
+				durationSec,
+				session.ownerHandle,
+				allowStructuredNativeMusic = session.isNative &&
+					!session.isForegroundShort,
+			)
 		}.getOrElse {
 			EventLog.append("resolve", "resolver threw: ${it.message}")
 			VideoResolutionAttempt(refusalReason = "resolver failed: ${it.message ?: "unknown error"}")
@@ -581,6 +821,65 @@ object ScrobbleEngine {
 	fun clearVerifiedIdentityCandidates(packageName: String? = null) {
 		if (packageName == null) VerifiedIdentityCandidateCache.clearAll()
 		else VerifiedIdentityCandidateCache.clear(packageName)
+		// The history route's "your app is on another account" diagnosis is a
+		// run of consecutive misses; a monitoring or package boundary makes the
+		// old run meaningless, so it starts over rather than carrying a verdict
+		// across a state change the user may have made to fix it.
+		if (initialised && packageName == null) history.reset()
+	}
+
+	// ---- watch history, the user-facing surface --------------------------------
+
+	/** Whether an account is connected for watch-history lookups. */
+	fun youTubeSession(): YouTubeSessionVault.Session? =
+		if (initialised) youtubeSession.session else null
+
+	fun watchHistoryEnabled(): Boolean = initialised && settings.watchHistory
+
+	fun setWatchHistoryEnabled(enabled: Boolean) {
+		if (!initialised) return
+		settings.watchHistory = enabled
+		history.reset()
+		EventLog.append(
+			"history",
+			"watch-history lookups ${if (enabled) "on" else "off"}",
+		)
+	}
+
+	/** The exact reason the route is standing down, or null when it is running. */
+	fun watchHistoryRefusal(): String? = if (initialised) history.refusedBecause else null
+
+	/**
+	 * Store a session the user signed in for. The cookie never passes through a
+	 * log, a state flow or the UI — only this call, and only into the vault.
+	 */
+	fun connectYouTubeSession(cookieHeader: String, accountLabel: String?) {
+		if (!initialised) return
+		youtubeSession.save(cookieHeader, accountLabel)
+		settings.watchHistory = true
+		history.reset()
+		EventLog.append(
+			"history",
+			"connected a YouTube account for watch-history lookups" +
+				(accountLabel?.let { " (@$it)" } ?: "") + "; the session is stored encrypted " +
+				"and is never logged or sent anywhere but youtube.com",
+		)
+	}
+
+	/** Prove a freshly connected session can actually read history. */
+	suspend fun probeWatchHistory(): WatchHistoryResolver.Probe =
+		if (initialised) {
+			history.probe()
+		} else {
+			WatchHistoryResolver.Probe.Faulted(null, "the engine is not initialised")
+		}
+
+	fun disconnectYouTubeSession() {
+		if (!initialised) return
+		youtubeSession.forget()
+		settings.watchHistory = false
+		history.reset()
+		EventLog.append("history", "YouTube account disconnected and its session wiped")
 	}
 
 	/**
@@ -757,7 +1056,12 @@ object ScrobbleEngine {
 		}
 	}
 
-	private fun enqueueAndSend(payload: HiveScrobblePayload, videoId: String? = null) {
+	private fun enqueueAndSend(
+		payload: HiveScrobblePayload,
+		videoId: String? = null,
+		sourcePackage: String? = null,
+		sourceEpoch: Long? = null,
+	) {
 		val account = vault.account
 		if (account == null) {
 			EventLog.append("engine", "no key saved — scrobble dropped")
@@ -768,6 +1072,15 @@ object ScrobbleEngine {
 
 		scope.launch {
 			broadcastLock.withLock {
+				if (sourcePackage != null &&
+					!NativeSourceSwitches.isSnapshotCurrent(sourcePackage, sourceEpoch)
+				) {
+					EventLog.append(
+						"native",
+						"$sourcePackage opt-in/lifecycle changed before signing — broadcast cancelled",
+					)
+					return@withLock
+				}
 				val key = vault.loadKey()
 				if (key == null) {
 					EventLog.append("engine", "key unreadable — scrobble dropped")
@@ -923,7 +1236,8 @@ object ScrobbleEngine {
 	 * misses starts. Logged at the threshold only — the individual finalizes are
 	 * already visible in Not logged.
 	 */
-	private fun noteVideoIdOutcome(videoId: String?) {
+	private fun noteVideoIdOutcome(session: SessionSnapshot, videoId: String?) {
+		if (session.origin != YouTubeProbe.Origin.BROWSER) return
 		if (videoId != null) {
 			_tracksWithoutVideoId.value = 0
 			return

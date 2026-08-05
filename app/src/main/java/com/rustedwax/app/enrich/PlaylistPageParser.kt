@@ -69,34 +69,53 @@ object PlaylistPageParser {
 	}
 
 	/**
-	 * The entry this session is playing, or null.
+	 * Every entry of this playlist the session could be playing.
 	 *
 	 * Channel is checked only when the page supplies one — inside a bounded
 	 * playlist a title plus a matching duration is already decisive, and
 	 * demanding a channel would drop entries whose row layout differs.
+	 */
+	fun matches(
+		entries: List<SearchResultsParser.Candidate>,
+		title: String,
+		channel: String?,
+		durationSec: Long?,
+	): List<SearchResultsParser.Candidate> {
+		if (durationSec == null || durationSec <= 0) return emptyList()
+		val wantTitle = normalize(title)
+		if (wantTitle.isEmpty()) return emptyList()
+		// Whitespace-insensitive for the same reason search is: VEVO channels
+		// are one word ("systemofadownVEVO") where listings show three
+		// ("System Of A Down").
+		val wantChannel = SearchResultsParser.channelKey(channel)
+
+		return entries.filter { e ->
+			val len = e.lengthSeconds ?: return@filter false
+			if (normalize(e.title) != wantTitle) return@filter false
+			if (kotlin.math.abs(len - durationSec) > DURATION_TOLERANCE_SEC) return@filter false
+			val entryChannel = SearchResultsParser.channelKey(e.channel)
+			entryChannel == null || wantChannel == null || entryChannel == wantChannel
+		}.distinctBy(SearchResultsParser.Candidate::videoId)
+	}
+
+	/**
+	 * The one entry this session is playing, or null when that is not decidable.
+	 *
+	 * **Exactly one**, never the first of several. A playlist can hold the same
+	 * song twice — two uploads of one track, or the same track under two
+	 * different ids — and picking whichever the page happened to render first
+	 * would put a coin-flip URL on an immutable chain. The contract
+	 * (`PHASE_NATIVE_PLAYLIST_IDENTITY.md` §7.2 rule 8) requires the second
+	 * match to refuse, which is the same rule the search route has always
+	 * applied; until v0.9.6 the playlist route quietly did not.
 	 */
 	fun match(
 		entries: List<SearchResultsParser.Candidate>,
 		title: String,
 		channel: String?,
 		durationSec: Long?,
-	): SearchResultsParser.Candidate? {
-		if (durationSec == null || durationSec <= 0) return null
-		val wantTitle = normalize(title)
-		if (wantTitle.isEmpty()) return null
-		// Whitespace-insensitive for the same reason search is: VEVO channels
-		// are one word ("systemofadownVEVO") where listings show three
-		// ("System Of A Down").
-		val wantChannel = SearchResultsParser.channelKey(channel)
-
-		return entries.firstOrNull { e ->
-			val len = e.lengthSeconds ?: return@firstOrNull false
-			if (normalize(e.title) != wantTitle) return@firstOrNull false
-			if (kotlin.math.abs(len - durationSec) > DURATION_TOLERANCE_SEC) return@firstOrNull false
-			val entryChannel = SearchResultsParser.channelKey(e.channel)
-			entryChannel == null || wantChannel == null || entryChannel == wantChannel
-		}
-	}
+	): SearchResultsParser.Candidate? =
+		matches(entries, title, channel, durationSec).singleOrNull()
 
 	/** First object stored under [key] anywhere in the subtree. */
 	private fun firstObject(node: Any?, key: String): JSONObject? {

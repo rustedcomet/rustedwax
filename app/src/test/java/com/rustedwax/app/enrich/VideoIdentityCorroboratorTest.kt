@@ -2,6 +2,7 @@ package com.rustedwax.app.enrich
 
 import com.rustedwax.app.detect.ResolverContext
 import com.rustedwax.app.detect.SessionSnapshot
+import com.rustedwax.app.detect.SourceProof
 import com.rustedwax.app.detect.YouTubeProbe
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -10,6 +11,51 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VideoIdentityCorroboratorTest {
+
+	@Test
+	fun `foreground Short final corroboration requires exact handle from candidate and facts`() {
+		val foreground = ended("Hackers' Skills...", "@Beredist", 139_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube Shorts (foreground)",
+			sourceProof = SourceProof.NATIVE_FOREGROUND_SHORT,
+			ownerHandle = "@Beredist",
+		)
+		val resolution = VideoResolution(
+			videoId = "orsMh4bNeGE",
+			source = "owner handle",
+			title = "Hackers' Skills...",
+			channel = "Beredits",
+			lengthSeconds = 139,
+			uniquelyResolved = true,
+			ownerHandle = "@beredist",
+		)
+		val facts = VideoFacts(
+			videoId = resolution.videoId,
+			title = resolution.title,
+			author = resolution.channel,
+			ownerHandle = "@Beredist",
+			lengthSeconds = 139,
+			watchPageResolved = true,
+		)
+		assertNull(VideoIdentityCorroborator.contradiction(foreground, resolution, facts))
+		assertTrue(VideoIdentityCorroborator.cacheable(foreground, resolution, facts))
+
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				foreground,
+				resolution.copy(ownerHandle = "@other_owner"),
+				facts,
+			),
+		)
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				foreground,
+				resolution,
+				facts.copy(ownerHandle = null),
+			),
+		)
+		assertFalse(VideoIdentityCorroborator.cacheable(foreground, resolution, facts.copy(ownerHandle = null)))
+	}
 
 	private fun ended(
 		title: String,
@@ -40,6 +86,100 @@ class VideoIdentityCorroboratorTest {
 		metadataLines = emptyList(),
 		trackStartedAtEpochSec = 1_785_000_000,
 	)
+
+	/**
+	 * Measured 2026-08-04, native YouTube, playlist `Reggaeton 2016,17,18`.
+	 *
+	 * `7J6xA1_f8as` is entry #23 and is genuinely the track that played — "Te
+	 * Busco", 234 s, 233 s of it watched. But YouTube spells its channel two
+	 * ways: the playlist page and the MediaSession both say
+	 * "Cosculluela El Principe" while the watch page says "Cosculluela - Topic".
+	 * Stripping " - Topic" leaves "Cosculluela", still not the full stage name,
+	 * so the enriched-watch-facts pass vetoed a correct id the playlist had
+	 * already corroborated and the scrobble was silently lost.
+	 */
+	@Test
+	fun `a Topic channel alias does not veto a playlist-verified native id`() {
+		val session = ended("Te Busco", "Cosculluela El Principe", 234_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube",
+		)
+		val resolution = VideoResolution(
+			videoId = "7J6xA1_f8as",
+			source = "playlist PL7NMzffnWK8RMWFO3rZABAgN-Rk9pCkEm",
+			title = "Te Busco",
+			channel = "Cosculluela El Principe",
+			lengthSeconds = 234,
+			uniquelyResolved = true,
+			playlistVerified = true,
+		)
+		val facts = VideoFacts(
+			videoId = resolution.videoId,
+			title = "Te Busco",
+			author = "Cosculluela - Topic",
+			lengthSeconds = 234,
+			watchPageResolved = true,
+		)
+		assertNull(VideoIdentityCorroborator.contradiction(session, resolution, facts))
+	}
+
+	/** The relaxation is for the channel alias only — a real mismatch still refuses. */
+	@Test
+	fun `a playlist-verified id is still refused when title or duration disagree`() {
+		val session = ended("Te Busco", "Cosculluela El Principe", 234_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube",
+		)
+		val resolution = VideoResolution(
+			videoId = "7J6xA1_f8as",
+			source = "playlist PL7NMzffnWK8RMWFO3rZABAgN-Rk9pCkEm",
+			title = "Te Busco",
+			channel = "Cosculluela El Principe",
+			lengthSeconds = 234,
+			uniquelyResolved = true,
+			playlistVerified = true,
+		)
+		val base = VideoFacts(
+			videoId = resolution.videoId,
+			title = "Te Busco",
+			author = "Cosculluela - Topic",
+			lengthSeconds = 234,
+			watchPageResolved = true,
+		)
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				session, resolution, base.copy(title = "Un Verano Sin Ti"),
+			),
+		)
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				session, resolution, base.copy(lengthSeconds = 95),
+			),
+		)
+	}
+
+	/** Browser sessions must be untouched by the native-only relaxation. */
+	@Test
+	fun `a browser playlist resolution keeps the strict channel rule`() {
+		val session = ended("Te Busco", "Cosculluela El Principe", 234_000)
+		val resolution = VideoResolution(
+			videoId = "7J6xA1_f8as",
+			source = "playlist PL7NMzffnWK8RMWFO3rZABAgN-Rk9pCkEm",
+			title = "Te Busco",
+			channel = "Cosculluela El Principe",
+			lengthSeconds = 234,
+			uniquelyResolved = true,
+			playlistVerified = true,
+		)
+		val facts = VideoFacts(
+			videoId = resolution.videoId,
+			title = "Te Busco",
+			author = "Cosculluela - Topic",
+			lengthSeconds = 234,
+			watchPageResolved = true,
+		)
+		assertNotNull(VideoIdentityCorroborator.contradiction(session, resolution, facts))
+	}
 
 	@Test
 	fun `saGYMhApaH8 can never be completed by La Bebe 3mchJ-EW9rM`() {
@@ -113,6 +253,82 @@ class VideoIdentityCorroboratorTest {
 			lengthSeconds = 192,
 		)
 		assertNull(VideoIdentityCorroborator.contradiction(session, own, null))
+	}
+
+	@Test
+	fun `exact native media id accepts clean short metadata with duration corroboration`() {
+		val id = "oG-4Uvhm4lI"
+		val native = ended("Poker Face", "Lady Gaga", 237_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_MUSIC_PACKAGE,
+			appLabel = "YouTube Music",
+			identity = YouTubeProbe.Identity.Confirmed(
+				videoId = id,
+				url = "https://www.youtube.com/watch?v=$id",
+				isMusic = true,
+				exactIdRoute = "media id",
+				source = "native media id",
+			),
+		)
+		val resolution = VideoResolution(
+			videoId = id,
+			source = "native media id",
+			title = "Lady Gaga - Poker Face (Official Music Video)",
+			channel = "LadyGagaVEVO",
+			lengthSeconds = 237,
+		)
+
+		assertNull(VideoIdentityCorroborator.contradiction(native, resolution, null))
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				native,
+				resolution.copy(title = "A Different Song"),
+				null,
+			),
+		)
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				native,
+				resolution.copy(lengthSeconds = 600),
+				null,
+			),
+		)
+	}
+
+	@Test
+	fun `structured native music proof rechecks parsed facts and never applies to browser`() {
+		val native = ended("No Quiere Enamorarse", "Ozuna", 213_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube",
+		)
+		val resolution = VideoResolution(
+			videoId = "5YXxnHVYRDk",
+			source = "structured native music title+artist+duration",
+			title = "Ozuna - No Quiere Enamorarse (Official Lyric Video)",
+			channel = "Ozunapr",
+			lengthSeconds = 213,
+			uniquelyResolved = true,
+			structuredNativeMusic = true,
+		)
+		val facts = VideoFacts(
+			videoId = resolution.videoId,
+			title = resolution.title,
+			author = resolution.channel,
+			lengthSeconds = resolution.lengthSeconds,
+			watchPageResolved = true,
+		)
+
+		assertNull(VideoIdentityCorroborator.contradiction(native, resolution, facts))
+		assertFalse(VideoIdentityCorroborator.cacheable(native, resolution, facts))
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				native, resolution, facts.copy(title = "A different song"),
+			),
+		)
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				ended("No Quiere Enamorarse", "Ozuna", 213_000), resolution, facts,
+			),
+		)
 	}
 
 	@Test

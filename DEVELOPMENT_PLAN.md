@@ -28,7 +28,14 @@
 > ad payload or crash signature. Four resolver misses and one conservative
 > ad-transition veto remain documented exceptions. The user accepted that
 > practical field result and incomplete historical fixture replay as the Phase
-> 4 final product. The next development line is v0.9 native YouTube app input.
+> 4 final product. The v0.9 native-app source is now implemented and passed its
+> 372-test/build/lint gate. Its first focused native Shorts device probe failed:
+> MediaSession remained stale across unrelated Shorts and exact-ID-less
+> continuation carried the stale track's progress. Foreground accessibility
+> supplied a viable title/handle/seekbar/ad surface, while PiP did not. The
+> evidence and bounded v0.9.1 plan are in
+> [PHASE_NATIVE_SHORTS.md](PHASE_NATIVE_SHORTS.md); the broader native gate
+> remains pending.
 >
 > The current concept-test also performs optional unsupported YouTube page extraction and an
 > undocumented YouTube Music request. The policy and distribution tradeoff is recorded in
@@ -495,21 +502,180 @@ option keys. Gates G1, G2.
 Recent-scrobbles list with tx links, metadata-filter port (`normalize`, `regex-edits`,
 `blocked-tags`), manual edit-before-broadcast, RC/authority error surfacing.
 
-**v0.9 / next phase — Native YouTube apps** *(planned after Phase 4 closure)*
-Scrobble `com.google.android.youtube` and `…apps.youtube.music` directly, per-app and off by
-default. Structurally *easier* than the browser path: the package name is the origin proof, so
-notification-hint binding, cross-tab taint and the address-bar watcher are all unnecessary, and
-everything downstream of `SessionSnapshot` is already source-agnostic. YouTube Music is the
-cheapest win — music by definition, clean artist/title/album metadata. One open measurement: does
-the native app publish a video id (`METADATA_KEY_MEDIA_ID` or an `i.ytimg.com/vi/<id>` artwork
-URI, both of which `YouTubeProbe` routes 1–2 would consume unchanged)? If not, native scrobbles
-lose `url` and category enrichment and fall back to classifier + MusicBrainz — the same position
-browser shorts are already in. Also to measure: ad handling inside the session, and whether native
-Shorts publish a session at all. No new permissions; the notification-access grant covers it.
-Begin with a read-only instrumentation build and captured native-app fixtures;
-do not generalize the browser accessibility watcher to native packages or
-weaken the canonical-link/ad/threshold/immutability rules before the measured
-metadata and ad boundaries are understood.
+**v0.9–v0.9.1 — Native YouTube apps and foreground Shorts** *(implemented as
+version code 37; bounded foreground-Short device/write gate passed)*
+
+`com.google.android.youtube` and `com.google.android.apps.youtube.music` now
+have independent persisted opt-ins, both default off. Browser packages remain
+on their v0.8.15 path. Native package origin replaces notification-hint/site
+proof only; it does not prove a specific video.
+
+Implemented exact-id order is MediaMetadata media id, canonical YouTube media
+URI, then canonical ytimg artwork URI. Every accepted id becomes a canonical
+watch link. When no exact field exists, the lookup-enabled existing resolver
+may proceed only from frozen title/channel/duration to one uniquely
+corroborated candidate. Invalid, contradictory, unresolved and ambiguous ids
+remain off-chain. Browser URL, accessibility coverage and ad evidence are not
+generalized to native packages.
+
+Clean native title/artist/album metadata takes precedence. Native YouTube Music
+origin is strong music context below literal podcast/episode/structured genre
+and other hard format evidence; native YouTube continues through the existing
+classifier. Package-scoped epochs and carry keys prevent Stop, opt-out, listener
+rebuild and cross-package state transfer from completing stale native work.
+Thresholds, floors, speed accounting, loop caps, dedup, manual/automatic rules,
+mandatory links and immutable history remain unchanged.
+
+The open measurement is now instrumented rather than guessed: native callbacks
+log every standard/non-standard MediaMetadata field and the full PlaybackState
+surface. No generic native ad flag has been proven, so no native ad veto or
+title/brand/id heuristic was added. Settings disclose that browser visible-ad
+protection does not cover native apps. No permission was added; Notification
+Access is sufficient.
+
+The complete implemented boundary and device checklist are in
+[PHASE_NATIVE_APPS.md](PHASE_NATIVE_APPS.md), with the testing matrix in
+[TESTING.md §23](TESTING.md#23-v090-native-youtube-apps-implementation-and-pending-device-gate).
+Both native toggles remain default-off until real YouTube videos, YouTube Music
+songs/podcasts, Shorts, ads, playlists, screen-off playback, 2× speed, session
+recreation, Stop/reset and package switching are reconciled.
+
+The complete uncached v0.9 source gate passed 372 tests with 0 skipped,
+failures or errors; debug assembly succeeded and lint completed with 0 errors
+and 23 warnings. The tested `dist/rustedwax-0.9.0.apk` and source APK both have
+SHA-256 `3f8945e997d592dbf40fac6aa727f69215cbf8a805b5a4b15df031171a0ec58c`.
+
+v0.9.1 adds the separately granted, exact-package foreground Shorts observer,
+pure structural parser, 750 ms transition stabilizer, seekbar-delta lifecycle,
+PiP/missing-proof watchdog, literal-ad path, strict native carry fix and exact
+owner-handle resolver corroboration. The final source gate passed 409 tests,
+assembly and lint (0 errors/23 warnings). The A12 no-broadcast matrix verified
+threshold, pause/seek/rewind/wrap, PiP, two natural ads, lifecycle boundaries
+and Chrome/Brave/YouTube Music regressions. The authorized test-account pass
+then block-confirmed and independently reconciled four exact foreground-Short
+payloads; lookup-off, unresolved and genuine two-upload ambiguity cases all
+remained off-chain. The bounded Shorts matrix is approved. Native options stay
+experimental/default-off while the broader v0.9 native-app measurements remain
+open. The tested v0.9.1 APK hash is
+`c6f2f1800a1cc6b6d76c260181d2402a3d648c9ecf7b3bc94ad897eeb1ce0895`.
+
+v0.9.2/version code 38 addresses the next ordinary-native field failure without
+loosening global resolver rules. Four qualifying playlist songs published clean
+separated title/artist/duration but no exact id; raw canonical-title equality
+therefore refused every upload. The new native-only structured route fully
+fetches bounded candidates and requires exact parsed work, a complete exact
+artist credit, duration agreement and one unique id, then repeats that proof at
+finalization. Exact-ID-less same-metadata material-duration phases get a bounded
+STOPPED replacement grace and discard the earlier fragment with zero carry and
+no ad inference. The uncached source gate passed 416 tests plus assembly and
+lint (0 errors/23 warnings). The exact APK was installed on the A12 for natural
+playlist continuation; its SHA-256 is
+`5cf7fbfdd950376c8b61ede0a0effc7f843f25b249f47c06172471f18559d072`.
+Post-install field logs physically confirmed the replacement half of the patch:
+one `Hey DJ` session changed 218→20→207 seconds within the grace window and
+RustedWax discarded both superseded fragments with zero carry and no ad
+inference. The clean 207-second phase completed and the structured resolver
+found two exact `Hey DJ` uploads (`YN-aYhtMHIw`, `1fb9DtJpbHw`), correctly
+refused the ambiguity and built no payload. A unique-match write remains the
+next physical acceptance sample; historical misses are not backfilled.
+
+v0.9.3/version code 39 follows the subsequent ordinary-native field ledger.
+Four popular songs were rejected before page verification because title-only
+cards exhausted the eight-page budget, while `La Rompe Corazones` was split
+into 52% and 50% by a controller recreation. The new filter requires exact
+parsed work and complete exact artist credit before a card consumes that
+budget. Stable native tracks pre-resolve while playing; only a uniquely
+corroborated immutable id can authorize continuation, and the replacement must
+independently establish the same id before claiming progress. Finalization
+re-fetches through the same raw or structured predicate. Repeated equivalent
+ordinary-player Shorts diagnostics are bounded. The uncached gate passed 422
+tests, assembly and lint (0 errors/23 warnings). The final byte-identical APK
+was installed on the A12 with SHA-256
+`d18342325d7288f5ccfe16aa549b5752e6ba2fd63d0522cd28e5ae7e65388d88`.
+The later code-39 continuation supplied multiple unique writes. Immediately
+before the code-40 install, `Unica` also independently resolved the same id on
+both sides of a natural controller recreation, claimed 87 seconds and finalized
+one block-confirmed 215/218-second aggregate. Both acceptance rows are closed;
+historical misses are not backfilled.
+
+v0.9.4/version code 40 is constrained by the subsequent untouched code-39 field
+run. Four ordinary native items uniquely resolved and block-confirmed, proving
+observation, progress, final revalidation, payload, Hive transport and profile
+ingestion. `Criminal` exposed one matcher inconsistency: an exact canonical page
+author stopped being a candidate credit when the page title itself parsed to a
+multi-artist collaboration. `Ella Y Yo (Feat. Don Omar)` exposed asymmetric
+feature-suffix work normalization, but public page evidence makes the corrected
+result ambiguous rather than uniquely resolvable. `Si Te Dejas Llevar` has a
+hard artist/duration contradiction; `Te Boté`, `La Pregunta` and `Si Se Da`
+remain genuine ambiguities.
+
+The code change is limited to `NativeStructuredMusicMatcher`: retain the exact
+page author/channel as an independent complete credit and reduce the same narrow
+trailing feature grammar on native and candidate works. Exact equality,
+duration, bounded page verification, uniqueness and final re-fetch remain
+mandatory. Browser/raw resolution and native carry are not changed. The focused
+and full gates are specified in TESTING §28 and the field ledger/physical plan in
+`PHASE_NATIVE_PLAYLIST.md`.
+
+Implementation is complete. The focused matcher and adjacent resolver/carry/
+browser suites passed, then the complete uncached gate passed 425 tests with no
+failures/errors/skips, assembly, lint at 0 errors/23 existing warnings and
+`git diff --check`. The source APK and `dist/rustedwax-0.9.4.apk` are
+14,048,941-byte identical artifacts with SHA-256
+`cbaebadc91d0045b6bd7a2abec8aaacefb2e914782a404d705b24890d4c9ccbf`.
+The exact code-40 artifact connected at 10:59:34 local; installed bytes, settings,
+services and USB stay-awake were preserved. The joined `El Efecto` repeated its
+two-id ambiguity refusal under code 40. The untouched continuation preserved
+multi-id refusals, bounded no-result refusals, zero-carry duration replacements
+and an unresolved controller-replacement refusal. It then uniquely resolved
+the stable 416-second `Ella Y Yo` / `Pepe Quintana - Topic` phase to
+`CGjuWHEPxgc`, re-fetched the same page after 416/416 seconds and block-confirmed
+one canonical payload as tx `49a46d159658d257706c9a3c6b32eed4ddd29ca1` in
+block 108,734,261 on two independent Hive nodes. The code-40 physical unique
+write row is closed and the public profile contains `CGjuWHEPxgc`; historical
+misses remain untouched.
+
+**v0.9.5 — Native playlist-derived identity** *(implemented; field-verified)*
+
+Closes the question of whether native YouTube exposes a video id anywhere: it
+does not, on any of six measured surfaces including its own exported
+`MainAppMediaBrowserService`. Identity is instead made exact by reducing the
+candidate set — read the playlist name off the watch screen, resolve it to a
+playlist id once, and match each track against that closed entry list. The same
+immutable id fixed the reported lock-screen/minimize "song splits in two" bug,
+because the progress carry finally has something to key on. Contract in
+`BEHAVIOR_CONTRACT.md`, full record in `PHASE_NATIVE_PLAYLIST_IDENTITY.md`,
+gate in TESTING §29.
+
+**v0.9.6 — Signed-in watch history, plus two correctness fixes**
+*(implemented; field-verified)*
+
+The playlist route cannot answer for a single video with no queue around it, or
+for anything played with the screen off, and the search fallback was measured
+three times choosing a duration-identical *wrong* upload. The account's own
+watch history is the only surface that names the exact video for arbitrary
+native playback, so resolution priority becomes
+`address bar → playlist → history → search`.
+
+The sign-in is performed by the user in a WebView; the app keeps only the
+resulting `youtube.com` session, encrypted, unlogged, clearable, and attached to
+one hardcoded origin. History supplies a **candidate**, never a verdict — the
+threshold decision stays local MediaSession measurement, because history records
+that a video was started and never how much was played.
+
+Also in this version: `PlaylistPageParser.match` now requires a single match
+instead of silently taking the first of several; the playlist cache gained a
+bounded refresh-on-miss so a song added to a playlist is findable; and
+`NativeShortsAccessibilityService.isEnabled` stopped reporting a revoked service
+as granted. Contract in `BEHAVIOR_CONTRACT.md`, build record in
+`PHASE_NATIVE_HISTORY.md`, gate in TESTING §30.
+
+Deliberately **not** built, on the plan's own gate: the watch-metadata capture
+(likes/views/subscribers) and like-count search disambiguation. Both are
+scroll-dependent, per-track and foreground-only — unavailable in exactly the
+situation history exists to cover. The remaining candidate for removal is the
+opposite direction: if history proves reliable, the native *search* fallbacks
+become removable, which would delete a measured source of wrong ids.
 
 **Phase 7 — Stretch**
 Platform/URL inference table, cross-device dedup v2, a personal correction list, and — only if

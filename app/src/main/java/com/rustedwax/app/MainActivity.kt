@@ -25,6 +25,9 @@ import com.rustedwax.app.hive.KeyValidator
 import com.rustedwax.app.scrobble.ScrobbleEngine
 import com.rustedwax.app.scrobble.ScrobbleRules
 import com.rustedwax.app.detect.MonitorSwitch
+import com.rustedwax.app.detect.NativeShortsAccessibilityService
+import com.rustedwax.app.detect.NativeShortsObserver
+import com.rustedwax.app.detect.NativeSourceSwitches
 import com.rustedwax.app.detect.ProbeHolder
 import com.rustedwax.app.detect.ScrobbleBuilder
 import com.rustedwax.app.detect.SessionProbe
@@ -33,6 +36,7 @@ import com.rustedwax.app.detect.EventLog
 import com.rustedwax.app.storage.KeyVault
 import com.rustedwax.app.storage.Settings
 import com.rustedwax.app.ui.MainScreen
+import com.rustedwax.app.ui.YouTubeSignInActivity
 
 /**
  * The UI. Detection and scrobbling live in
@@ -51,6 +55,7 @@ class MainActivity : ComponentActivity() {
 		super.onCreate(savedInstanceState)
 		EventLog.init(this)
 		MonitorSwitch.init(this)
+		NativeSourceSwitches.init(this)
 		ScrobbleEngine.init(this)
 		vault = KeyVault(this)
 		settings = Settings(this)
@@ -59,6 +64,8 @@ class MainActivity : ComponentActivity() {
 			MaterialTheme {
 				val probe by ProbeHolder.probe.collectAsStateWithLifecycle()
 				val monitoring by MonitorSwitch.enabled.collectAsStateWithLifecycle()
+				val nativeSources by NativeSourceSwitches.config.collectAsStateWithLifecycle()
+				val nativeShortsStatus by NativeShortsObserver.status.collectAsStateWithLifecycle()
 				val logLines by EventLog.lines.collectAsStateWithLifecycle()
 				val recent by ScrobbleEngine.recent.collectAsStateWithLifecycle()
 				val skipped by ScrobbleEngine.skipped.collectAsStateWithLifecycle()
@@ -68,6 +75,9 @@ class MainActivity : ComponentActivity() {
 				var sessions by remember { mutableStateOf(emptyList<com.rustedwax.app.detect.SessionSnapshot>()) }
 				var hasAccess by remember { mutableStateOf(SessionProbe.hasNotificationAccess(this)) }
 				var urlWatcher by remember { mutableStateOf(UrlWatcherService.isEnabled(this)) }
+				var nativeShortsGranted by remember {
+					mutableStateOf(NativeShortsAccessibilityService.isEnabled(this))
+				}
 				var enrichment by remember { mutableStateOf(settings.enrichment) }
 				var shortClips by remember { mutableStateOf(settings.shortClips) }
 				// Read once per composition rather than held in a flow: mutes change
@@ -75,6 +85,14 @@ class MainActivity : ComponentActivity() {
 				var mutedIds by remember { mutableStateOf(ScrobbleEngine.mutedVideos().keys) }
 				var account by remember { mutableStateOf(vault.account) }
 				var autoScrobble by remember { mutableStateOf(settings.autoScrobble) }
+				// Re-read on every poll: the session is written by the sign-in
+				// activity, and the refusal by the resolver on a background
+				// thread, so neither can be cached in composition.
+				var youTubeAccount by remember { mutableStateOf(ScrobbleEngine.youTubeSession()) }
+				var watchHistory by remember { mutableStateOf(ScrobbleEngine.watchHistoryEnabled()) }
+				var watchHistoryRefusal by remember {
+					mutableStateOf(ScrobbleEngine.watchHistoryRefusal())
+				}
 					var busy by remember { mutableStateOf(false) }
 					var status by remember { mutableStateOf<String?>(null) }
 					var statusIsError by remember { mutableStateOf(false) }
@@ -95,6 +113,11 @@ class MainActivity : ComponentActivity() {
 						// Both grants are revocable from system settings while
 						// we're in the background, so neither is cached.
 						urlWatcher = UrlWatcherService.isEnabled(this@MainActivity)
+						nativeShortsGranted =
+							NativeShortsAccessibilityService.isEnabled(this@MainActivity)
+						youTubeAccount = ScrobbleEngine.youTubeSession()
+						watchHistory = ScrobbleEngine.watchHistoryEnabled()
+						watchHistoryRefusal = ScrobbleEngine.watchHistoryRefusal()
 						probe?.tick()
 						sessions = probe?.sessions?.value ?: emptyList()
 						delay(1000)
@@ -119,6 +142,10 @@ class MainActivity : ComponentActivity() {
 					accountStatusIsError = statusIsError,
 					monitoring = monitoring,
 					autoScrobble = autoScrobble,
+					nativeYouTube = nativeSources.youtubeEnabled,
+					nativeYouTubeMusic = nativeSources.youtubeMusicEnabled,
+					nativeShortsGranted = nativeShortsGranted,
+					nativeShortsStatus = nativeShortsStatus,
 					thresholdPercent = settings.thresholdPercent,
 					urlWatcherEnabled = urlWatcher,
 					enrichment = enrichment,
@@ -128,6 +155,27 @@ class MainActivity : ComponentActivity() {
 					mutedIds = mutedIds,
 					tracksWithoutVideoId = quietBar,
 					queuedCount = queued,
+					youTubeAccount = youTubeAccount,
+					watchHistory = watchHistory,
+					watchHistoryRefusal = watchHistoryRefusal,
+					onToggleWatchHistory = { enabled ->
+						ScrobbleEngine.setWatchHistoryEnabled(enabled)
+						watchHistory = enabled
+						watchHistoryRefusal = ScrobbleEngine.watchHistoryRefusal()
+					},
+					onConnectYouTube = {
+						startActivity(Intent(this@MainActivity, YouTubeSignInActivity::class.java))
+					},
+					onDisconnectYouTube = {
+						ScrobbleEngine.disconnectYouTubeSession()
+						youTubeAccount = null
+						watchHistory = false
+						watchHistoryRefusal = null
+						report(
+							"YouTube account disconnected and its session wiped from this device.",
+							isError = false,
+						)
+					},
 					onGrantAccess = ::openNotificationAccessSettings,
 					onExportLog = ::exportLog,
 					onClearLog = EventLog::clear,
@@ -142,6 +190,12 @@ class MainActivity : ComponentActivity() {
 							},
 							isError = false,
 						)
+					},
+					onToggleNativeYouTube = { enabled ->
+						NativeSourceSwitches.setYouTube(this@MainActivity, enabled)
+					},
+					onToggleNativeYouTubeMusic = { enabled ->
+						NativeSourceSwitches.setYouTubeMusic(this@MainActivity, enabled)
 					},
 					onOpenAccessibility = ::openAccessibilitySettings,
 					onToggleEnrichment = { enabled ->
@@ -244,7 +298,7 @@ class MainActivity : ComponentActivity() {
 								playedMs = session.playedMs,
 								durationMs = durationMs,
 								threshold = settings.scrobbleThreshold,
-								isShort = session.confirmed?.isShort == true,
+								isShort = session.hasShortSourceProof,
 								videoResolved = facts?.resolvedOnWatchPage == true,
 								videoUnlisted = facts?.isUnlisted,
 								shortClipsEnabled = settings.shortClips,
@@ -255,6 +309,14 @@ class MainActivity : ComponentActivity() {
 							)
 							val startedAt = session.trackStartedAtEpochSec
 							when {
+								!NativeSourceSwitches.isSnapshotCurrent(
+									session.packageName,
+									session.sourceEpoch,
+								) -> report(
+									"That native source was disabled or reset. Nothing sent.",
+									isError = true,
+								)
+
 								ScrobbleRules.browserEvidenceUnavailableReason(
 									browserEvidenceEnabled = session.browserEvidenceEnabled,
 									resolvedWithoutExactUrl = session.confirmed == null,
@@ -308,12 +370,16 @@ class MainActivity : ComponentActivity() {
 										percentPlayed = ScrobbleRules.capForKind(
 											decision.percentages,
 											payload.kind,
-											isShort = session.confirmed?.isShort == true,
+											isShort = session.hasShortSourceProof,
 											loopDetected = session.loopDetected,
 										).first(),
 									)
 									busy = true
-									broadcast(manualPayload) { msg, err ->
+									broadcast(
+										payload = manualPayload,
+										sourcePackage = session.packageName,
+										sourceEpoch = session.sourceEpoch,
+									) { msg, err ->
 										busy = false
 									// No queue on this path, so a failed send must give
 									// the claim back or the listen is stuck.
@@ -333,8 +399,16 @@ class MainActivity : ComponentActivity() {
 	/** Manual broadcast, still available alongside automatic scrobbling. */
 	private fun broadcast(
 		payload: HiveScrobblePayload,
+		sourcePackage: String? = null,
+		sourceEpoch: Long? = null,
 		onDone: (message: String, isError: Boolean) -> Unit,
 	) {
+		if (sourcePackage != null &&
+			!NativeSourceSwitches.isSnapshotCurrent(sourcePackage, sourceEpoch)
+		) {
+			onDone("That native source was disabled or reset. Nothing sent.", true)
+			return
+		}
 		val saved = vault.account
 		val key = vault.loadKey()
 		if (saved == null || key == null) {
@@ -345,6 +419,12 @@ class MainActivity : ComponentActivity() {
 		EventLog.append("hive", "broadcasting as @${saved.username}: ${payload.toJson()}")
 
 		lifecycleScope.launch {
+			if (sourcePackage != null &&
+				!NativeSourceSwitches.isSnapshotCurrent(sourcePackage, sourceEpoch)
+			) {
+				onDone("That native source was disabled or reset. Nothing sent.", true)
+				return@launch
+			}
 			val result = withContext(Dispatchers.IO) {
 				runCatching { broadcaster.broadcastScrobble(saved.username, key, payload) }
 					.getOrElse { HiveRpc.BroadcastResult.NetworkFailure(it.message ?: "unknown") }

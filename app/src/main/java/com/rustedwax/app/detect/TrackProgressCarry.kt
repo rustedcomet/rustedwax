@@ -85,6 +85,10 @@ object TrackProgressCarry {
 	 */
 	fun remember(packageName: String, trackKey: String, progress: Progress): Long? {
 		if (trackKey.isBlank()) return null
+		// A free-form key carries no independently proven source item id. Keep
+		// this compatibility overload browser-only so no future native caller can
+		// bypass the semantic overload's exact-id invariant.
+		if (YouTubeProbe.isNativePackage(packageName)) return null
 		prune(progress.atMillis)
 		val token = nextToken.getAndIncrement()
 		carried[keyFor(packageName, trackKey)] = Stored(token, progress)
@@ -98,6 +102,9 @@ object TrackProgressCarry {
 		progress: Progress,
 	): Long? {
 		if (!trackIdentity.isUsable) return null
+		if (YouTubeProbe.isNativePackage(packageName) && !trackIdentity.hasExactSourceItemId) {
+			return null
+		}
 		prune(progress.atMillis)
 		val token = nextToken.getAndIncrement()
 		carried[keyFor(packageName, trackIdentity.semanticKey)] =
@@ -117,6 +124,7 @@ object TrackProgressCarry {
 		now: Long = System.currentTimeMillis(),
 	): Progress? {
 		if (trackKey.isBlank()) return null
+		if (YouTubeProbe.isNativePackage(packageName)) return null
 		val stored = carried.remove(keyFor(packageName, trackKey)) ?: return null
 		return stored.progress.takeIf { now - it.atMillis <= TTL_MS }
 	}
@@ -131,6 +139,9 @@ object TrackProgressCarry {
 		now: Long = System.currentTimeMillis(),
 	): Progress? {
 		if (!trackIdentity.isUsable) return null
+		if (YouTubeProbe.isNativePackage(packageName) && !trackIdentity.hasExactSourceItemId) {
+			return null
+		}
 		val key = keyFor(packageName, trackIdentity.semanticKey)
 		val stored = carried[key] ?: return null
 		if (now - stored.progress.atMillis > TTL_MS) {
@@ -179,6 +190,12 @@ object TrackProgressCarry {
 
 	/** Monitoring stopped — nothing observed before it should leak past it. */
 	fun clear() = carried.clear()
+
+	/** Package opt-out/teardown must not disturb another source package. */
+	fun clearPackage(packageName: String) {
+		val prefix = "$packageName|"
+		carried.keys.removeAll { it.startsWith(prefix) }
+	}
 
 	/** Visible for tests. */
 	fun size(): Int = carried.size

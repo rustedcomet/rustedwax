@@ -197,6 +197,57 @@ class TrackProgressCarryTest {
 
 	// region what must not be carried
 
+	@Test
+	fun `exact-id-less native YouTube sessions never store or claim continuation progress`() {
+		val native = YouTubeProbe.YOUTUBE_PACKAGE
+		val bellakeo = TrackIdentity("BELLAKEO", "Peso Pluma & Anitta", null, 196_000)
+		assertNull(TrackProgressCarry.remember(native, bellakeo, progress(47_000)))
+		assertEquals(0, TrackProgressCarry.size())
+		assertNull(TrackProgressCarry.claim(native, bellakeo, now = 1_010_000))
+	}
+
+	@Test
+	fun `repeated exact-id-less native labels cannot inherit each others progress`() {
+		val native = YouTubeProbe.YOUTUBE_PACKAGE
+		val first = TrackIdentity("BELLAKEO", "Peso Pluma & Anitta", null, 196_000)
+		val later = TrackIdentity("BELLAKEO", "Peso Pluma & Anitta", null, 196_000)
+		assertNull(TrackProgressCarry.remember(native, first, progress(156_000)))
+		assertNull(TrackProgressCarry.claim(native, later, now = 1_010_000))
+	}
+
+	@Test
+	fun `native continuation is allowed only with exact immutable item authority`() {
+		val native = YouTubeProbe.YOUTUBE_PACKAGE
+		val exact = TrackIdentity(
+			title = "Exact native item",
+			artist = "Artist",
+			album = null,
+			durationMs = 180_000,
+			sourceItemId = "abcdefghijk",
+		)
+		assertNotNull(TrackProgressCarry.remember(native, exact, progress(47_000)))
+		assertEquals(47_000, TrackProgressCarry.claim(native, exact, now = 1_010_000)!!.playedMs)
+	}
+
+	@Test
+	fun `native replacement must independently establish the same immutable id`() {
+		val native = YouTubeProbe.YOUTUBE_PACKAGE
+		val old = TrackIdentity(
+			"La Rompe Corazones", "Daddy Yankee", null, 205_000, "abcdefghijk",
+		)
+		assertNotNull(TrackProgressCarry.remember(native, old, progress(106_000)))
+
+		val unresolved = old.copy(sourceItemId = null)
+		assertNull(TrackProgressCarry.claim(native, unresolved, now = 1_010_000))
+		val different = old.copy(sourceItemId = "lmnopqrstuv")
+		assertNull(TrackProgressCarry.claim(native, different, now = 1_010_000))
+		assertEquals(
+			106_000,
+			TrackProgressCarry.claim(native, old.copy(), now = 1_010_000)!!.playedMs,
+		)
+		assertNull(TrackProgressCarry.claim(native, old.copy(), now = 1_010_000))
+	}
+
 	/**
 	 * Consumed on read. Two sessions inheriting the same play time would double
 	 * count it straight onto a chain that can't be edited.
@@ -285,6 +336,44 @@ class TrackProgressCarryTest {
 	fun `a different browser does not inherit the time`() {
 		TrackProgressCarry.remember(pkg, track, progress(47_000))
 		assertNull(TrackProgressCarry.claim("com.brave.browser", track, now = 1_010_000))
+	}
+
+	@Test
+	fun `package teardown clears only that native packages continuation`() {
+		val youtube = YouTubeProbe.YOUTUBE_PACKAGE
+		val music = YouTubeProbe.YOUTUBE_MUSIC_PACKAGE
+		val youtubeTrack = TrackIdentity("YT exact", "Artist", null, 180_000, "abcdefghijk")
+		val musicTrack = TrackIdentity("YTM exact", "Artist", null, 180_000, "lmnopqrstuv")
+		TrackProgressCarry.remember(youtube, youtubeTrack, progress(47_000))
+		TrackProgressCarry.remember(music, musicTrack, progress(29_000))
+
+		TrackProgressCarry.clearPackage(youtube)
+
+		assertNull(TrackProgressCarry.claim(youtube, youtubeTrack, now = 1_010_000))
+		assertEquals(29_000L, TrackProgressCarry.claim(music, musicTrack, now = 1_010_000)!!.playedMs)
+	}
+
+	@Test
+	fun `native recreation retains only the same exact source item`() {
+		val pkg = YouTubeProbe.YOUTUBE_PACKAGE
+		val first = TrackIdentity("Same title", "Same channel", null, 180_000, "abcdefghijk")
+		val other = first.copy(sourceItemId = "lmnopqrstuv")
+		TrackProgressCarry.remember(pkg, first, progress(73_000))
+
+		assertNull(TrackProgressCarry.claim(pkg, other, now = 1_010_000))
+		assertEquals(73_000L, TrackProgressCarry.claim(pkg, first, now = 1_010_000)!!.playedMs)
+	}
+
+	@Test
+	fun `browser YouTube and YouTube Music packages cannot share continuation state`() {
+		TrackProgressCarry.remember(pkg, track, progress(47_000))
+		assertNull(
+			TrackProgressCarry.claim(YouTubeProbe.YOUTUBE_PACKAGE, track, now = 1_010_000),
+		)
+		assertNull(
+			TrackProgressCarry.claim(YouTubeProbe.YOUTUBE_MUSIC_PACKAGE, track, now = 1_010_000),
+		)
+		assertEquals(47_000L, TrackProgressCarry.claim(pkg, track, now = 1_010_000)!!.playedMs)
 	}
 
 	/** A session with no metadata yet must not claim someone else's progress. */

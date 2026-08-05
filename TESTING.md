@@ -1,9 +1,8 @@
-# Testing RustedWax v0.8.15 (Phase 4 field-accepted with documented exceptions)
+# Testing RustedWax v0.9.0 (native-app implementation; physical gate pending)
 
-`dist/rustedwax-0.8.15.apk` — detection, key handling, automatic scrobbling
-(Phase 3), plus the Phase 4 layer: the Stop switch, YouTube-only exclusivity,
-evidence-based `kind` classification, the optional browser-evidence watcher,
-watch-page enrichment, and MusicBrainz verification.
+`dist/rustedwax-0.9.0.apk` — the accepted v0.8.15 browser behavior plus the
+implemented, default-off native YouTube/YouTube Music sources described in
+§23. Native physical-device approval remains pending.
 
 v0.8.7 is the contract-reconciliation build. It removes the high-progress
 Short rejection, defers finalization across browser session churn, makes Stop a
@@ -94,13 +93,13 @@ authority and give the app that key. Then revoking it later costs you nothing.
 ## Install
 
 ```bash
-~/Library/Android/sdk/platform-tools/adb install -r dist/rustedwax-0.8.14.apk
+~/Library/Android/sdk/platform-tools/adb install -r dist/rustedwax-0.9.0.apk
 ```
 
 Verified debug artifact SHA-256:
 
 ```text
-a9507c733b188f9cf3a481c8b1446535da22449343181cc17ccf556890f298b8
+3f8945e997d592dbf40fac6aa727f69215cbf8a805b5a4b15df031171a0ec58c
 ```
 
 ## 1. Key validation (no chain writes)
@@ -2116,6 +2115,583 @@ exceptions. No immutable historical operation will be repaired, rewritten or
 rebroadcast. Native YouTube and YouTube Music app ingestion begins separately
 in v0.9; it is not part of this release.
 
+## 23. v0.9.0 native YouTube apps implementation and pending device gate
+
+v0.9.0/version code 36 implements independent default-off MediaSession sources
+for:
+
+- `com.google.android.youtube`; and
+- `com.google.android.apps.youtube.music`.
+
+This section distinguishes source behavior from physical evidence. The
+implemented code and JVM regressions do not establish which metadata or ad
+signals current production app versions expose on the device. The detailed
+field inventory, rationale and expanded checklist are in
+`PHASE_NATIVE_APPS.md`.
+
+### 23a. Implemented automated matrix
+
+- Both settings default off, persist independently and admit only their exact
+  package when enabled; the Brave/Chrome allowlist is unchanged.
+- Media-id, canonical media-URI and canonical artwork-URI extraction obey the
+  required priority and always create a canonical watch link.
+- Shorts media URIs retain path proof; hostile suffix hosts, malformed ids and
+  arbitrary artwork paths remain unresolved.
+- Package origin without an id is site-only. Payload construction refuses it
+  unless the lookup-enabled resolver later supplies exactly one corroborated
+  id under the existing ambiguity gate.
+- Browser, native YouTube and native YouTube Music cannot claim one another's
+  progress. Same-package recreation retains a compatible track once; a
+  different case-sensitive exact id cannot inherit it.
+- Package opt-out clears that package's pending continuation without clearing
+  the other package. Stop/reset/listener epochs invalidate both native
+  snapshots while preserving the settings themselves.
+- Supplied YouTube Music title, artist and album are preserved; a literal
+  podcast type, structured non-music genre or hard episode/format evidence
+  remains video. Native YouTube retains the evidence-ranked song/video ladder.
+- Thresholds, duration floors, Short proof, playback-speed scoring, loop caps,
+  song-only repeat cap, mute/dedup and the shared manual/automatic rule result
+  continue through the existing regression suite.
+- Native resolver-only fallback does not require browser accessibility
+  coverage. Native packages do not read browser notification hints, URL/ad
+  evidence or accessibility coverage.
+- No production id/title/artist/brand fixture catalogue, History runtime read
+  or native title/brand/id/duration/popularity ad heuristic was added.
+
+The exact uncached command required for this phase passed 372 tests, 0 skipped,
+0 failures and 0 errors. `assembleDebug` succeeded. `lintDebug` completed with
+0 errors and 23 warnings. The tested source APK and copied
+`dist/rustedwax-0.9.0.apk` are byte-identical and both have SHA-256
+`3f8945e997d592dbf40fac6aa727f69215cbf8a805b5a4b15df031171a0ec58c`.
+
+### 23b. Implemented diagnostics and permission boundary
+
+Now shows the source package and origin. Identity logs name `media id`,
+`media URI`, `artwork URI` or `corroborated resolver`; unresolved and ambiguous
+resolver outcomes retain their exact refusal. Native settings and Now warn that
+browser visible-ad protection does not cover native apps.
+
+Every native metadata callback dumps the standard MediaMetadata surface and
+non-standard keys. Every native state callback additionally records numeric
+state, position, buffer, speed, actions, error text, update time, queue id,
+active flag on API 31+ (explicitly marked unavailable below it), custom actions
+and extras. This instrumentation does not interpret an ad. No manifest
+permission was added: Notification Access remains the only grant required for
+native MediaSession access.
+
+### 23c. Required physical checklist — not yet completed
+
+Keep automatic broadcast off for the initial instrumentation pass. Export the
+complete log only after every 60-second continuation expires. Then, for any
+broadcast-enabled pass, reconcile log payload, canonical video id/link,
+transaction id, at least two current Hive nodes and the expected profile
+section. Signed-in History may be an external post-run oracle only.
+
+1. Confirm both native toggles are off after a fresh preference state and remain
+   independent across process restart.
+2. Exercise each native package disabled and enabled; confirm Chrome and Brave
+   remain unchanged with native sources off and on.
+3. Switch browser → YouTube → YouTube Music → browser with identical-looking
+   metadata; verify no progress, identity, URL, ad, coverage, resolver candidate
+   or continuation state transfers.
+4. Capture ordinary YouTube videos and YouTube Music songs. Record media id,
+   media URI, all artwork URIs, non-standard metadata and the successful exact
+   id route. Verify clean YouTube Music title/artist/album preservation.
+5. Capture YouTube Music podcasts and numbered episodes, including title,
+   `GENRE` and any `MUSIC_VIDEO_TYPE_PODCAST_EPISODE` lookup evidence; they must
+   remain Videos absent stronger legitimate music provenance.
+6. Capture native YouTube songs/music videos and ordinary non-music videos;
+   compare the Now kind reason with the eventual immutable profile section.
+7. Capture native Shorts: whether a MediaSession exists, whether an exact
+   `/shorts/` URI is published, duration-floor behavior and continuous-loop cap.
+8. Test playlists/automatic next, pause/resume, minimizing/backgrounding,
+   screen-off playback and a complete 2× listen.
+9. Force same-track MediaSession/controller recreation; accumulated progress
+   must survive once. Change to a different exact id under identical metadata;
+   nothing may carry.
+10. With lookup off, an exact-id-less native item must remain off-chain. With
+    lookup on, test one unique title/channel/duration recovery, one unresolved
+    case and a deliberately ambiguous same-work upload pair.
+11. Exercise manual and automatic parity for threshold, floor, canonical id,
+    mute, dedup, loop and kind cap.
+12. Disable each native toggle mid-track, run Stop/reset with populated progress
+    and resolver cache, and toggle Notification Access off/on. No old native
+    state may complete or sign after the boundary.
+13. Capture YouTube and YouTube Music pre-roll and mid-roll ads, plus a native
+    Shorts promotion if sessions exist. Preserve exact before/during/after
+    metadata, PlaybackState, controller/session recreation and organic resume.
+14. Determine whether ads publish a literal structured signal generic across
+    packages and creatives. If not, record the disclosed limitation; do not add
+    brand/title/channel/id/duration/History guesses.
+15. Confirm all native payloads use exactly
+    `https://www.youtube.com/watch?v=<same verified id>`, with no duplicate id,
+    wrong profile section or immutable historical rewrite.
+
+Until §23c is reconciled and the native advertisement shape is reviewed, both
+native toggles remain experimental, device-pending and default-off.
+
+## 24. Native YouTube Shorts field investigation — partial gate failed
+
+The 2026-08-03 Samsung Galaxy A12 run completed the first focused native
+Shorts measurement but did not approve v0.9.0 native input. The complete
+evidence, sample matrix, implementation contract and next physical gate are in
+[PHASE_NATIVE_SHORTS.md](PHASE_NATIVE_SHORTS.md).
+
+`debug/rustedwax-log (22).txt` and `debug/mob001.jpeg`/`mob002.jpeg` show the
+original failure: after entering recommendations beneath an ordinary video,
+YouTube History recorded six different Shorts while 26 MediaMetadata callbacks
+continued to publish BELLAKEO. Native session recreation carried that stale
+track's accumulated time from 6 seconds through 71 seconds. No Short title or
+id appeared in the RustedWax log. An exact-ID-less native continuation can
+therefore absorb unrelated Shorts playback and is the first v0.9.1 safety fix.
+
+Direct ADB observation on YouTube `21.30.209`, Android 12/API 31 established:
+
+- foreground Shorts expose `reel_watch_fragment_root`, `reel_watch_player`,
+  title, exact `@handle`, and a live current/total `reel_time_bar` description;
+- sampled ads expose literal `Ad` labels inside the same player tree;
+- the MediaSession remains stopped/position-zero/empty and cannot identify or
+  measure the Short;
+- PiP removes title, handle and seekbar proof, so the first implementation must
+  stop counting at the last valid foreground observation; and
+- privileged activity dumps are unavailable to the app and were stale anyway.
+
+A temporary, fully removed real-resolver probe resolved one of three tuples.
+The two misses used accessibility handles `@Status_svijet` and `@Beredist`,
+while their watch pages used display authors `Status` and `Beredits`. The same
+canonical pages expose exact matching handles in
+`playerMicroformatRenderer.ownerProfileUrl`. The implemented v0.9.1 path carries
+that dedicated owner handle through watch facts/cache/resolution and retains
+title + duration + handle + unique-candidate fail-closed corroboration.
+
+At the time of that investigation no production code or APK had changed. The
+subsequent v0.9.1 implementation/result is recorded in §25. Signed-in History
+remains forbidden as a runtime input.
+
+The implemented v0.9.1/version-code 37 patch is bounded to:
+
+1. disabling native MediaSession progress carry without a live exact id;
+2. adding a second, independently disclosed accessibility component whose OS
+   package scope is only `com.google.android.youtube`;
+3. structurally parsing and tracking foreground Shorts from conservative
+   seekbar deltas with literal ad vetoes and PiP/background fail-closed;
+4. adding explicit native foreground-Short source proof to the existing
+   snapshot/rules/classifier/UI path;
+5. extending exact-id resolution with canonical owner-handle corroboration;
+   and
+6. preserving the existing browser, YouTube Music, resolver ambiguity,
+   canonical-link, threshold, loop, mute, dedup, queue and signing boundaries.
+
+The feature remains experimental/default-off unless the complete automated and
+physical acceptance matrix in `PHASE_NATIVE_SHORTS.md` passes. The standalone
+fresh-task handoff is
+[NATIVE_SHORTS_NEXT_SESSION_PROMPT.md](NATIVE_SHORTS_NEXT_SESSION_PROMPT.md).
+
+## 25. v0.9.1 native foreground Shorts implementation and device result
+
+v0.9.1/version code 37 implements the bounded §24 follow-up. The native
+MediaSession carry safety fix landed first: a native controller without a live
+exact source id cannot remember or claim progress across recreation. A second
+accessibility service is independently disclosed and Android-scoped only to
+`com.google.android.youtube`; the browser service remains scoped to its prior
+browser packages.
+
+The pure parser and lifecycle require a single measured Shorts root/player,
+one title, one exact normalized owner handle and one current/total seekbar.
+Unsupported/localized/conflicting/hidden/non-player shapes refuse. A 750 ms
+stability gate prevents outgoing footer fields from pairing with an incoming
+duration or ad seekbar. Progress is position-delta only, unchanged/pause/seek/
+rewind/missing-proof safe, and strict end-to-start wraps remain capped by the
+shared rules. The independent freshness watchdog prevents a blocked Samsung
+accessibility lookup from extending the three-second proof grace. Samsung also
+exposed a standalone clickable semantic hashtag node beside a full caption;
+the parser excludes exactly one bare hashtag chip while preserving fail-closed
+behavior for multiple prose title candidates.
+
+Automated release commands, all uncached/rerun:
+
+```text
+:app:testDebugUnitTest  PASS — 409 tests, 0 failures/errors/skips
+:app:assembleDebug      PASS
+:app:lintDebug          PASS — 0 errors, 23 warnings
+git diff --check        PASS
+```
+
+The 2026-08-04 Samsung SM-A125M Galaxy A12 / Android 12 pass left
+`autoScrobble=false`. It verified independent setting/grant combinations;
+exact foreground Sona/Status/Beredist proof; stale MediaSession suppression;
+sparse sequential deltas; threshold; pause; forward seek; rewind; loop;
+rapid transitions; PiP below/above threshold; Home/search/channel/sound/
+comments/ordinary-watch refusal; Stop; native opt-out; accessibility and
+Notification Access reconnect; app reinstall; exact-ID-less controller churn;
+and Chrome, Brave and YouTube Music smoke tests.
+
+Two natural Short advertisements were sampled: Finelo and Pocket Toons. Both
+published literal `Ad`, finalized the preceding organic item, remained isolated
+from the successor, and produced no broadcast with automatic mode off. The
+rabbit-hole pass initially exposed 200–250 ms torn accessibility frames; the
+stability gate was added generically and the rapid-transition/ad pass was
+repeated successfully.
+
+After the account was confirmed as a test account, four lookup-on native Shorts
+were written and block-confirmed: `s8ZQSxuKPb0` at 110/158 s (tx
+`d57d3087890bfd3c96f82b4e68d825c28fd1c61a`, block 108722003),
+`orsMh4bNeGE` at 103/139 s (tx
+`69a8934932c388fbbd57a0b132f0a6a3957e7b00`, block 108722091),
+`lw8InLbiBfM` at 45/48 s (tx
+`4b70556927a08195593a6cc4f32d3099b9806d21`, block 108722137), and
+`sMyyk-OlizA` at 73/95 s (tx
+`6a8ce57cd8513fa6cad8ad50db543914491fbb33`, block 108722284). Exact custom-json
+payloads reconciled on `api.hive.blog`, `api.deathwing.me` and
+`api.openhive.network`; the public Videos profile showed exactly four scrobbles
+and four unique ids for the day.
+
+The rebuilt artifact then passed three physical fail-closed cases. Lookup-off
+`QjR-m6q0wN4` refused the missing verified hyperlink. Lookup-on
+`Bf7Qtyr-2IQ` refused because no exact title+duration+handle search candidate
+was available. The genuine same-owner pair `PlTiqSpwzTI`/`VL_1TfgB2pw`
+produced an explicit two-id ambiguity refusal. All three stayed off-chain and
+the profile remained at four. A live native Short cannot expose the manual
+button because its exact id is not resolved until finalization; central
+manual/automatic rule and ad-veto parity remains covered by the automated
+suite. The bounded foreground-Short gate is approved, while the native options
+remain experimental/default-off pending broader v0.9 native-app evidence.
+
+The source APK and copied artifact are 14,032,557 bytes and byte-identical:
+
+```text
+c6f2f1800a1cc6b6d76c260181d2402a3d648c9ecf7b3bc94ad897eeb1ce0895  app/build/outputs/apk/debug/app-debug.apk
+c6f2f1800a1cc6b6d76c260181d2402a3d648c9ecf7b3bc94ad897eeb1ce0895  dist/rustedwax-0.9.1.apk
+```
+
+## 26. v0.9.2 native simplified-playlist metadata field failure and patch gate
+
+The live 2026-08-04 Samsung pass switched naturally into the YouTube playlist
+`Reggaeton 2016,17,18` and exposed a separate ordinary-native identity gap.
+Automatic, Monitoring, lookup and the native toggle were on and all services
+were connected. `Se Preparó` (188/188 s), `Felices los 4` (224/230 s),
+`Si Tu Novio Te Deja Sola` (158/244 s) and `No Quiere Enamorarse` (207/213 s)
+all cleared threshold but stayed off-chain because the MediaSession supplied no
+exact id and bounded search could not satisfy raw title+channel+duration
+identity. No signer, RPC or queue failure occurred.
+
+The canonical field record and version-code 38 patch contract are in
+`PHASE_NATIVE_PLAYLIST.md`. The automated gate must prove a source-scoped
+structured resolver: fully fetched public-page title grammar must reduce to the
+exact separated native title and a complete exact native artist credit, duration
+must remain within five seconds, and exactly one upload may match. Global raw
+title/channel resolution, exact-id precedence and foreground owner-handle rules
+must not loosen.
+
+The same pass exposed exact-ID-less same-metadata duration replacement shapes
+including 32 → 7 → 188 seconds and 7 → 257 seconds. Because those fragments
+may be transitions or ads with organic metadata already installed, v0.9.2 must
+discard the prior fragment and restart at zero on a material duration conflict.
+It must not infer an ad, finalize the fragment, merge its progress, or carry it
+into the replacement.
+
+Implemented additions:
+
+- all four measured structured music identities plus official-video/audio,
+  lyric, `Video Oficial`, pipe-suffix and channel-display variants;
+- partial artist strings, non-structural containment, duration conflict,
+  unrelated uploader and genuine two-upload ambiguity negatives;
+- native same-metadata duration-conflict discard with no finalized snapshot and
+  zero carried time, alongside existing bounded refinement/different-id cases;
+- unchanged browser, foreground Short, exact native id, manual/automatic,
+  canonical-link, threshold, dedup and lifecycle suites; and
+- uncached unit tests, debug assembly, lint, `git diff --check`, exact APK copy,
+  SHA-256 match and installed-device version/service/settings verification.
+
+Do not backfill or rebroadcast the four missed operations. Physical acceptance
+uses only subsequent natural playlist transitions after the exact APK is
+installed.
+
+The v0.9.2 implementation completed this source gate:
+
+```text
+:app:testDebugUnitTest  PASS — 416 tests, 0 failures/errors/skips
+:app:assembleDebug      PASS
+:app:lintDebug          PASS — 0 errors, 23 warnings
+git diff --check        PASS
+```
+
+`app-debug.apk`, `dist/rustedwax-0.9.2.apk` and the installed A12 base APK are
+14,032,557-byte identical artifacts with SHA-256
+`5cf7fbfdd950376c8b61ede0a0effc7f843f25b249f47c06172471f18559d072`.
+The device reports version 0.9.2/code 38; automatic, Monitoring, lookup, both
+native switches, Notification Access, both accessibility bindings and USB
+stay-awake were preserved. YouTube continued without deliberate navigation.
+RustedWax joined `Hey DJ` mid-track, so that partial item is not a clean
+structured-resolution acceptance sample. It did physically validate the new
+transition guard: the same title/artist changed 218→20 seconds after 8.3 seconds
+of STOPPED grace, then 20→207 seconds after 5.4 seconds. Both times the old
+fragment was discarded with zero carry and no ad inference, and neither built a
+payload. The clean 207-second `Hey DJ` phase then completed. Structured recovery
+found two exact candidates (`YN-aYhtMHIw`, `1fb9DtJpbHw`), logged the ambiguity,
+refused every id and built no payload. This physically passes the ambiguity
+refusal branch. A later natural unique match remains the successful-resolution,
+write and reconciliation acceptance sample.
+
+## 27. v0.9.3 artist-aware budget and immutable native continuation gate
+
+The post-v0.9.2 field continuation is recorded in
+`PHASE_NATIVE_PLAYLIST.md`. It proved one complete transport path (`Dile Que Tu
+Me Quieres`, `jc70ZO9X0XA`, tx
+`dfb56dd52634f1da35d34a56e6b0b4a328d3a0d3`) while four popular titles were
+prematurely rejected by a title-only eight-page ceiling, `La Rompe Corazones`
+was split into 52% and 50% fragments by a native controller recreation, and
+`Te Vas` correctly refused two exact uploads.
+
+The v0.9.3 source gate includes regressions proving:
+
+- the search-card prefilter requires exact parsed work plus a complete exact
+  artist credit before a candidate consumes the eight-page budget;
+- partial artist substrings, unrelated channels, duration contradictions and
+  more than eight exact work/credit candidates still refuse;
+- a native continuation is stored only with a uniquely corroborated immutable
+  id, an exact same-id replacement claims it once, and an exact different-id or
+  unresolved replacement cannot claim it;
+- applying memory-only carry authority does not disable exact-ID-less material
+  duration replacement isolation;
+- a carried pre-resolution records raw versus structured provenance and is
+  re-fetched through that same predicate at finalization; structured authority
+  never seeds generic raw-title/channel authority;
+- ambiguity, Stop/opt-out/source epoch, foreground Short ownership, timeout and
+  package isolation remain fail-closed; and
+- identical ordinary-player missing-Short diagnostics are rate-limited while a
+  changed or safety-critical diagnostic is emitted immediately.
+
+Then run the complete uncached unit, assembly and lint gate, `git diff --check`,
+copy/hash the exact APK, install it without deliberate YouTube navigation, and
+verify version, services, settings, USB stay-awake and installed APK identity.
+Do not backfill any earlier miss; physical acceptance uses only natural
+post-install items.
+
+The completed source/deployment gate is:
+
+```text
+:app:testDebugUnitTest  PASS — 422 tests, 0 failures/errors/skips
+:app:assembleDebug      PASS
+:app:lintDebug          PASS — 0 errors, 23 warnings
+git diff --check        PASS
+```
+
+`app-debug.apk`, `dist/rustedwax-0.9.3.apk` and the installed A12 base APK are
+14,048,941-byte identical artifacts with SHA-256
+`d18342325d7288f5ccfe16aa549b5752e6ba2fd63d0522cd28e5ae7e65388d88`.
+The device reports version 0.9.3/code 39; automatic, Monitoring, lookup, both
+native switches, Notification Access, both accessibility bindings and USB
+stay-awake were preserved. YouTube continued without deliberate navigation.
+
+Two provisional code-39 audit builds preceded the final artifact and do not
+belong to its field ledger. The final exact install connected at 10:12:21 local
+time. It joined `Sexo, Sudor y Calor` at a 251-second stable phase and launched
+early resolution immediately; that response contained zero parseable search
+candidates, so no authority or payload was manufactured. Equivalent ordinary-
+player missing-Short events produced one bounded diagnostic instead of the
+prior callback-rate flood, physically passing the coalescing check. Natural
+unique-write and uniquely same-id controller-recreation samples remain pending.
+The joined item later finalized at 215/251 seconds; final search again returned
+zero candidates and built no payload. The subsequent `Te Boté (Remix)` phase
+found two exact structured uploads (`9jI-z9QN6g8`, `bvEf7FOscm8`) and correctly
+established neither carry authority nor a scrobble. Missing-Short reminders were
+measured about 30–46 seconds apart. These pass refusal/coalescing only; they do
+not close the unique-write or same-id continuation rows.
+
+## 28. v0.9.4 exact structured author credit and featured-work symmetry gate
+
+The untouched v0.9.3 field continuation through 10:44:56 local is recorded in
+`PHASE_NATIVE_PLAYLIST.md`. It produced four unique structured native writes in
+one healthy run (`K6aqdUp-OgY`, `YxZXLWIx6ik`, `Hn2l8LbvXsY`,
+`0XvGIM_hwDc`); each exact custom-json operation was independently present on
+two Hive nodes and all four ids were present on the public Music profile. The
+remaining qualifying tracks reached their thresholds but constructed no payload
+because identity was absent or ambiguous.
+
+The patch is intentionally matcher-only. Its focused automated gate must prove:
+
+- `Natti Natasha ❌ Ozuna - Criminal [Official Video]`, exact author
+  `NATTI NATASHA`, page duration 273s and native `Criminal` / `NATTI NATASHA` /
+  273s selects `VqEbCxg2bNI` uniquely;
+- a title-parsed collaboration does not authorize a partial credit, and an
+  unrelated page author cannot substitute for the native artist;
+- the same explicit trailing `ft.`/`feat.`/`featuring` grammar reduces the native
+  title and candidate work symmetrically, without removing `(Remix)` or arbitrary
+  parentheticals;
+- the measured duration-compatible `Ella Y Yo (Feat. Don Omar)` pages remain an
+  ambiguity after symmetric work normalization;
+- the 228-second Ozuna/Juanka page and 218-second `Release - Topic` page for
+  `Si Te Dejas Llevar` both remain contradictions to the native tuple;
+- the existing `Te Boté (Remix)`, `La Pregunta`, `Si Se Da (Remix)`, partial
+  artist, over-budget and unrelated-channel refusals remain fail-closed; and
+- the raw resolver and browser target-package tests remain unchanged.
+
+After focused tests, run `:app:testDebugUnitTest :app:assembleDebug :app:lintDebug
+--rerun-tasks`, `git diff --check`, copy and hash the exact version-code-40 APK,
+install that artifact without navigating or force-stopping YouTube, and verify
+the installed bytes, version, Automatic/Monitoring/lookup/native switches,
+Notification Access, both accessibility bindings and USB stay-awake. Physical
+acceptance requires a natural unique structured match to build one canonical
+linked payload and block-confirm; a genuinely ambiguous item must construct no
+payload. Do not backfill any pre-install miss. A same-id controller recreation
+may close its existing v0.9.3 row only if YouTube naturally produces one.
+
+The implementation gate completed as follows:
+
+```text
+:app:testDebugUnitTest  PASS — 425 tests, 0 failures/errors/skips
+:app:assembleDebug      PASS
+:app:lintDebug          PASS — 0 errors, 23 warnings
+git diff --check        PASS
+```
+
+`app-debug.apk`, `dist/rustedwax-0.9.4.apk` and the installed A12 base APK are
+14,048,941-byte identical artifacts with SHA-256
+`cbaebadc91d0045b6bd7a2abec8aaacefb2e914782a404d705b24890d4c9ccbf`.
+The device reports v0.9.4/code 40. Automatic, Monitoring, lookup, both native
+switches, Notification Access, both accessibility bindings and USB stay-awake
+remained enabled. YouTube was not navigated or force-stopped; the exact artifact
+connected at 10:59:34 local while `El Efecto` was already playing. Its two exact
+structured candidates (`hEiI7FT84kY`, `gENTa8g6x78`) were again refused, proving
+the ambiguity gate remained intact under code 40.
+
+The untouched continuation added physical negative coverage. `La Forma En Que
+Me Miras`, `Diosa`, `Noches de Aventura`, `Por Amar A Ciegas` and `Hace Mucho
+Tiempo` each retained multi-upload ambiguity refusal. `La Occasión` and
+`Más Que Ayer` produced no fully verified bounded candidate. Provisional and
+different-duration phases (including 15→236 and 185→239 seconds) discarded
+the old fragment with zero carry, and the unresolved `La Forma En Que Me Miras`
+controller recreation claimed no progress.
+
+The required clean unique sample then occurred naturally. `Ella Y Yo (feat.
+Farruko, Ozuna, Arcangel, Anuel AA, Bryant Myers, Kevin Roldan, Ñengo Flow,...)`
+/ `Pepe Quintana - Topic` discarded its 12- and 30-second provisional phases,
+settled at 416 seconds and uniquely resolved to `CGjuWHEPxgc`. It established
+immutable authority, played 416/416 seconds, re-fetched the same page and built
+one canonical linked payload. Tx
+`49a46d159658d257706c9a3c6b32eed4ddd29ca1` was independently returned with the
+exact operation in block 108,734,261 by `api.hive.blog` and
+`api.deathwing.me`; the public profile also indexed `CGjuWHEPxgc`. This closes
+the code-40 unique-write row without changing the playlist or backfilling any
+earlier miss.
+
+Immediately before installation, YouTube naturally closed and recreated the
+v0.9.3 `Unica` controller. Each side independently resolved `7uxTya2PX3c`; the
+replacement claimed 87 seconds, the aggregate finalized once at 215/218 seconds,
+and tx `70cc45e0c27cff4a0d758c2cf414b4de6a521b38` was independently present in
+block 108,733,719 on two Hive nodes and on the public profile. This closes the
+same-id recreation row without forced controller churn.
+
+## 29. v0.9.5 native playlist-derived identity gate
+
+The full field record is `PHASE_NATIVE_PLAYLIST_IDENTITY.md`. The automated gate
+covers the parser across both watch-screen layouts (collapsed bar and expanded
+queue panel), the miniplayer, ad absence, malformed positions, queue-row
+confusion and invisible bars; the latch across replacement, both flavours of
+absence and reset; and the name→id resolver across unique, zero, several,
+contradicting-owner and contradicting-total results.
+
+Field acceptance on the SM-A125M, playlist entered through "Play all":
+
+- every track in the `PHASE_NATIVE_PLAYLIST.md` failure table resolved, each to
+  the id the playlist page predicted;
+- a 90-second miniplayer period produced **zero** latch drops, after the fix
+  that made absence stop dropping the latch;
+- `Báilame (Remix)` carried **125 seconds** across a MediaSession teardown keyed
+  on the playlist-supplied id — the lock-screen/minimize "song splits in two"
+  symptom, fixed as a side effect of having an immutable id.
+
+## 30. v0.9.6 uniqueness, cache freshness and watch-history identity gate
+
+Build record: `PHASE_NATIVE_HISTORY.md`. **496 tests, 0 failures**; lint 0
+errors. New automated coverage:
+
+| Area | What it must prove |
+| --- | --- |
+| `PlaylistPageParser` | two same-title, same-duration entries in one playlist refuse every id; a same-title entry of a *different* length does not make the real one ambiguous |
+| `PlaylistRefreshThrottle` | a freshly fetched playlist is never re-read on the next track; a stale one is re-read at most once per interval; a playlist RustedWax is not playing costs a bounded number of page reads; each playlist has its own budget; reset restores it |
+| `WatchHistoryParser` | newest-first ordering preserved across day sections; signed-out vs paused vs empty vs markup-changed are four distinct answers; the `lockupViewModel` shape and `richItemRenderer` wrapping are both read; duration falls back to the overlay badge |
+| `WatchHistoryMatcher` | the measured duplicate-upload pairs resolve to the played upload; the matched position is reported; two matching recent entries refuse; the window bound holds; revalidation refuses a moved id |
+| `WatchHistoryHealth` | one miss is not a diagnosis and three are; a hit clears it; a refused route re-probes once per interval; dead session and paused history refuse on sight; network failures say nothing about the account |
+| `YouTubeSessionVault` | a jar with no session cookie is not a sign-in; `=` inside a cookie value survives parsing |
+
+### Field record, SM-A125M, 2026-08-04 19:03–19:06
+
+Native YouTube, no playlist — the case v0.9.5 could not answer:
+
+```
+19:04:01.085  [finalize]     [track change] … La Formula — played 0s of 236s
+19:04:03.771  [history]      read 153 watch-history entries
+19:04:03.788  [history]      resolved "… La Formula" → gmc4tkVJow8 (entry 0 of 153, 0 = newest)
+19:05:56.442  [resolve]      re-fetching pre-resolved native carry authority gmc4tkVJow8 (HISTORY)
+19:05:59.197  [history]      resolved … → gmc4tkVJow8 (entry 0 of 153, 0 = newest)
+19:05:59.230  [native-id]    verified gmc4tkVJow8 via corroborated resolver (watch history)
+```
+
+Both open measurements are answered: a play appears in history **within ~2.7 s**
+of the track change, and the newest entry **was** the current track on all three
+lookups. The `(entry N of M)` instrumentation stays in so a future `N > 0` is
+visible rather than silent.
+
+The same run exposed and produced fixes for two defects:
+
+1. A lookup **60 ms** after a track change hit a feed cached **0.5 s earlier**
+   to finalize the previous track, missed, and fell through to the search route
+   — the route measured three times choosing a duration-identical wrong upload.
+   Absence against a cached feed now forces one fresh read before anything is
+   concluded.
+2. That same artefactual miss counted toward the "your YouTube app is on another
+   account" diagnosis, so pure timing could have stood the route down after
+   three tracks. Only absence from a freshly-read feed counts now.
+
+A third defect was found while verifying grants rather than while testing:
+`NativeShortsAccessibilityService.isEnabled` read only
+`enabled_accessibility_services`, so after every reinstall the UI reported
+"Granted" for a service Android had stopped feeding. It now also requires
+`accessibility_enabled == 1`. `UrlWatcherService.isEnabled` has the identical
+defect and was left untouched under the v0.9.6 no-browser-change constraint.
+
+### Checking the grants after an install
+
+```bash
+adb shell settings get secure accessibility_enabled            # must be 1
+adb shell settings get secure enabled_accessibility_services   # must name both
+```
+
+`dumpsys accessibility` lists *installed*, not enabled, services and will
+mislead. Take the reading a few seconds after the install settles: measured
+twice this session, the flag reads `0` immediately after `adb install` and then
+returns to `1` on its own for services the previous APK already had. The
+strongest evidence is the service's own `connected` line in the event log, which
+only a live service emits — but the check is still required, because last
+session's grants stayed off until re-enabled by hand.
+
+### Testing the watch-history route
+
+1. Connect an account: **Settings → YouTube watch history → Sign in**. The
+   disclosure appears before Google's page loads. Sign in yourself.
+2. Confirm the YouTube app on the phone is signed in to the **same** account and
+   is not in incognito, or nothing played reaches the readable history.
+3. Play a native video **outside any playlist** and watch:
+
+```bash
+adb shell run-as com.rustedwax.app cat files/rustedwax-log.txt | grep history
+```
+
+A hit reads `resolved "…" → <id> from watch history (entry N of M, 0 = newest)`.
+An empty feed prints a shape report — counts of renderer *names* only, never
+content — which distinguishes an account with nothing recent from markup this
+parser does not read.
+
+4. Verify no credential ever reaches the log:
+
+```bash
+adb shell run-as com.rustedwax.app cat files/rustedwax-log.txt | grep -cE "SID=|SAPISID|LOGIN_INFO|__Secure"
+```
+
+Must print `0`. It did on the 2026-08-04 run.
+
 ## Running the unit tests
 
 ```bash
@@ -2152,6 +2728,12 @@ recorded in §21f; its physical-device gate remained pending at artifact time.
 Log 21 then supplied the accepted Phase 4 field record in §22. It did not
 literally complete the historical every-fixture matrix, and its documented
 conservative omissions remain release exceptions.
+
+The v0.9.0 source gate ran the same exact uncached sequence: 372 tests, 0
+skipped, 0 failures and 0 errors; debug assembly succeeded and lint completed
+with 0 errors and 23 warnings. The byte-identical source and copied APK hash is
+recorded in §23a. The partial native Shorts gate then failed as recorded in
+§24; the broader native-app evidence remains pending under §23c.
 
 The suite includes kind classification, title parsing, threshold/floor/loop
 rules, continuation expiry tokens, frozen carried identities/ad evidence,

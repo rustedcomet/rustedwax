@@ -60,6 +60,9 @@ object WatchPageParser {
 			videoId = videoId,
 			title = details?.optString("title")?.ifBlank { null },
 			author = details?.optString("author")?.ifBlank { null },
+			ownerHandle = OwnerHandle.fromOwnerProfileUrl(
+				micro?.optString("ownerProfileUrl")?.ifBlank { null },
+			),
 			category = micro?.optString("category")?.ifBlank { null },
 			lengthSeconds = details?.optString("lengthSeconds")
 				?.toLongOrNull()?.takeIf { it > 0 },

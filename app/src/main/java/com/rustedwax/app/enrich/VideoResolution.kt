@@ -16,6 +16,21 @@ data class VideoResolution(
 	val uniquelyResolved: Boolean = false,
 	/** Search presentation carried YouTube's explicit collaborator affordance. */
 	val collaborativeChannel: Boolean = false,
+	/** Exact canonical owner handle from the candidate watch-page microformat. */
+	val ownerHandle: String? = null,
+	/** Exact parsed work/credit/duration proof for simplified native music metadata. */
+	val structuredNativeMusic: Boolean = false,
+	/**
+	 * The id came from the bounded entry list of the playlist being played, and
+	 * that entry's own title, channel and duration already matched the session.
+	 */
+	val playlistVerified: Boolean = false,
+	/**
+	 * The id came from the signed-in account's own watch history, where the
+	 * entry's title, channel and duration already matched the session and no
+	 * other recent entry did.
+	 */
+	val historyVerified: Boolean = false,
 )
 
 /** A resolver success or the exact fail-closed reason shown to the user. */
@@ -47,7 +62,68 @@ object VideoIdentityCorroborator {
 				return "resolved id ${resolution.videoId} replaced frozen id ${frozen.videoId}"
 			}
 		}
-		val sameObservedGeneration = resolution.videoId ==
+		session.ownerHandle?.let { wantedHandle ->
+			if (!resolution.uniquelyResolved) {
+				return "foreground Short id was not the only corroborated candidate"
+			}
+			val frozenTitle = session.title ?: return "foreground Short title was missing"
+			val resolvedTitle = resolution.title
+				?: return "resolved candidate omitted the canonical title"
+			if (SearchResultsParser.titleKey(frozenTitle) !=
+				SearchResultsParser.titleKey(resolvedTitle)
+			) {
+				return "resolved candidate title \"$resolvedTitle\" contradicts foreground title \"$frozenTitle\""
+			}
+			if (!SessionProbe.durationsCorroborate(session.durationMs, resolution.lengthSeconds)) {
+				return "resolved candidate duration did not corroborate the foreground seekbar"
+			}
+			if (!OwnerHandle.matches(wantedHandle, resolution.ownerHandle)) {
+				return "resolved candidate owner handle ${resolution.ownerHandle ?: "<missing>"} " +
+					"contradicts foreground handle $wantedHandle"
+			}
+			val finalFacts = facts ?: return "final watch-page handle evidence was unavailable"
+			if (!OwnerHandle.matches(wantedHandle, finalFacts.ownerHandle)) {
+				return "final watch-page owner handle ${finalFacts.ownerHandle ?: "<missing>"} " +
+					"contradicts foreground handle $wantedHandle"
+			}
+		}
+		val structuredNativeCompatible = if (resolution.structuredNativeMusic) {
+			val frozenTitle = session.title
+			val frozenArtist = session.artist
+			val frozenDuration = session.durationMs?.div(1000)
+			if (!session.isNative || !resolution.uniquelyResolved ||
+				frozenTitle.isNullOrBlank() || frozenArtist.isNullOrBlank() ||
+				frozenDuration == null || facts == null
+			) {
+				return "structured native music proof was incomplete at finalization"
+			}
+			val resolutionMatches = NativeStructuredMusicMatcher.matches(
+				resolution, frozenTitle, frozenArtist, frozenDuration,
+			)
+			val factsMatch = NativeStructuredMusicMatcher.matches(
+				VideoResolution(
+					videoId = facts.videoId,
+					source = "final watch facts",
+					title = facts.title,
+					channel = facts.author,
+					lengthSeconds = facts.lengthSeconds,
+				),
+				frozenTitle,
+				frozenArtist,
+				frozenDuration,
+			)
+			if (!resolutionMatches || !factsMatch) {
+				return "structured native music candidate did not re-corroborate against " +
+					"the finalized title, artist and duration"
+			}
+			true
+		} else {
+			false
+		}
+		val exactNativeMediaId = session.isNative &&
+			session.confirmed?.videoId == resolution.videoId &&
+			session.confirmed?.exactIdRoute != null
+		val sameObservedGeneration = exactNativeMediaId || resolution.videoId ==
 			session.resolverContext.observedVideoId &&
 			session.resolverContext.urlGeneration != null &&
 			(session.confirmed?.urlGeneration == null ||
@@ -68,7 +144,25 @@ object VideoIdentityCorroborator {
 			label = "${resolution.source} candidate",
 			sameObservedGeneration = sameObservedGeneration,
 			allowCollaborativeByline = collaborativeCompatibility,
+			allowStructuredNativeMusic = structuredNativeCompatible,
 		)?.let { return it }
+
+		// YouTube spells one Topic channel two ways: measured 2026-08-04 for
+		// `7J6xA1_f8as`, the playlist page and the MediaSession both said
+		// "Cosculluela El Principe" while the watch page said
+		// "Cosculluela - Topic". Stripping " - Topic" leaves "Cosculluela",
+		// which still is not the artist's full stage name, so the watch page
+		// vetoed a correct id that the playlist had already corroborated.
+		//
+		// The playlist is the list actually being played, so where its own entry
+		// agreed with the session artist, the watch page's alternate spelling of
+		// that same channel is not new evidence. Title and duration still have to
+		// agree on both passes, and this never applies to a browser session.
+		val playlistChannelAlias = session.isNative &&
+			resolution.playlistVerified &&
+			SearchResultsParser.channelKey(resolution.channel) != null &&
+			SearchResultsParser.channelKey(resolution.channel) ==
+			SearchResultsParser.channelKey(session.artist)
 
 		contradictionFor(
 			session = session,
@@ -79,6 +173,8 @@ object VideoIdentityCorroborator {
 			label = "enriched watch facts",
 			sameObservedGeneration = sameObservedGeneration,
 			allowCollaborativeByline = enrichedBylineMatchesCandidate,
+			allowStructuredNativeMusic = structuredNativeCompatible,
+			allowPlaylistChannelAlias = playlistChannelAlias,
 		)?.let { return it }
 
 		val firstObservedId = session.resolverContext.observedVideoId
@@ -103,6 +199,9 @@ object VideoIdentityCorroborator {
 		label: String,
 		sameObservedGeneration: Boolean,
 		allowCollaborativeByline: Boolean,
+		allowStructuredNativeMusic: Boolean,
+		/** Relaxes the *channel* comparison only; title and duration still bind. */
+		allowPlaylistChannelAlias: Boolean = false,
 	): String? {
 		val frozenTitle = session.title
 		val titleEvidence = if (!title.isNullOrBlank() && !frozenTitle.isNullOrBlank()) {
@@ -110,10 +209,16 @@ object VideoIdentityCorroborator {
 		} else {
 			null
 		}
-		if (titleEvidence == VideoTitleMatcher.Evidence.CONTRADICTION) {
+		if (!allowStructuredNativeMusic &&
+			titleEvidence == VideoTitleMatcher.Evidence.CONTRADICTION
+		) {
 			return "$label title \"$title\" contradicts ended title \"$frozenTitle\""
 		}
-		if (titleEvidence == VideoTitleMatcher.Evidence.WEAK_SHORT_CANONICAL_CORE &&
+		if (!allowStructuredNativeMusic &&
+			titleEvidence == VideoTitleMatcher.Evidence.WEAK_SHORT_CANONICAL_CORE &&
+			!(session.isNative && session.confirmed?.exactIdRoute != null &&
+				session.confirmed?.videoId == videoId &&
+				SessionProbe.durationsCorroborate(session.durationMs, lengthSeconds)) &&
 			!SessionProbe.titleEvidenceMayRetainObservedId(
 				evidence = titleEvidence,
 				candidateVideoId = videoId,
@@ -130,7 +235,7 @@ object VideoIdentityCorroborator {
 		}
 
 		val frozenChannel = session.artist
-		if (!channel.isNullOrBlank() && !frozenChannel.isNullOrBlank()) {
+		if (session.ownerHandle == null && !channel.isNullOrBlank() && !frozenChannel.isNullOrBlank()) {
 			val wanted = SearchResultsParser.channelKey(frozenChannel)
 			val actual = SearchResultsParser.channelKey(channel)
 			val titleAndDurationCorroborate = titleEvidence != null &&
@@ -138,7 +243,8 @@ object VideoIdentityCorroborator {
 				SessionProbe.durationsCorroborate(session.durationMs, lengthSeconds)
 			if (wanted != null && actual != null && wanted != actual &&
 				!(sameObservedGeneration && titleAndDurationCorroborate) &&
-				!allowCollaborativeByline
+				!allowCollaborativeByline && !allowStructuredNativeMusic &&
+				!(allowPlaylistChannelAlias && titleAndDurationCorroborate)
 			) {
 				return "$label channel \"$channel\" contradicts ended channel \"$frozenChannel\""
 			}
@@ -196,6 +302,19 @@ object VideoIdentityCorroborator {
 		resolution: VideoResolution,
 		facts: VideoFacts?,
 	): Boolean {
+		// The run-local cache is keyed for raw title/channel corroboration. A
+		// structured native recovery must be re-searched and fully re-fetched.
+		if (resolution.structuredNativeMusic) return false
+		session.ownerHandle?.let { wantedHandle ->
+			val title = facts?.title ?: resolution.title ?: return false
+			val length = facts?.lengthSeconds ?: resolution.lengthSeconds ?: return false
+			return resolution.uniquelyResolved &&
+				SearchResultsParser.titleKey(session.title ?: return false) ==
+					SearchResultsParser.titleKey(title) &&
+				SessionProbe.durationsCorroborate(session.durationMs, length) &&
+				OwnerHandle.matches(wantedHandle, resolution.ownerHandle) &&
+				OwnerHandle.matches(wantedHandle, facts?.ownerHandle)
+		}
 		val title = facts?.title ?: resolution.title ?: return false
 		val channel = facts?.author ?: resolution.channel ?: return false
 		val length = facts?.lengthSeconds ?: resolution.lengthSeconds ?: return false

@@ -146,4 +146,44 @@ class PlaylistPageParserTest {
 	fun `a page with no entries yields nothing rather than throwing`() {
 		assertEquals(0, PlaylistPageParser.entries("""{"contents":{}}""").size)
 	}
+
+	/**
+	 * §7.2 rule 8. A playlist can hold the same song twice — two uploads of one
+	 * track, or the same track added under a re-upload's id — and the page order
+	 * says nothing about which one is playing. Until v0.9.6 `match` returned
+	 * `entries.firstOrNull`, so it answered a question it could not answer, and
+	 * the coin flip would have gone on an immutable chain.
+	 */
+	@Test
+	fun `two indistinguishable entries in one playlist refuse rather than pick the first`() {
+		val doubled = """{"contents":{"twoColumnBrowseResultsRenderer":{"tabs":""" +
+			"""[{"tabRenderer":{"content":{"sectionListRenderer":{"contents":""" +
+			"""[{"itemSectionRenderer":{"contents":[""" +
+			entry("4ns8D959YtA", "Criminal", "Natti Natasha", "4:33") + "," +
+			entry("VqEbCxg2bNI", "Criminal", "Natti Natasha", "4:33") +
+			"""]}}]}}}}]}}}"""
+
+		val e = PlaylistPageParser.entries(doubled)
+		assertEquals(2, e.size)
+		assertEquals(2, PlaylistPageParser.matches(e, "Criminal", "Natti Natasha", 273).size)
+		assertNull(PlaylistPageParser.match(e, "Criminal", "Natti Natasha", 273))
+	}
+
+	/** The same title twice is only ambiguous while the durations agree too. */
+	@Test
+	fun `a same-titled entry of a different length does not make the real one ambiguous`() {
+		val doubled = """{"contents":{"twoColumnBrowseResultsRenderer":{"tabs":""" +
+			"""[{"tabRenderer":{"content":{"sectionListRenderer":{"contents":""" +
+			"""[{"itemSectionRenderer":{"contents":[""" +
+			entry("4ns8D959YtA", "Criminal", "Natti Natasha", "4:33") + "," +
+			entry("VqEbCxg2bNI", "Criminal", "Natti Natasha", "2:10") +
+			"""]}}]}}}}]}}}"""
+
+		assertEquals(
+			"4ns8D959YtA",
+			PlaylistPageParser.match(
+				PlaylistPageParser.entries(doubled), "Criminal", "Natti Natasha", 273,
+			)?.videoId,
+		)
+	}
 }

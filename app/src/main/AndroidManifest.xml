@@ -35,6 +35,15 @@
 		</activity>
 
 		<!--
+			v0.9.6: the watch-history sign-in. Not exported — it can only be
+			started from inside RustedWax, so nothing else can put a Google
+			sign-in page on screen wearing this app's name.
+		-->
+		<activity
+			android:name=".ui.YouTubeSignInActivity"
+			android:exported="false" />
+
+		<!--
 			Stub listener. It exists so the OS has a component to grant
 			Notification Access to; getActiveSessions(ComponentName) then
 			accepts that component from anywhere in the process.
@@ -59,7 +68,7 @@
 		<service
 			android:name=".detect.UrlWatcherService"
 			android:exported="false"
-			android:label="@string/app_name"
+			android:label="@string/browser_evidence_service_name"
 			android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
 			<intent-filter>
 				<action android:name="android.accessibilityservice.AccessibilityService" />
@@ -67,6 +76,24 @@
 			<meta-data
 				android:name="android.accessibilityservice"
 				android:resource="@xml/accessibility_service_config" />
+		</service>
+
+		<!--
+			v0.9.1: independent foreground native-Short observer. Its separate XML
+			config lets Android enforce that this component can receive events only
+			from com.google.android.youtube; the browser grant is not broadened.
+		-->
+		<service
+			android:name=".detect.NativeShortsAccessibilityService"
+			android:exported="false"
+			android:label="@string/native_shorts_service_name"
+			android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+			<intent-filter>
+				<action android:name="android.accessibilityservice.AccessibilityService" />
+			</intent-filter>
+			<meta-data
+				android:name="android.accessibilityservice"
+				android:resource="@xml/native_shorts_accessibility_service_config" />
 		</service>
 
 		<provider

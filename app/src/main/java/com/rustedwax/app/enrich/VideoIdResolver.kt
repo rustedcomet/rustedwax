@@ -42,9 +42,77 @@ import kotlin.math.abs
 class VideoIdResolver {
 
 	/** Playlist contents, fetched once per playlist and reused for every track in it. */
-	private val playlistCache = java.util.concurrent.ConcurrentHashMap<
-		String, List<SearchResultsParser.Candidate>,
-		>()
+	private val playlistCache = java.util.concurrent.ConcurrentHashMap<String, CachedPlaylist>()
+
+	/** Bounds re-reading a playlist whose entries did not contain the track. */
+	private val playlistRefresh = PlaylistRefreshThrottle()
+
+	private data class CachedPlaylist(
+		val entries: List<SearchResultsParser.Candidate>,
+		val fetchedAtMillis: Long,
+	)
+
+	/**
+	 * Playlist name → id, for native sessions that have a name but no URL.
+	 *
+	 * Cached including the misses: a name that resolves to nothing must not
+	 * re-search on every track of a playlist RustedWax cannot identify.
+	 */
+	private val nativePlaylistIdCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+	/**
+	 * The id of the playlist the native player named, or null.
+	 *
+	 * Native YouTube publishes no video id and no URL, so the playlist bar's
+	 * name is the only handle on the closed candidate set that makes native
+	 * identity exact. One search per playlist, then every track in it is served
+	 * from [resolveEvidenceFromPlaylist] for free — which is also cheaper than
+	 * the per-track search it replaces (measured field logs spent 56–75
+	 * candidates on a *single* track).
+	 */
+	suspend fun resolveNativePlaylistId(
+		playlistName: String,
+		ownerName: String? = null,
+		total: Int? = null,
+	): String? {
+		val key = playlistName.trim()
+		if (key.isEmpty()) return null
+		nativePlaylistIdCache[key]?.let { return it.takeIf { id -> id != NO_PLAYLIST } }
+
+		val html = fetchUrl(PLAYLIST_SEARCH_URL + URLEncoder.encode(key, "UTF-8")) ?: run {
+			// Not cached as a miss: a network failure is not evidence about the name.
+			EventLog.append("resolve", "native playlist search fetch failed for \"$key\"")
+			return null
+		}
+		val blob = WatchPageParser.extractJson(html, INITIAL_DATA) ?: run {
+			EventLog.append(
+				"resolve",
+				"EXTRACTION FAILED — $INITIAL_DATA not found in playlist search for \"$key\" " +
+					"(${html.length} bytes). YouTube markup may have changed.",
+			)
+			return null
+		}
+		val candidates = runCatching { PlaylistSearchParser.candidates(blob) }.getOrElse {
+			EventLog.append("resolve", "EXTRACTION FAILED — playlist search parse: ${it.message}")
+			return null
+		}
+		val hit = PlaylistSearchParser.match(candidates, key, ownerName, total)
+		if (hit == null) {
+			EventLog.append(
+				"resolve",
+				"native playlist \"$key\" did not resolve to exactly one public playlist " +
+					"among ${candidates.size} results — using search",
+			)
+			nativePlaylistIdCache[key] = NO_PLAYLIST
+			return null
+		}
+		EventLog.append(
+			"resolve",
+			"native playlist \"$key\" → ${hit.playlistId} (${hit.videoCount ?: "?"} videos)",
+		)
+		nativePlaylistIdCache[key] = hit.playlistId
+		return hit.playlistId
+	}
 
 	/**
 	 * The exact entry from the playlist being played, when there is one.
@@ -81,34 +149,45 @@ class VideoIdResolver {
 			return null
 		}
 
-		val entries = playlistCache[playlistId] ?: run {
-			val html = fetchUrl(PLAYLIST_URL + playlistId) ?: run {
-				EventLog.append("resolve", "playlist fetch failed for $playlistId")
-				return null
+		var cached = playlistCache[playlistId] ?: fetchPlaylist(playlistId) ?: return null
+		var matches = PlaylistPageParser.matches(cached.entries, title, channel, durationSec)
+
+		// The cached list can simply be out of date: a song added to the playlist
+		// after the first fetch would otherwise never be found again for the life
+		// of the process. Bounded by [PlaylistRefreshThrottle], because the
+		// ordinary miss is a track that is genuinely not in this playlist —
+		// autoplay past the last entry — and must not re-read the page per track.
+		if (matches.isEmpty() &&
+			playlistRefresh.claim(playlistId, cached.fetchedAtMillis, System.currentTimeMillis())
+		) {
+			EventLog.append(
+				"resolve",
+				"\"$title\" not among ${cached.entries.size} cached entries — " +
+					"re-reading playlist $playlistId in case it changed",
+			)
+			fetchPlaylist(playlistId)?.let { refreshed ->
+				cached = refreshed
+				matches = PlaylistPageParser.matches(refreshed.entries, title, channel, durationSec)
 			}
-			val blob = WatchPageParser.extractJson(html, INITIAL_DATA)
-			if (blob == null) {
-				EventLog.append(
-					"resolve",
-					"EXTRACTION FAILED — $INITIAL_DATA not found in playlist $playlistId " +
-						"(${html.length} bytes). YouTube markup may have changed.",
-				)
-				return null
-			}
-			val parsed = runCatching { PlaylistPageParser.entries(blob) }.getOrElse {
-				EventLog.append("resolve", "EXTRACTION FAILED — playlist parse: ${it.message}")
-				return null
-			}
-			EventLog.append("resolve", "playlist $playlistId → ${parsed.size} entries cached")
-			playlistCache[playlistId] = parsed
-			parsed
 		}
 
-		val hit = PlaylistPageParser.match(entries, title, channel, durationSec)
+		// Exactly one, never the first of several (§7.2 rule 8). A playlist that
+		// holds the same song twice cannot say which upload was played, and a
+		// coin flip between them would be an unfixable wrong link on-chain.
+		if (matches.size > 1) {
+			EventLog.append(
+				"resolve",
+				"ambiguous playlist identity — ${matches.size} entries of $playlistId match " +
+					"\"$title\" (${durationSec}s): ${matches.joinToString { it.videoId }}; " +
+					"refusing every id",
+			)
+			return null
+		}
+		val hit = matches.singleOrNull()
 		if (hit == null) {
 			EventLog.append(
 				"resolve",
-				"\"$title\" not found among ${entries.size} playlist entries — trying search",
+				"\"$title\" not found among ${cached.entries.size} playlist entries — trying search",
 			)
 			return null
 		}
@@ -121,7 +200,32 @@ class VideoIdResolver {
 			lengthSeconds = hit.lengthSeconds,
 			uniquelyResolved = true,
 			collaborativeChannel = hit.collaborativeChannel,
+			playlistVerified = true,
 		)
+	}
+
+	/** One page read, parsed and cached with the time it was read. */
+	private suspend fun fetchPlaylist(playlistId: String): CachedPlaylist? {
+		val html = fetchUrl(PLAYLIST_URL + playlistId) ?: run {
+			EventLog.append("resolve", "playlist fetch failed for $playlistId")
+			return null
+		}
+		val blob = WatchPageParser.extractJson(html, INITIAL_DATA)
+		if (blob == null) {
+			EventLog.append(
+				"resolve",
+				"EXTRACTION FAILED — $INITIAL_DATA not found in playlist $playlistId " +
+					"(${html.length} bytes). YouTube markup may have changed.",
+			)
+			return null
+		}
+		val parsed = runCatching { PlaylistPageParser.entries(blob) }.getOrElse {
+			EventLog.append("resolve", "EXTRACTION FAILED — playlist parse: ${it.message}")
+			return null
+		}
+		EventLog.append("resolve", "playlist $playlistId → ${parsed.size} entries cached")
+		return CachedPlaylist(parsed, System.currentTimeMillis())
+			.also { playlistCache[playlistId] = it }
 	}
 
 	/** Null whenever the video cannot be identified beyond doubt. */
@@ -138,15 +242,24 @@ class VideoIdResolver {
 		title: String,
 		channel: String?,
 		durationSec: Long?,
+		ownerHandle: String? = null,
+		allowStructuredNativeMusic: Boolean = false,
 	): VideoResolutionAttempt {
-		if (title.isBlank() || channel.isNullOrBlank() || durationSec == null) {
+		val normalizedHandle = ownerHandle?.let(OwnerHandle::normalize)
+		if (ownerHandle != null && normalizedHandle == null) {
+			return VideoResolutionAttempt(refusalReason = "the foreground owner handle was malformed")
+		}
+		if (title.isBlank() || durationSec == null ||
+			(normalizedHandle == null && channel.isNullOrBlank())
+		) {
 			return VideoResolutionAttempt(
-				refusalReason = "title, channel and duration were not all available for lookup",
+				refusalReason = "title, owner/channel and duration were not all available for lookup",
 			)
 		}
 
 		val seen = LinkedHashMap<String, SearchResultsParser.Candidate>()
-		for ((queryNumber, query) in searchQueries(title, channel).withIndex()) {
+		val queryOwner = ownerHandle ?: channel.orEmpty()
+		for ((queryNumber, query) in searchQueries(title, queryOwner).withIndex()) {
 			val html = fetch(query)
 			if (html == null) {
 				EventLog.append(
@@ -183,8 +296,19 @@ class VideoIdResolver {
 		}
 
 		val allCandidates = seen.values.toList()
+		if (normalizedHandle != null) {
+			return resolveByOwnerHandle(
+				candidates = allCandidates,
+				title = title,
+				ownerHandle = ownerHandle,
+				durationSec = durationSec,
+			)
+		}
+		val requiredChannel = channel ?: return VideoResolutionAttempt(
+			refusalReason = "the finalized channel was missing",
+		)
 		val plausible = allCandidates.filter {
-			SearchResultsParser.hasNoIdentityContradiction(it, title, channel, durationSec)
+			SearchResultsParser.hasNoIdentityContradiction(it, title, requiredChannel, durationSec)
 		}
 		val needsCompletion = plausible.any {
 			it.channel == null || it.lengthSeconds == null
@@ -194,7 +318,7 @@ class VideoIdResolver {
 		// with the same identity title. That would accept the ordinary upload
 		// without ever learning whether the Short is the item actually played.
 		if (needsCompletion) {
-			val completed = verifyFromWatchPages(plausible, title, channel, durationSec)
+			val completed = verifyFromWatchPages(plausible, title, requiredChannel, durationSec)
 			completed.resolution?.let { return completed }
 			if (completed.refusalReason?.startsWith("ambiguous identity") == true) {
 				return completed
@@ -204,7 +328,7 @@ class VideoIdResolver {
 			// a second indistinguishable upload. The immutable URL is accepted only
 			// if the complete recovery set still has exactly one match.
 			val matches = SearchResultsParser.identityMatches(
-				plausible, title, channel, durationSec,
+				plausible, title, requiredChannel, durationSec,
 			)
 			if (matches.size > 1) {
 				val reason = "ambiguous identity — ${matches.size} uploads match " +
@@ -231,10 +355,96 @@ class VideoIdResolver {
 				}
 		}
 
+		if (allowStructuredNativeMusic) {
+			val structured = resolveStructuredNativeMusic(
+				allCandidates, title, requiredChannel, durationSec,
+			)
+			structured.resolution?.let { resolution ->
+				EventLog.append(
+					"resolve",
+					"resolved \"$title\" → ${resolution.videoId} by " +
+						"structured native music title+artist+duration",
+				)
+				return structured
+			}
+			if (structured.refusalReason?.startsWith("ambiguous identity") == true) {
+				EventLog.append("resolve", structured.refusalReason)
+				return structured
+			}
+			EventLog.append(
+				"resolve",
+				"structured native music recovery refused \"$title\": " +
+					structured.refusalReason,
+			)
+			return structured
+		}
+
 		val reason = "no verified id for \"$title\" / \"$channel\" (${durationSec}s) " +
 			"among ${seen.size} unique search candidates"
 		EventLog.append("resolve", reason)
 		return VideoResolutionAttempt(refusalReason = reason)
+	}
+
+	private suspend fun resolveStructuredNativeMusic(
+		candidates: List<SearchResultsParser.Candidate>,
+		title: String,
+		artist: String,
+		durationSec: Long,
+	): VideoResolutionAttempt {
+		val plausible = structuredNativeCandidates(candidates, title, artist, durationSec)
+		if (plausible.size > MAX_WATCH_PAGE_CANDIDATES) {
+			return VideoResolutionAttempt(
+				refusalReason = "structured native music candidate set exceeded the bounded " +
+					"$MAX_WATCH_PAGE_CANDIDATES-page verification budget; refusing every id",
+			)
+		}
+		if (plausible.isEmpty()) {
+			return VideoResolutionAttempt(
+				refusalReason = "no search candidate had the exact structured native work " +
+					"and complete artist credit",
+			)
+		}
+		val fetched = coroutineScope {
+			plausible.map { candidate ->
+				async(Dispatchers.IO) {
+					fetchCanonicalResolution(candidate.videoId, "structured native music search")
+				}
+			}.awaitAll().filterNotNull()
+		}
+		return NativeStructuredMusicMatcher.select(fetched, title, artist, durationSec)
+	}
+
+	internal fun structuredNativeCandidates(
+		candidates: List<SearchResultsParser.Candidate>,
+		title: String,
+		artist: String,
+		durationSec: Long,
+	): List<SearchResultsParser.Candidate> = candidates.filter { candidate ->
+			candidate.lengthSeconds?.let {
+				abs(it - durationSec) <= DURATION_TOLERANCE_SEC
+			} != false && NativeStructuredMusicMatcher.couldDescribeTrack(
+				candidate.title, candidate.channel, title, artist,
+			)
+		}.distinctBy(SearchResultsParser.Candidate::videoId)
+
+	/**
+	 * Re-fetch one id whose uniqueness was already established while the native
+	 * track was playing, then repeat the structured predicate against the frozen
+	 * final snapshot. The id is never accepted from memory alone.
+	 */
+	suspend fun revalidatePreResolvedNativeMusic(
+		videoId: String,
+		title: String,
+		artist: String,
+		durationSec: Long,
+	): VideoResolutionAttempt {
+		val fetched = fetchCanonicalResolution(videoId, "pre-resolved native music revalidation")
+			?: return VideoResolutionAttempt(
+				refusalReason = "pre-resolved native music page could not be re-fetched",
+			)
+		return NativeStructuredMusicMatcher.select(
+			listOf(fetched), title, artist, durationSec,
+		)
 	}
 
 	/** Re-fetch candidates from the run-local cache; the cache itself is never authority. */
@@ -243,14 +453,20 @@ class VideoIdResolver {
 		title: String,
 		channel: String?,
 		durationSec: Long?,
+		ownerHandle: String? = null,
 	): VideoResolutionAttempt {
-		if (videoIds.isEmpty() || channel.isNullOrBlank() || durationSec == null) {
+		if (videoIds.isEmpty() || durationSec == null ||
+			(ownerHandle == null && channel.isNullOrBlank())
+		) {
 			return VideoResolutionAttempt(refusalReason = "no run-local verified candidate")
 		}
 		val fetched = coroutineScope {
 			videoIds.distinct().take(MAX_CACHED_CANDIDATES).map { videoId ->
 				async(Dispatchers.IO) { fetchCanonicalResolution(videoId, "run-local verified candidate") }
 			}.awaitAll().filterNotNull()
+		}
+		if (ownerHandle != null) {
+			return selectOwnerHandleMatch(fetched, title, ownerHandle, durationSec)
 		}
 		val matches = fetched.filter { candidate ->
 			val candidateTitle = candidate.title ?: return@filter false
@@ -278,6 +494,35 @@ class VideoIdResolver {
 				VideoResolutionAttempt(refusalReason = reason)
 			}
 		}
+	}
+
+	private suspend fun resolveByOwnerHandle(
+		candidates: List<SearchResultsParser.Candidate>,
+		title: String,
+		ownerHandle: String,
+		durationSec: Long,
+	): VideoResolutionAttempt {
+		val wantedTitle = SearchResultsParser.titleKey(title)
+		val plausible = candidates.filter { candidate ->
+			SearchResultsParser.titleKey(candidate.title) == wantedTitle &&
+				candidate.lengthSeconds?.let {
+					abs(it - durationSec) <= DURATION_TOLERANCE_SEC
+				} != false
+		}.distinctBy { it.videoId }
+		if (plausible.size > MAX_WATCH_PAGE_CANDIDATES) {
+			return VideoResolutionAttempt(
+				refusalReason = "owner-handle candidate set exceeded the bounded " +
+					"$MAX_WATCH_PAGE_CANDIDATES-page verification budget; refusing every id",
+			)
+		}
+		val fetched = coroutineScope {
+			plausible.map { candidate ->
+				async(Dispatchers.IO) {
+					fetchCanonicalResolution(candidate.videoId, "foreground owner-handle search")
+				}
+			}.awaitAll().filterNotNull()
+		}
+		return selectOwnerHandleMatch(fetched, title, ownerHandle, durationSec)
 	}
 
 	private suspend fun verifyFromWatchPages(
@@ -355,8 +600,41 @@ class VideoIdResolver {
 			source = source,
 			title = facts.title ?: return null,
 			channel = facts.author ?: return null,
+			ownerHandle = facts.ownerHandle,
 			lengthSeconds = facts.lengthSeconds ?: return null,
 		)
+	}
+
+	internal fun selectOwnerHandleMatch(
+		candidates: List<VideoResolution>,
+		title: String,
+		ownerHandle: String,
+		durationSec: Long,
+	): VideoResolutionAttempt {
+		val normalizedHandle = OwnerHandle.normalize(ownerHandle) ?: return VideoResolutionAttempt(
+			refusalReason = "the foreground owner handle was malformed",
+		)
+		val wantedTitle = SearchResultsParser.titleKey(title)
+		val matches = candidates.filter { candidate ->
+			val candidateTitle = candidate.title ?: return@filter false
+			val candidateDuration = candidate.lengthSeconds ?: return@filter false
+			SearchResultsParser.titleKey(candidateTitle) == wantedTitle &&
+				abs(candidateDuration - durationSec) <= DURATION_TOLERANCE_SEC &&
+				OwnerHandle.normalize(candidate.ownerHandle) == normalizedHandle
+		}.distinctBy { it.videoId }
+		return when (matches.size) {
+			1 -> VideoResolutionAttempt(
+				resolution = matches.single().copy(uniquelyResolved = true),
+			)
+			0 -> VideoResolutionAttempt(
+				refusalReason = "no candidate matched exact title+duration+owner handle $ownerHandle",
+			)
+			else -> VideoResolutionAttempt(
+				refusalReason = "ambiguous identity — ${matches.size} uploads match exact " +
+					"title+duration+owner handle (${matches.joinToString { it.videoId }}); " +
+					"refusing every id",
+			)
+		}
 	}
 
 	internal fun searchQueries(title: String, channel: String): List<String> {
@@ -417,8 +695,15 @@ class VideoIdResolver {
 		return null
 	}
 
-	private companion object {
+	internal companion object {
 		const val SEARCH_URL = "https://www.youtube.com/results?search_query="
+
+		/** `sp=EgIQAw%3D%3D` is YouTube's "playlists only" search filter. */
+		const val PLAYLIST_SEARCH_URL =
+			"https://www.youtube.com/results?sp=EgIQAw%3D%3D&search_query="
+
+		/** Sentinel for "this name resolved to nothing", so misses cache too. */
+		const val NO_PLAYLIST = " none"
 		const val PLAYLIST_URL = "https://www.youtube.com/playlist?list="
 		const val WATCH_URL = "https://www.youtube.com/watch?v="
 

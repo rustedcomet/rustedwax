@@ -1,16 +1,45 @@
 package com.rustedwax.app.storage
 
 import android.content.Context
+import android.content.SharedPreferences
 import com.rustedwax.app.scrobble.ScrobbleRules
+
+internal interface SettingsStore {
+	fun getBoolean(key: String, default: Boolean): Boolean
+	fun putBoolean(key: String, value: Boolean)
+	fun getInt(key: String, default: Int): Int
+	fun putInt(key: String, value: Int)
+}
+
+private class SharedPreferencesSettingsStore(
+	private val prefs: SharedPreferences,
+) : SettingsStore {
+	override fun getBoolean(key: String, default: Boolean): Boolean =
+		prefs.getBoolean(key, default)
+
+	override fun putBoolean(key: String, value: Boolean) {
+		prefs.edit().putBoolean(key, value).apply()
+	}
+
+	override fun getInt(key: String, default: Int): Int = prefs.getInt(key, default)
+
+	override fun putInt(key: String, value: Int) {
+		prefs.edit().putInt(key, value).apply()
+	}
+}
 
 /**
  * User preferences. Key names match the extension's `options.ts` where the
  * setting is the same one, so a future import/export can map across directly.
  */
-class Settings(context: Context) {
-
-	private val prefs =
-		context.getSharedPreferences("rustedwax_settings", Context.MODE_PRIVATE)
+class Settings internal constructor(
+	private val store: SettingsStore,
+) {
+	constructor(context: Context) : this(
+		SharedPreferencesSettingsStore(
+			context.getSharedPreferences("rustedwax_settings", Context.MODE_PRIVATE),
+		),
+	)
 
 	/**
 	 * Whether the app watches media sessions at all.
@@ -24,8 +53,8 @@ class Settings(context: Context) {
 	 * is expected to be watching.
 	 */
 	var monitoringEnabled: Boolean
-		get() = prefs.getBoolean(KEY_MONITORING, true)
-		set(value) = prefs.edit().putBoolean(KEY_MONITORING, value).apply()
+		get() = store.getBoolean(KEY_MONITORING, true)
+		set(value) = store.putBoolean(KEY_MONITORING, value)
 
 	/**
 	 * Whether to look a video up on youtube.com to improve its metadata.
@@ -36,13 +65,23 @@ class Settings(context: Context) {
 	 * browser, so it stays a visible switch.
 	 */
 	var enrichment: Boolean
-		get() = prefs.getBoolean(KEY_ENRICH, true)
-		set(value) = prefs.edit().putBoolean(KEY_ENRICH, value).apply()
+		get() = store.getBoolean(KEY_ENRICH, true)
+		set(value) = store.putBoolean(KEY_ENRICH, value)
 
 	/** Master switch for automatic scrobbling. Off until the user opts in. */
 	var autoScrobble: Boolean
-		get() = prefs.getBoolean(KEY_AUTO, false)
-		set(value) = prefs.edit().putBoolean(KEY_AUTO, value).apply()
+		get() = store.getBoolean(KEY_AUTO, false)
+		set(value) = store.putBoolean(KEY_AUTO, value)
+
+	/** Native YouTube MediaSessions are opt-in and package-scoped. */
+	var nativeYouTube: Boolean
+		get() = store.getBoolean(KEY_NATIVE_YOUTUBE, false)
+		set(value) = store.putBoolean(KEY_NATIVE_YOUTUBE, value)
+
+	/** Native YouTube Music MediaSessions have an independent opt-in. */
+	var nativeYouTubeMusic: Boolean
+		get() = store.getBoolean(KEY_NATIVE_YOUTUBE_MUSIC, false)
+		set(value) = store.putBoolean(KEY_NATIVE_YOUTUBE_MUSIC, value)
 
 	/**
 	 * Whether verified YouTube shorts may scrobble below the 30-second minimum,
@@ -60,15 +99,27 @@ class Settings(context: Context) {
 	 * keep discarding a third of the shorts feed by default.
 	 */
 	var shortClips: Boolean
-		get() = prefs.getBoolean(KEY_SHORT_CLIPS, true)
-		set(value) = prefs.edit().putBoolean(KEY_SHORT_CLIPS, value).apply()
+		get() = store.getBoolean(KEY_SHORT_CLIPS, true)
+		set(value) = store.putBoolean(KEY_SHORT_CLIPS, value)
+
+	/**
+	 * Whether the signed-in account's watch history may be read to identify a
+	 * native track.
+	 *
+	 * Off until the user signs in, and independently revocable afterwards
+	 * without wiping the session — the switch answers "use it", the session
+	 * answers "have it". Requires [enrichment] like every other lookup, and
+	 * applies only to native YouTube sessions: browsers have the address bar,
+	 * and their behaviour is not allowed to change.
+	 */
+	var watchHistory: Boolean
+		get() = store.getBoolean(KEY_WATCH_HISTORY, false)
+		set(value) = store.putBoolean(KEY_WATCH_HISTORY, value)
 
 	/** `scrobblePercent` upstream — stored as a percentage, used as a fraction. */
 	var scrobbleThreshold: Double
-		get() = prefs.getInt(KEY_PERCENT, 60).coerceIn(20, 95) / 100.0
-		set(value) = prefs.edit()
-			.putInt(KEY_PERCENT, (value * 100).toInt().coerceIn(20, 95))
-			.apply()
+		get() = store.getInt(KEY_PERCENT, 60).coerceIn(20, 95) / 100.0
+		set(value) = store.putInt(KEY_PERCENT, (value * 100).toInt().coerceIn(20, 95))
 
 	val thresholdPercent: Int get() = (scrobbleThreshold * 100).toInt()
 
@@ -76,7 +127,10 @@ class Settings(context: Context) {
 		const val KEY_MONITORING = "monitoringEnabled"
 		const val KEY_ENRICH = "enrichment"
 		const val KEY_AUTO = "autoScrobble"
+		const val KEY_NATIVE_YOUTUBE = "nativeYouTube"
+		const val KEY_NATIVE_YOUTUBE_MUSIC = "nativeYouTubeMusic"
 		const val KEY_SHORT_CLIPS = "shortClipScrobbling"
+		const val KEY_WATCH_HISTORY = "watchHistoryLookup"
 
 		/** Same key the extension uses. */
 		const val KEY_PERCENT = "scrobblePercent"
