@@ -2283,9 +2283,9 @@ The implemented v0.9.1/version-code 37 patch is bounded to:
    canonical-link, threshold, loop, mute, dedup, queue and signing boundaries.
 
 The feature remains experimental/default-off unless the complete automated and
-physical acceptance matrix in `PHASE_NATIVE_SHORTS.md` passes. The standalone
-fresh-task handoff is
-[NATIVE_SHORTS_NEXT_SESSION_PROMPT.md](NATIVE_SHORTS_NEXT_SESSION_PROMPT.md).
+physical acceptance matrix in `PHASE_NATIVE_SHORTS.md` passes. That document is
+the record; the work it describes was implemented and its device result is in
+§25 below.
 
 ## 25. v0.9.1 native foreground Shorts implementation and device result
 
