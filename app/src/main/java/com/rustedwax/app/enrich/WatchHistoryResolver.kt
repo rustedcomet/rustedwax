@@ -34,6 +34,7 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 
 	private data class CachedFeed(
 		val entries: List<WatchHistoryParser.Entry>,
+		val shorts: List<WatchHistoryParser.ShortEntry>,
 		val fetchedAtMillis: Long,
 	)
 
@@ -60,7 +61,9 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 		title: String,
 		channel: String?,
 		durationSec: Long?,
-	): VideoResolutionAttempt = attempt(title, channel, durationSec, carriedVideoId = null)
+		ownerHandle: String? = null,
+	): VideoResolutionAttempt =
+		attempt(title, channel, durationSec, carriedVideoId = null, ownerHandle = ownerHandle)
 
 	/**
 	 * Re-derive a history-routed carry authority at finalization. The id is
@@ -78,6 +81,7 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 		channel: String?,
 		durationSec: Long?,
 		carriedVideoId: String?,
+		ownerHandle: String? = null,
 	): VideoResolutionAttempt {
 		if (!vault.hasSession) {
 			return VideoResolutionAttempt(
@@ -150,6 +154,15 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 				// eventually stand the route down over a timing artefact.
 				if (!feed.fromCache && WatchHistoryMatcher.isAbsence(verdict)) health.recordMiss(now)
 				EventLog.append("history", "refused \"$title\": ${verdict.reason}")
+				// Measured 2026-08-04: regular videos resolve from history at
+				// position 0 within ~3 s, while every Short refused — including
+				// one that had finished three seconds earlier. Something about a
+				// Shorts row cannot satisfy the gate, and guessing which field
+				// would mean guessing at the rule that keeps wrong links off an
+				// immutable chain. So the row is described structurally instead.
+				if (ownerHandle != null && WatchHistoryMatcher.isAbsence(verdict)) {
+					EventLog.append("history", rowReport(feed.entries, title, ownerHandle))
+				}
 				VideoResolutionAttempt(refusalReason = verdict.reason)
 			}
 		}
@@ -195,10 +208,11 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 		vault.rememberAccountLabel(label)
 		return when (val parsed = WatchHistoryParser.parse(blob)) {
 			is WatchHistoryParser.Result.Feed -> {
-				cached = CachedFeed(parsed.entries, System.currentTimeMillis())
+				cached = CachedFeed(parsed.entries, parsed.shorts, System.currentTimeMillis())
 				Probe.Working(
-					entries = parsed.entries.size,
-					newestTitle = parsed.entries.firstOrNull()?.title,
+					entries = parsed.entries.size + parsed.shorts.size,
+					newestTitle = parsed.entries.firstOrNull()?.title
+						?: parsed.shorts.firstOrNull()?.title,
 					accountLabel = label,
 				)
 			}
@@ -228,6 +242,7 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 	private sealed interface Feed {
 		data class Entries(
 			val entries: List<WatchHistoryParser.Entry>,
+			val shorts: List<WatchHistoryParser.ShortEntry>,
 			/** Absence in a cached feed proves nothing; absence in a fresh one does. */
 			val fromCache: Boolean,
 		) : Feed
@@ -235,10 +250,81 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 		data class Unavailable(val reason: String) : Feed
 	}
 
+	/**
+	 * The ids of Shorts this account watched most recently, newest first.
+	 *
+	 * Candidates only, and weaker ones than an ordinary entry: a Shorts row
+	 * carries no channel and no duration, so nothing here is resolved. The
+	 * caller re-fetches each id's own watch page and requires exact title,
+	 * duration and `@handle` agreement — the identical gate the foreground-Short
+	 * search route already applies, handed the right ids instead of having to
+	 * find them.
+	 *
+	 * This exists because search cannot find these videos at all: measured
+	 * 2026-08-04, six of eleven Shorts failed at "no candidate matched exact
+	 * title+duration+owner handle", their titles being mostly hashtags and
+	 * emoji. The account's own history knows exactly which video it was.
+	 */
+	suspend fun recentShortIds(
+		title: String,
+		limit: Int = MAX_SHORT_CANDIDATES,
+	): List<String> {
+		if (!vault.hasSession) return emptyList()
+		val now = System.currentTimeMillis()
+		if (!health.mayRun(now)) return emptyList()
+		val feed = recentEntries(now, allowCache = true)
+		val shorts = (feed as? Feed.Entries)?.shorts ?: return emptyList()
+		if (shorts.isEmpty()) return emptyList()
+
+		// Select by the title the row already carries, across the *whole* Shorts
+		// list, rather than taking the newest few and hoping. Measured
+		// 2026-08-05: the feed held 19 Shorts and two repeatedly-watched ones
+		// never resolved, because position in that list is not recency the way
+		// it is for ordinary entries — a Short watched minutes ago can sit well
+		// past the fifth slot.
+		//
+		// This selects; it decides nothing. Every id still has its own watch
+		// page re-fetched and must agree on title, duration and @handle.
+		val wanted = SearchResultsParser.titleKey(title)
+		val byTitle = shorts
+			.filter { SearchResultsParser.titleKey(it.title) == wanted }
+			.map(WatchHistoryParser.ShortEntry::videoId)
+			.distinct()
+		if (byTitle.isNotEmpty()) {
+			EventLog.append(
+				"history",
+				"${byTitle.size} of ${shorts.size} Shorts in the feed match the title " +
+					"— offering them for owner-handle verification",
+			)
+			return byTitle.take(limit)
+		}
+
+		// No feed title matched. That is itself worth knowing: it means the
+		// on-screen overlay title and the feed's own title disagree, which is a
+		// different problem from the Short being absent. Fall back to the most
+		// recent few so a formatting difference does not cost the listen.
+		// Measured 2026-08-05: `QnRnooyKeZk` was in the feed at position 0 and
+		// still did not match, while its canonical title is byte-identical to
+		// the one read off the screen. So the divergence is inside the
+		// normalization, not in the feed — and the only way to see it is to
+		// print both keys. Titles are already logged on every resolve, so this
+		// adds no new class of content to the log.
+		EventLog.append(
+			"history",
+			"no Short in the feed matched the title \"$title\"; offering the " +
+				"${minOf(shorts.size, limit)} most recent of ${shorts.size} instead. " +
+				"Session key=[$wanted]. Feed keys: " +
+				shorts.take(SHORT_ID_DIAGNOSTIC_LIMIT).joinToString(" ") {
+					"${it.videoId}=[${SearchResultsParser.titleKey(it.title)}]"
+				},
+		)
+		return shorts.take(limit).map(WatchHistoryParser.ShortEntry::videoId)
+	}
+
 	private suspend fun recentEntries(nowMillis: Long, allowCache: Boolean): Feed {
 		if (allowCache) {
 			cached?.takeIf { nowMillis - it.fetchedAtMillis < CACHE_MS }?.let {
-				return Feed.Entries(it.entries, fromCache = true)
+				return Feed.Entries(it.entries, it.shorts, fromCache = true)
 			}
 		}
 
@@ -271,9 +357,13 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 
 		return when (val parsed = WatchHistoryParser.parse(blob)) {
 			is WatchHistoryParser.Result.Feed -> {
-				cached = CachedFeed(parsed.entries, System.currentTimeMillis())
-				EventLog.append("history", "read ${parsed.entries.size} watch-history entries")
-				Feed.Entries(parsed.entries, fromCache = false)
+				cached = CachedFeed(parsed.entries, parsed.shorts, System.currentTimeMillis())
+				EventLog.append(
+					"history",
+					"read ${parsed.entries.size} watch-history entries and " +
+						"${parsed.shorts.size} Shorts",
+				)
+				Feed.Entries(parsed.entries, parsed.shorts, fromCache = false)
 			}
 
 			is WatchHistoryParser.Result.Unreadable -> {
@@ -310,6 +400,46 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 			"bytes=${html.length}. Non-zero renderer counts here mean the feed has " +
 			"entries this parser did not read; all-zero means the account really " +
 			"has nothing recent."
+	}
+
+	/**
+	 * Which *fields* of the recent rows are present and which agree — never what
+	 * they contain.
+	 *
+	 * Written for one open question: why a Short that has just finished playing
+	 * is not matched by a feed that matches ordinary videos in under three
+	 * seconds. Each of the four gates is reported separately, so the answer is
+	 * read off the log rather than inferred. No title, channel or handle text is
+	 * logged; video ids are, because they are public and already appear on a
+	 * successful resolve.
+	 */
+	private fun rowReport(
+		entries: List<WatchHistoryParser.Entry>,
+		title: String,
+		ownerHandle: String,
+	): String {
+		val wantTitle = SearchResultsParser.titleKey(title)
+		val wantChannel = SearchResultsParser.channelKey(ownerHandle)
+		val wantHandle = OwnerHandle.normalize(ownerHandle)
+		val rows = entries.take(WatchHistoryMatcher.RECENT_WINDOW).mapIndexed { index, entry ->
+			val flags = listOf(
+				"dur=" + (entry.lengthSeconds?.toString() ?: "absent"),
+				"handle=" + (entry.ownerHandle?.let {
+					if (OwnerHandle.normalize(it) == wantHandle) "same" else "different"
+				} ?: "absent"),
+				"title=" + if (SearchResultsParser.titleKey(entry.title) == wantTitle) {
+					"same"
+				} else {
+					"different"
+				},
+				"channel=" + (entry.channel?.let {
+					if (SearchResultsParser.channelKey(it) == wantChannel) "same" else "different"
+				} ?: "absent"),
+			)
+			"$index:${entry.videoId}[${flags.joinToString(" ")}]"
+		}
+		return "Short did not match; recent rows — ${rows.joinToString(" ")}. " +
+			"The session tuple carried duration and handle $ownerHandle."
 	}
 
 	private data class Page(val body: String, val signedOutRedirect: Boolean)
@@ -403,5 +533,16 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 		 * the feed a few seconds after it starts is still seen.
 		 */
 		const val CACHE_MS = 15_000L
+
+		/**
+		 * Bounded because each candidate costs one watch-page fetch. Title
+		 * selection normally leaves one or two, so this is the ceiling for the
+		 * fallback rather than the usual cost; `resolveVerifiedCandidates`
+		 * applies its own eight-page budget on top.
+		 */
+		const val MAX_SHORT_CANDIDATES = 5
+
+		/** Diagnostic only; one bounded log line. */
+		const val SHORT_ID_DIAGNOSTIC_LIMIT = 6
 	}
 }

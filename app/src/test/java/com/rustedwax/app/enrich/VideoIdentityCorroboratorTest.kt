@@ -529,4 +529,78 @@ class VideoIdentityCorroboratorTest {
 			) != com.rustedwax.app.detect.VideoTitleMatcher.Evidence.CONTRADICTION,
 		)
 	}
+
+	/**
+	 * Measured 2026-08-05. The resolver found `QnRnooyKeZk` correctly from the
+	 * account's own watch history, and this guard then discarded it because
+	 * YouTube's uploaded title is Spanish while the phone — and the foreground
+	 * observer reading its screen — shows the auto-translated English one. One
+	 * video, two names, both from its own page.
+	 */
+	@Test
+	fun `an auto-translated displayed title is not a contradiction`() {
+		val onScreen = "The Day Karol G Experienced an Unexpected Moment During a Concert"
+		val session = ended(onScreen, "@enefectoescine17", 60_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube Shorts (foreground)",
+			sourceProof = SourceProof.NATIVE_FOREGROUND_SHORT,
+			ownerHandle = "@enefectoescine17",
+		)
+		val resolution = VideoResolution(
+			videoId = "QnRnooyKeZk",
+			source = "watch history",
+			title = "El D\u00eda que Karol G Vivi\u00f3 un Momento Inesperado en Pleno Concierto",
+			channel = "EN EFECTO ES CINE",
+			lengthSeconds = 60,
+			uniquelyResolved = true,
+			ownerHandle = "@enefectoescine17",
+			localizedTitle = onScreen,
+		)
+		val facts = VideoFacts(
+			videoId = "QnRnooyKeZk",
+			title = "El D\u00eda que Karol G Vivi\u00f3 un Momento Inesperado en Pleno Concierto",
+			author = "EN EFECTO ES CINE",
+			ownerHandle = "@enefectoescine17",
+			lengthSeconds = 60,
+		)
+		assertNull(VideoIdentityCorroborator.contradiction(session, resolution, facts))
+	}
+
+	/** A displayed title that is not the frozen one stays a contradiction. */
+	@Test
+	fun `an unrelated displayed title does not rescue a wrong candidate`() {
+		val session = ended(
+			"The Day Karol G Experienced an Unexpected Moment During a Concert",
+			"@enefectoescine17",
+			60_000,
+		).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube Shorts (foreground)",
+			sourceProof = SourceProof.NATIVE_FOREGROUND_SHORT,
+			ownerHandle = "@enefectoescine17",
+		)
+		val resolution = VideoResolution(
+			videoId = "QnRnooyKeZk",
+			source = "watch history",
+			title = "Something entirely different",
+			channel = "EN EFECTO ES CINE",
+			lengthSeconds = 60,
+			uniquelyResolved = true,
+			ownerHandle = "@enefectoescine17",
+			localizedTitle = "Also entirely different",
+		)
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				session,
+				resolution,
+				VideoFacts(
+					videoId = "QnRnooyKeZk",
+					title = "Something entirely different",
+					author = "EN EFECTO ES CINE",
+					ownerHandle = "@enefectoescine17",
+					lengthSeconds = 60,
+				),
+			),
+		)
+	}
 }

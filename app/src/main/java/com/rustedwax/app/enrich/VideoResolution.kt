@@ -31,6 +31,12 @@ data class VideoResolution(
 	 * other recent entry did.
 	 */
 	val historyVerified: Boolean = false,
+	/**
+	 * The title this video's own page *displays*, when YouTube auto-translated
+	 * it and that differs from [title]. Same page, same fetch — one video that
+	 * YouTube publishes under two names, not a second candidate.
+	 */
+	val localizedTitle: String? = null,
 )
 
 /** A resolver success or the exact fail-closed reason shown to the user. */
@@ -62,12 +68,29 @@ object VideoIdentityCorroborator {
 				return "resolved id ${resolution.videoId} replaced frozen id ${frozen.videoId}"
 			}
 		}
+		// One video, two titles. YouTube auto-translates for the viewer, so a
+		// native observer reads the *displayed* title off the screen while
+		// `videoDetails` keeps the uploaded one — measured 2026-08-05, the
+		// resolver found `QnRnooyKeZk` correctly and this guard then threw it
+		// away because "El Día que Karol G Vivió…" is not "The Day Karol G
+		// Experienced…". They are the same video, and both names come from its
+		// own page.
+		//
+		// Substituted only when the displayed title *is* the frozen one, and
+		// only for native sessions. Duration, channel/handle and the unique-id
+		// rule all still bind independently, so this admits nothing new.
+		val displayedTitle = resolution.localizedTitle?.takeIf { displayed ->
+			session.isNative && session.title?.let {
+				SearchResultsParser.titleKey(displayed) == SearchResultsParser.titleKey(it)
+			} == true
+		}
+
 		session.ownerHandle?.let { wantedHandle ->
 			if (!resolution.uniquelyResolved) {
 				return "foreground Short id was not the only corroborated candidate"
 			}
 			val frozenTitle = session.title ?: return "foreground Short title was missing"
-			val resolvedTitle = resolution.title
+			val resolvedTitle = displayedTitle ?: resolution.title
 				?: return "resolved candidate omitted the canonical title"
 			if (SearchResultsParser.titleKey(frozenTitle) !=
 				SearchResultsParser.titleKey(resolvedTitle)
@@ -138,7 +161,7 @@ object VideoIdentityCorroborator {
 		contradictionFor(
 			session = session,
 			videoId = resolution.videoId,
-			title = resolution.title,
+			title = displayedTitle ?: resolution.title,
 			channel = resolution.channel,
 			lengthSeconds = resolution.lengthSeconds,
 			label = "${resolution.source} candidate",
@@ -167,7 +190,7 @@ object VideoIdentityCorroborator {
 		contradictionFor(
 			session = session,
 			videoId = resolution.videoId,
-			title = facts?.title,
+			title = displayedTitle ?: facts?.title,
 			channel = facts?.author,
 			lengthSeconds = facts?.lengthSeconds,
 			label = "enriched watch facts",

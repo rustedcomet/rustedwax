@@ -677,7 +677,48 @@ object ScrobbleEngine {
 		if (!settings.watchHistory || !session.isNative ||
 			session.packageName != YouTubeProbe.YOUTUBE_PACKAGE || !history.hasSession
 		) return null
-		return history.resolveEvidence(title, session.artist, durationSec)
+		// A foreground Short is a different question. Its history row is a
+		// `shortsLockupViewModel`, which carries an id and a title and
+		// deliberately no channel and no duration, so it can never satisfy the
+		// ordinary three-field gate and is kept out of it entirely. What the
+		// feed does supply is the exact id — which is precisely what the search
+		// route cannot find for these: measured 2026-08-04, six of eleven Shorts
+		// failed at "no candidate matched exact title+duration+owner handle",
+		// their titles being mostly hashtags and emoji.
+		//
+		// So history names the candidates and the *existing* owner-handle
+		// verification decides: each id's own watch page is re-fetched and must
+		// agree on title, duration and @handle, uniquely. No rule is relaxed;
+		// the proven gate is simply handed the right ids.
+		val handle = session.ownerHandle
+		if (handle != null) {
+			val durationForShort = durationSec ?: return null
+			val candidates = history.recentShortIds(title)
+			if (candidates.isEmpty()) return null
+			val attempt = idResolver.resolveVerifiedCandidates(
+				videoIds = candidates,
+				title = title,
+				channel = session.artist,
+				durationSec = durationForShort,
+				ownerHandle = handle,
+			)
+			EventLog.append(
+				"history",
+				attempt.resolution?.let {
+					"resolved Short \"$title\" → ${it.videoId} from watch history, " +
+						"corroborated on its own watch page"
+				} ?: "watch-history Short candidates did not corroborate \"$title\": " +
+					attempt.refusalReason,
+			)
+			return attempt
+		}
+
+		return history.resolveEvidence(
+			title = title,
+			channel = session.artist,
+			durationSec = durationSec,
+			ownerHandle = null,
+		)
 	}
 
 	private suspend fun resolveVideoId(session: SessionSnapshot): VideoResolutionAttempt {

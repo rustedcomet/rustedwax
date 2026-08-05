@@ -1,6 +1,7 @@
 package com.rustedwax.app.enrich
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -141,6 +142,83 @@ class WatchHistoryParserTest {
 			]}}]}}}}]}}}"""
 		val entries = (WatchHistoryParser.parse(wrapped) as WatchHistoryParser.Result.Feed).entries
 		assertEquals("YbZwlNmnUvw", entries.single().videoId)
+	}
+
+	/**
+	 * A foreground Short knows its owner by `@handle`; the feed writes a display
+	 * name. The handle is taken from the byline's own canonical link, so a
+	 * display name that merely looks like a handle can never be read as one.
+	 */
+	@Test
+	fun `reads the owner handle from the byline's canonical link`() {
+		val withHandle = """{"responseContext":{"mainAppWebResponseContext":{"loggedOut":false}},
+			"contents":{"twoColumnBrowseResultsRenderer":{"tabs":[{"tabRenderer":{"content":
+			{"sectionListRenderer":{"contents":[{"itemSectionRenderer":{"contents":[
+			{"videoRenderer":{"videoId":"M3Ax-bwXRgs","title":{"runs":[{"text":"Montagem"}]},
+			"longBylineText":{"runs":[{"text":"Subhan Edits","navigationEndpoint":
+			{"browseEndpoint":{"canonicalBaseUrl":"/@subhan-edits"}}}]}}}
+			]}}]}}}}]}}}"""
+		val entry = (WatchHistoryParser.parse(withHandle) as WatchHistoryParser.Result.Feed)
+			.entries.single()
+		assertEquals("@subhan-edits", entry.ownerHandle)
+		assertEquals("Subhan Edits", entry.channel)
+	}
+
+	@Test
+	fun `a byline linking to a channel id yields no handle rather than a guess`() {
+		val noHandle = """{"responseContext":{"mainAppWebResponseContext":{"loggedOut":false}},
+			"contents":{"twoColumnBrowseResultsRenderer":{"tabs":[{"tabRenderer":{"content":
+			{"sectionListRenderer":{"contents":[{"itemSectionRenderer":{"contents":[
+			{"videoRenderer":{"videoId":"M3Ax-bwXRgs","title":{"runs":[{"text":"Montagem"}]},
+			"longBylineText":{"runs":[{"text":"@notreallyahandle","navigationEndpoint":
+			{"browseEndpoint":{"canonicalBaseUrl":"/channel/UC123"}}}]}}}
+			]}}]}}}}]}}}"""
+		val entry = (WatchHistoryParser.parse(noHandle) as WatchHistoryParser.Result.Feed)
+			.entries.single()
+		assertNull(entry.ownerHandle)
+	}
+
+	/**
+	 * The cause of the reported "Shorts are being skipped". A Short is not a
+	 * `videoRenderer` at all — measured 2026-08-05, a public search page served
+	 * 26 `shortsLockupViewModel` cards and zero `videoRenderer` — so a
+	 * Shorts-only viewing session left the ordinary list unchanged and every
+	 * Short refused.
+	 */
+	@Test
+	fun `reads Shorts, and keeps them out of the ordinary entry list`() {
+		val withShorts = """{"responseContext":{"mainAppWebResponseContext":{"loggedOut":false}},
+			"contents":{"twoColumnBrowseResultsRenderer":{"tabs":[{"tabRenderer":{"content":
+			{"sectionListRenderer":{"contents":[{"itemSectionRenderer":{"contents":[
+			{"shortsLockupViewModel":{"entityId":"shorts-shelf-item-M3Ax-bwXRgs",
+			"onTap":{"innertubeCommand":{"reelWatchEndpoint":{"videoId":"M3Ax-bwXRgs"}}},
+			"overlayMetadata":{"primaryText":{"content":"Montagem Guerreiro #edit"},
+			"secondaryText":{"content":"1.2M views"}}}},
+			${row("4ns8D959YtA", "Criminal", "Natti Natasha - Topic", "4:33")}
+			]}}]}}}}]}}}"""
+		val feed = WatchHistoryParser.parse(withShorts) as WatchHistoryParser.Result.Feed
+
+		// The ordinary entry is untouched and still first in its own list, so a
+		// Short can never push a matchable video out of the recent window.
+		assertEquals(listOf("4ns8D959YtA"), feed.entries.map { it.videoId })
+		assertEquals(listOf("M3Ax-bwXRgs"), feed.shorts.map { it.videoId })
+		assertEquals("Montagem Guerreiro #edit", feed.shorts.single().title)
+	}
+
+	/** A feed holding only Shorts is not an empty feed. */
+	@Test
+	fun `a Shorts-only feed is not reported as empty`() {
+		val onlyShorts = """{"responseContext":{"mainAppWebResponseContext":{"loggedOut":false}},
+			"contents":{"twoColumnBrowseResultsRenderer":{"tabs":[{"tabRenderer":{"content":
+			{"sectionListRenderer":{"contents":[{"itemSectionRenderer":{"contents":[
+			{"shortsLockupViewModel":{
+			"onTap":{"innertubeCommand":{"reelWatchEndpoint":{"videoId":"M3Ax-bwXRgs"}}},
+			"overlayMetadata":{"primaryText":{"content":"Montagem"}}}}
+			]}}]}}}}]}}}"""
+		val feed = WatchHistoryParser.parse(onlyShorts)
+		assertTrue(feed is WatchHistoryParser.Result.Feed)
+		assertTrue((feed as WatchHistoryParser.Result.Feed).entries.isEmpty())
+		assertEquals(1, feed.shorts.size)
 	}
 
 	@Test

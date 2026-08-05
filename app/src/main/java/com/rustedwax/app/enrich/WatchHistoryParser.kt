@@ -40,11 +40,50 @@ object WatchHistoryParser {
 		val title: String,
 		val channel: String?,
 		val lengthSeconds: Long?,
+		/**
+		 * The uploader's exact `@handle`, from the byline's own canonical link.
+		 *
+		 * A foreground Short identifies its owner by handle rather than by
+		 * display name (`ForegroundShortTracker` sets the session artist to the
+		 * handle), so without this the two sides of a Shorts comparison are
+		 * describing the same channel in two different vocabularies.
+		 */
+		val ownerHandle: String? = null,
 	)
+
+	/**
+	 * A Short the account watched: an id and a title, and nothing else.
+	 *
+	 * This is a *candidate*, and less of one than an ordinary entry — with no
+	 * channel and no duration it cannot corroborate itself at all. It is
+	 * therefore never accepted here; the id is handed to the existing
+	 * owner-handle verification, which re-fetches that video's own watch page
+	 * and requires exact title, duration and `@handle` agreement before
+	 * anything is resolved.
+	 */
+	data class ShortEntry(val videoId: String, val title: String)
 
 	sealed interface Result {
 		/** Entries as the page listed them, newest first. May be empty. */
-		data class Feed(val entries: List<Entry>) : Result
+		data class Feed(
+			val entries: List<Entry>,
+			/**
+			 * Shorts, kept apart from [entries] rather than mixed into them.
+			 *
+			 * A Shorts row is a `shortsLockupViewModel`: it carries an id and a
+			 * title and **deliberately no channel and no duration**, so it can
+			 * never satisfy the three-field gate that admits an ordinary entry.
+			 * Mixing the two lists would therefore add rows that can only fail,
+			 * and — worse — those rows would occupy slots in the recent window
+			 * and push the ordinary entry that *can* match out of reach.
+			 *
+			 * Measured 2026-08-05: a Shorts-only viewing session left the
+			 * ordinary list byte-identical across three refusals minutes apart,
+			 * because every Short had been rendered in a shape this parser was
+			 * not reading at all.
+			 */
+			val shorts: List<ShortEntry> = emptyList(),
+		) : Result
 
 		/** The feed cannot answer, and this is exactly why. */
 		data class Unreadable(val reason: Reason, val detail: String) : Result
@@ -94,6 +133,7 @@ object WatchHistoryParser {
 		)
 
 		val entries = mutableListOf<Entry>()
+		val shorts = mutableListOf<ShortEntry>()
 		val seen = mutableSetOf<String>()
 		for (i in 0 until sections.length()) {
 			val items = (sections.opt(i) as? JSONObject)
@@ -102,10 +142,15 @@ object WatchHistoryParser {
 				?: continue
 			for (j in 0 until items.length()) {
 				val item = items.opt(j) as? JSONObject ?: continue
-				// Both shapes, searched inside this one item so array order — the
-				// only ordering this parser is allowed to trust — is preserved.
-				// A row may also arrive wrapped in a `richItemRenderer`, hence a
-				// search rather than a direct child lookup.
+
+				// A Shorts *shelf* holds many Shorts in one item, so it is
+				// collected wholesale rather than as one row.
+				collectShorts(item, shorts, seen)
+
+				// Both ordinary shapes, searched inside this one item so array
+				// order — the only ordering this parser is allowed to trust — is
+				// preserved. A row may also arrive wrapped in a
+				// `richItemRenderer`, hence a search rather than a direct child.
 				val entry = find(item, "videoRenderer")?.let(::entryOf)
 					?: find(item, "lockupViewModel")?.let(::lockupEntryOf)
 					?: continue
@@ -113,14 +158,49 @@ object WatchHistoryParser {
 			}
 		}
 
-		if (entries.isEmpty()) {
+		if (entries.isEmpty() && shorts.isEmpty()) {
 			pausedNotice(root)?.let { return Result.Unreadable(Reason.HISTORY_PAUSED, it) }
 			return Result.Unreadable(
 				Reason.EMPTY,
 				"the history feed carried no entries",
 			)
 		}
-		return Result.Feed(entries)
+		return Result.Feed(entries, shorts)
+	}
+
+	/**
+	 * Every `shortsLockupViewModel` inside one feed item, in array order.
+	 *
+	 * The id lives under `reelWatchEndpoint` and the title is plain `content` —
+	 * the same shape [SearchResultsParser] reads from a search page, because it
+	 * is the same card. Confirmed 2026-08-05: a public search page served 26
+	 * `shortsLockupViewModel` cards and zero `videoRenderer`, so this is the
+	 * only shape a Short arrives in.
+	 */
+	private fun collectShorts(
+		node: Any?,
+		out: MutableList<ShortEntry>,
+		seen: MutableSet<String>,
+	) {
+		when (node) {
+			is JSONObject -> {
+				node.optJSONObject("shortsLockupViewModel")?.let { lockup ->
+					val id = find(lockup, "reelWatchEndpoint")
+						?.optString("videoId")
+						?.takeIf { VIDEO_ID.matches(it) }
+					val title = lockup.optJSONObject("overlayMetadata")
+						?.optJSONObject("primaryText")
+						?.optString("content")
+						?.takeIf { it.isNotBlank() }
+					if (id != null && title != null && seen.add(id)) {
+						out += ShortEntry(id, title)
+					}
+				}
+				for (k in node.keys()) collectShorts(node.opt(k), out, seen)
+			}
+
+			is JSONArray -> for (i in 0 until node.length()) collectShorts(node.opt(i), out, seen)
+		}
 	}
 
 	private fun entryOf(renderer: JSONObject): Entry? {
@@ -138,7 +218,35 @@ object WatchHistoryParser {
 			title = title,
 			channel = channel?.takeIf { it.isNotBlank() },
 			lengthSeconds = length,
+			ownerHandle = ownerHandleOf(renderer),
 		)
+	}
+
+	/**
+	 * The `@handle` YouTube links the byline to, when it links to one.
+	 *
+	 * Taken from `canonicalBaseUrl`, which is the channel's own canonical path,
+	 * so a display name that happens to look like a handle can never be mistaken
+	 * for one. A channel that has no handle, or a row that omits the endpoint,
+	 * yields null rather than a guess.
+	 */
+	private fun ownerHandleOf(renderer: JSONObject): String? {
+		for (key in listOf("longBylineText", "ownerText", "shortBylineText")) {
+			val runs = renderer.optJSONObject(key)?.optJSONArray("runs") ?: continue
+			for (i in 0 until runs.length()) {
+				val path = (runs.opt(i) as? JSONObject)
+					?.optJSONObject("navigationEndpoint")
+					?.optJSONObject("browseEndpoint")
+					?.optString("canonicalBaseUrl")
+					?.takeIf { it.isNotBlank() }
+					?: continue
+				val segment = path.trim().trimStart('/')
+				if (segment.startsWith('@')) {
+					OwnerHandle.canonical(segment)?.let { return it }
+				}
+			}
+		}
+		return null
 	}
 
 	/**

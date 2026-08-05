@@ -602,6 +602,10 @@ class VideoIdResolver {
 			channel = facts.author ?: return null,
 			ownerHandle = facts.ownerHandle,
 			lengthSeconds = facts.lengthSeconds ?: return null,
+			// The same page's displayed title, which is what a native observer
+			// read off the screen whenever YouTube auto-translated it.
+			localizedTitle = WatchPageParser.extractJson(html, INITIAL_DATA)
+				?.let(WatchPageParser::localizedTitle),
 		)
 	}
 
@@ -618,7 +622,18 @@ class VideoIdResolver {
 		val matches = candidates.filter { candidate ->
 			val candidateTitle = candidate.title ?: return@filter false
 			val candidateDuration = candidate.lengthSeconds ?: return@filter false
-			SearchResultsParser.titleKey(candidateTitle) == wantedTitle &&
+			// Either of the video's own two titles. YouTube auto-translates for
+			// the viewer, so a foreground Short's title is read off the screen in
+			// the *displayed* language while `videoDetails` keeps the original —
+			// measured 2026-08-05, this refused every Spanish-origin Short on an
+			// English-language device. Both titles come from the one page being
+			// verified, so this admits no new candidate; the duration, the exact
+			// owner handle and the single-match rule are all unchanged.
+			val titleAgrees = SearchResultsParser.titleKey(candidateTitle) == wantedTitle ||
+				candidate.localizedTitle?.let {
+					SearchResultsParser.titleKey(it) == wantedTitle
+				} == true
+			titleAgrees &&
 				abs(candidateDuration - durationSec) <= DURATION_TOLERANCE_SEC &&
 				OwnerHandle.normalize(candidate.ownerHandle) == normalizedHandle
 		}.distinctBy { it.videoId }

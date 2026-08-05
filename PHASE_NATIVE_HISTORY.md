@@ -360,6 +360,59 @@ Both fixed:
 
 ---
 
+## 8a. Shorts: four bugs, each hidden behind the last
+
+Reported 2026-08-05: "regular videos seem to be working fine but shorts not". The investigation is
+worth recording in order, because three of the four causes were only visible once the one in front
+of it was fixed, and one lead was wrong.
+
+**The wrong lead, recorded so it is not re-run.** The log showed 472 captures reading
+`expected exactly one visible Shorts player root; found 0`. That looked decisive and was not: the
+lines arrive at a steady **2 per minute for hours**, including while YouTube was closed — it is the
+30-second idle poll, not a failure. Bucketing the log by minute separated them instantly: during the
+two windows of actual Shorts watching the same observer logged ~12 successes per minute and almost
+no failures. The foreground-Short observer was never broken. **Rate, not volume, was the signal.**
+
+The real chain:
+
+1. **Shorts were never in the list being matched.** A Short is not a `videoRenderer`; it is a
+   `shortsLockupViewModel` (confirmed on a public search page: 26 of them and zero `videoRenderer`).
+   `WatchHistoryParser` read only `videoRenderer` and `lockupViewModel`, so a Shorts-only viewing
+   session left the parsed entry list byte-identical across three refusals minutes apart. Fixed by
+   parsing Shorts into a **separate** list — mixing them in would add rows that can only fail the
+   three-field gate *and* let five Shorts push the one matchable video out of the recent window.
+2. **Candidates were chosen by position, not by title.** The first cut offered "the five most
+   recent" of 19. A Shorts row carries a title, so selection now uses it across the whole list.
+3. **YouTube auto-translates titles.** The decisive measurement, on `QnRnooyKeZk`:
+
+   | source | title |
+   | --- | --- |
+   | `videoDetails` / microformat | `El Día que Karol G Vivió un Momento Inesperado en Pleno Concierto` |
+   | `videoPrimaryInfoRenderer` — what the phone displays | `The Day Karol G Experienced an Unexpected Moment During a Concert` |
+
+   The foreground observer reads the title **off the screen**, so it gets the translation, while
+   every identity check compared against the original. Every Spanish-origin Short refused, silently
+   and permanently. This nearly escaped notice: fetching the channel page with
+   `Accept-Language: en-US` returns the *translated* title, which made the two look identical. Only
+   the raw player response exposed it.
+4. **The same assumption again in the corroborator.** Fixing the resolver made the ids resolve and
+   the final guard then discarded them for the identical reason, one gate deeper.
+
+The fix accepts either of the video's **own two** titles, substituted only when the displayed title
+*is* the frozen one, and only for native sessions. Both come from the one page already being
+fetched, so no new candidate is admitted; duration, exact `@handle` and the single-match rule all
+still bind, and tests assert that a wrong handle or duration still refuses even when a title agrees.
+
+**Measured after the fix**, fifteen minutes of Shorts: 9 finalized, 7 resolved from history,
+**6 scrobbled**. The three that did not were all correct — one below threshold, one an ad, one a
+repeat play refused by the dedup ledger.
+
+**A note on the shape of this bug.** Four separate places compare titles and three held the same
+wrong assumption, which is why this took four rounds. That is a design smell, and §9.5 records the
+consolidation it argues for.
+
+---
+
 ## 9. Follow-ups
 
 ### 9.1 The remaining field test — §11.2 item 5
@@ -398,7 +451,21 @@ Has the §2.3 defect — reads only `enabled_accessibility_services`, so a revok
 reports as granted. One line, deliberately untouched here because §11.1 forbids changing
 browser-path files without the owner's sign-off.
 
-### 9.4 Smaller open questions
+### 9.4 The translated-title gap outside Shorts
+
+§8a's fix covers the native **Short** route, which compares by `@handle`. A regular native video
+whose title YouTube auto-translates will still refuse identity, because that path compares by
+channel and never sees the displayed title. It is the same one-line substitution, but on a path
+shared with the browser routes, so it wants its own measurement rather than being folded in.
+
+### 9.5 Consolidate the title comparison
+
+Four places ask "do these two titles agree", and three of them independently held the assumption
+that a video has one title. That is what turned one root cause into four rounds of fixing. They
+should become a single helper that knows about both the uploaded and the displayed title, so the
+next such change is one edit and one test rather than four of each.
+
+### 9.6 Smaller open questions
 
 - Which renderer the authenticated feed actually uses. The signed-out shape is measured; the
   signed-in shape is now read two ways (`videoRenderer` and `lockupViewModel`, wrapped or not) and

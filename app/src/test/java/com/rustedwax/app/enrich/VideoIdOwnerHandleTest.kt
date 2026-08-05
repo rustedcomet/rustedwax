@@ -79,6 +79,66 @@ class VideoIdOwnerHandleTest {
 		)
 	}
 
+	/**
+	 * Measured 2026-08-05 on `QnRnooyKeZk`. YouTube auto-translates titles for
+	 * the viewer, so the foreground observer reads the *displayed* title off the
+	 * screen while `videoDetails` keeps the uploaded one. Comparing only against
+	 * the original refused every auto-translated Short — silently, and forever.
+	 */
+	@Test
+	fun `the page's own displayed title also satisfies the title gate`() {
+		val resolver = VideoIdResolver()
+		val translated = VideoResolution(
+			videoId = "QnRnooyKeZk",
+			source = "measured watch page",
+			title = "El D\u00eda que Karol G Vivi\u00f3 un Momento Inesperado en Pleno Concierto #artista",
+			channel = "EN EFECTO ES CINE",
+			lengthSeconds = 60,
+			ownerHandle = "@enefectoescine17",
+			localizedTitle =
+				"The Day Karol G Experienced an Unexpected Moment During a Concert #artist",
+		)
+		val onScreen = "The Day Karol G Experienced an Unexpected Moment During a Concert #artist"
+		assertNotNull(
+			resolver.selectOwnerHandleMatch(
+				listOf(translated), onScreen, "@enefectoescine17", 59,
+			).resolution,
+		)
+		// Every other gate still binds: a wrong handle or a wrong duration still
+		// refuses, whichever of the two titles agreed.
+		assertNull(
+			resolver.selectOwnerHandleMatch(
+				listOf(translated), onScreen, "@someoneelse", 59,
+			).resolution,
+		)
+		assertNull(
+			resolver.selectOwnerHandleMatch(
+				listOf(translated), onScreen, "@enefectoescine17", 30,
+			).resolution,
+		)
+	}
+
+	/** An unrelated video's displayed title must not become a free pass. */
+	@Test
+	fun `a displayed title that matches nothing still refuses`() {
+		val resolver = VideoIdResolver()
+		val other = VideoResolution(
+			videoId = "aaaaaaaaaaa",
+			source = "measured watch page",
+			title = "Something else entirely",
+			channel = "EN EFECTO ES CINE",
+			lengthSeconds = 60,
+			ownerHandle = "@enefectoescine17",
+			localizedTitle = "Also something else",
+		)
+		assertNull(
+			resolver.selectOwnerHandleMatch(
+				listOf(other), "The Day Karol G Experienced an Unexpected Moment",
+				"@enefectoescine17", 59,
+			).resolution,
+		)
+	}
+
 	private fun resolution(id: String, title: String, handle: String?, duration: Long) =
 		VideoResolution(
 			videoId = id,
