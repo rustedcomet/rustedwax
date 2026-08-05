@@ -534,6 +534,13 @@ listen the measurement already settled — it may only change wording.
   its own", and a single `[health]` line is written per transition — once, not once per poll, since
   a wall of identical lines is what buried the previous two diagnoses.
 
+  **The device caught a defect in that fix before it shipped.** Immediately after `adb install -r`,
+  `accessibility_enabled` read `0` while both services were still named in the list, settling to `1`
+  seconds later with both reconnecting — §2.3's post-install window, exactly as recorded. The first
+  cut would therefore have shouted "this crashed" on *every install*: the mirror image of the bug it
+  exists to catch, and the fastest way to teach the owner to ignore the one warning that matters. A
+  `SETTLING` state and a 15-second dwell fix it, with the measured 3-second case as a test.
+
   This is the item that mattered most: it is the likeliest reason roughly half of 2026-08-05's watch
   history never reached the app, and nothing anywhere reported it.
 

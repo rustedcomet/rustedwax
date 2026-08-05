@@ -19,6 +19,19 @@ package com.rustedwax.app.detect
  *
  * The evidence is therefore "was it ever live", which only a live service can
  * establish and which no crash can retract.
+ *
+ * ## Why a settle window
+ *
+ * `PHASE_NATIVE_HISTORY.md` §2.3 records that `accessibility_enabled` reads `0`
+ * for a few seconds after an APK install and then returns to `1` on its own,
+ * with the services reconnecting. Measured again on 2026-08-05 immediately after
+ * `adb install -r`: the flag read `0` while both services were still named in
+ * the list, and had settled to `1` seconds later.
+ *
+ * Without a dwell time this class would therefore shout "this crashed" on every
+ * install — the mirror image of the bug it exists to catch, and the fastest way
+ * to teach the owner to ignore the one warning that matters. [SETTLE_MS] is the
+ * grace before a missing grant is called a drop.
  */
 enum class GrantHealth {
 	/** Granted and receiving events. */
@@ -28,9 +41,16 @@ enum class GrantHealth {
 	NEVER_GRANTED,
 
 	/**
-	 * Granted at some point and not enabled now. Either the user revoked it or
-	 * the service crashed and Android disabled it; the app cannot tell which,
-	 * so it must not claim the user did it.
+	 * Was live, is not live now, and has not been gone long enough to be
+	 * distinguished from the post-install window. Say nothing yet.
+	 */
+	SETTLING,
+
+	/**
+	 * Granted at some point and not enabled now, for longer than any install
+	 * settles. Either the user revoked it or the service crashed and Android
+	 * disabled it; the app cannot tell which, so it must not claim the user
+	 * did it.
 	 */
 	DROPPED,
 }
@@ -38,14 +58,29 @@ enum class GrantHealth {
 object AccessibilityGrantHealth {
 
 	/**
+	 * A grant must be missing for this long before it is called a drop. Well
+	 * clear of the few seconds §2.3 measured, and still fast enough that a real
+	 * crash is reported while the owner is still looking at the screen.
+	 */
+	const val SETTLE_MS = 15_000L
+
+	/**
 	 * @param live whether the grant is enabled *and* the accessibility master
 	 * switch is on, per the service's own `isEnabled`.
 	 * @param everGranted whether [live] has ever been observed true and
 	 * remembered across restarts.
+	 * @param notLiveForMillis how long [live] has been continuously false;
+	 * ignored when [live] is true.
 	 */
-	fun classify(live: Boolean, everGranted: Boolean): GrantHealth = when {
+	fun classify(
+		live: Boolean,
+		everGranted: Boolean,
+		notLiveForMillis: Long = Long.MAX_VALUE,
+		settleMillis: Long = SETTLE_MS,
+	): GrantHealth = when {
 		live -> GrantHealth.LIVE
-		everGranted -> GrantHealth.DROPPED
-		else -> GrantHealth.NEVER_GRANTED
+		!everGranted -> GrantHealth.NEVER_GRANTED
+		notLiveForMillis < settleMillis -> GrantHealth.SETTLING
+		else -> GrantHealth.DROPPED
 	}
 }

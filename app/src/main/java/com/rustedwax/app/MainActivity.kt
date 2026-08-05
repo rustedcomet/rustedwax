@@ -86,6 +86,11 @@ class MainActivity : ComponentActivity() {
 				// that silently cost most of a day's browser evidence.
 				var urlWatcherDropped by remember { mutableStateOf(false) }
 				var nativeShortsDropped by remember { mutableStateOf(false) }
+				// When each grant last stopped being live. §2.3: the master flag
+				// reads 0 for a few seconds after an install and then returns on
+				// its own, so a drop is only a drop once it has outlasted that.
+				var urlWatcherNotLiveSince by remember { mutableStateOf(0L) }
+				var nativeShortsNotLiveSince by remember { mutableStateOf(0L) }
 				var enrichment by remember { mutableStateOf(settings.enrichment) }
 				var shortClips by remember { mutableStateOf(settings.shortClips) }
 				// Read once per composition rather than held in a flow: mutes change
@@ -123,20 +128,29 @@ class MainActivity : ComponentActivity() {
 						urlWatcher = UrlWatcherService.isEnabled(this@MainActivity)
 						nativeShortsGranted =
 							NativeShortsAccessibilityService.isEnabled(this@MainActivity)
-						urlWatcherDropped = noteGrant(
+						val nowMillis = System.currentTimeMillis()
+						val browserGrant = noteGrant(
 							live = urlWatcher,
 							everGranted = settings.browserEvidenceEverGranted,
 							remember = { settings.browserEvidenceEverGranted = it },
 							alreadyReported = urlWatcherDropped,
+							notLiveSince = urlWatcherNotLiveSince,
+							nowMillis = nowMillis,
 							label = "Browser evidence access",
 						)
-						nativeShortsDropped = noteGrant(
+						urlWatcherDropped = browserGrant.dropped
+						urlWatcherNotLiveSince = browserGrant.notLiveSince
+						val shortsGrant = noteGrant(
 							live = nativeShortsGranted,
 							everGranted = settings.nativeShortsEverGranted,
 							remember = { settings.nativeShortsEverGranted = it },
 							alreadyReported = nativeShortsDropped,
+							notLiveSince = nativeShortsNotLiveSince,
+							nowMillis = nowMillis,
 							label = "Foreground Shorts evidence",
 						)
+						nativeShortsDropped = shortsGrant.dropped
+						nativeShortsNotLiveSince = shortsGrant.notLiveSince
 						youTubeAccount = ScrobbleEngine.youTubeSession()
 						watchHistory = ScrobbleEngine.watchHistoryEnabled()
 						watchHistoryRefusal = ScrobbleEngine.watchHistoryRefusal()
@@ -549,29 +563,34 @@ class MainActivity : ComponentActivity() {
  *
  * @return whether the grant was once live and is not live now.
  */
+private data class GrantReport(val dropped: Boolean, val notLiveSince: Long)
+
 private fun noteGrant(
 	live: Boolean,
 	everGranted: Boolean,
 	remember: (Boolean) -> Unit,
 	alreadyReported: Boolean,
+	notLiveSince: Long,
+	nowMillis: Long,
 	label: String,
-): Boolean = when (AccessibilityGrantHealth.classify(live, everGranted)) {
-	GrantHealth.LIVE -> {
+): GrantReport {
+	if (live) {
 		if (!everGranted) remember(true)
-		false
+		return GrantReport(dropped = false, notLiveSince = 0L)
 	}
-
-	GrantHealth.NEVER_GRANTED -> false
-
-	GrantHealth.DROPPED -> {
-		if (!alreadyReported) {
-			EventLog.append(
-				"health",
-				"$label was granted and is no longer enabled. Android disables an " +
-					"accessibility service when it crashes, so this can happen without " +
-					"anyone changing a setting. Nothing is being read through it.",
-			)
-		}
-		true
+	val since = if (notLiveSince == 0L) nowMillis else notLiveSince
+	val health = AccessibilityGrantHealth.classify(
+		live = false,
+		everGranted = everGranted,
+		notLiveForMillis = nowMillis - since,
+	)
+	if (health == GrantHealth.DROPPED && !alreadyReported) {
+		EventLog.append(
+			"health",
+			"$label was granted and is no longer enabled. Android disables an " +
+				"accessibility service when it crashes, so this can happen without " +
+				"anyone changing a setting. Nothing is being read through it.",
+		)
 	}
+	return GrantReport(dropped = health == GrantHealth.DROPPED, notLiveSince = since)
 }
