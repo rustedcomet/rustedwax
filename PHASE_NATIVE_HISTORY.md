@@ -413,6 +413,101 @@ consolidation it argues for.
 
 ---
 
+## 8b. Shorts stopped again: an auto-dub badge, and a message that hid the evidence
+
+Reported 2026-08-05, hours after §8a landed: "it stopped scrobbling", with nothing installed in
+between. The handoff prompt listed four suspects. **All four were wrong**, and the log said so in the
+first two greps — worth recording, because three of them cost nothing to eliminate:
+
+| suspect | what the log showed |
+| --- | --- |
+| `WatchHistoryHealth` stood down | zero `watch history is not being used` lines in 16,529 |
+| session expired → `loggedOut` | no `SIGNED_OUT`, no `HISTORY_PAUSED`; feeds read all day |
+| dedup on replays | refusals were `below 60% threshold`, never `already scrobbled` |
+| accessibility revoked | `accessibility_enabled=1`, service bound, app alive, bucket 10 |
+
+The route never reached identity at all. Watch history was **healthy throughout** —
+`read 121 watch-history entries and 79 Shorts`, resolving at `entry 0 of 121`. Every Short finalized
+`measured 0s`, so `skipped: played 0%, below 60% threshold` fired long before a video id mattered.
+
+**Rate, not volume — again, and it mattered again.** Isolated `measured 0s` lines exist all over the
+*working* window (02:17–02:18) and are just scrolling past. The signal was the disappearance of the
+measurement heartbeat, `foreground Short seekbar advanced to Ns of Ns`:
+
+| hour | proofs acquired | `seekbar advanced` | seekbar refusals |
+| --- | --- | --- | --- |
+| 02h (14 scrobbled) | 7 | 230 | 38 |
+| 09h | 1 | 53 | 3 |
+| 13h | **15** | **2** | **73** |
+
+More Shorts engaged, and the ratio inverted. The heartbeat last fired at 09:38:54.
+
+**The cause, measured not guessed.** Dumping the live view hierarchy while a Short played, against
+the app's log for the same second, showed a *healthy* tree — full `reel_*` hierarchy, and a
+`SeekBar` under `reel_time_bar` reading `0 minutes 8 seconds of 1 minute 7 seconds`, which parses.
+The refusal had moved one gate later, to `title == null`. The footer carried one node no filter
+covered:
+
+```
+class="android.view.View"  resource-id=""  content-desc="Auto-dubbed"
+```
+
+YouTube's auto-dubbing badge. No resource id, no button class, no control vocabulary, so it survived
+every rule in `isTitleLike` and stood beside the real title. Two survivors made `singleOrNull` null
+and the Short refused, silently and permanently. **No app install is needed for this to appear**,
+which is exactly why "nothing was installed" was true and misleading at once. Same channel as §8a
+(`@enefectoescine17`), same class of cause — a YouTube localization feature — one gate deeper.
+
+**The message that hid it.** `timeBars.size != 1` and `times.size != 1` both returned the identical
+string `expected exactly one valid visible Shorts seekbar`. A run of 73 of them could not say which
+condition fired, and the two have unrelated fixes. They now carry distinct reasons with counts. This
+is §9.5's smell in a second location: **one message per condition, or the log cannot be read.**
+
+### Verified on the device, 15:33–15:55
+
+Installed in place (the desktop's `debug.keystore` was copied over, so the Hive key, YouTube session,
+dedup ledger and both grants survived — a signature mismatch would have forced an uninstall and the
+two `EncryptedSharedPreferences` vaults are tied to an Android Keystore master key that does not).
+
+The measurement heartbeat returned outright: `seekbar advanced` went **0 / 2 / 0 per hour at 11h–14h
+to 258 at 15h**, and Short finalizes went to 18 non-zero against 8 zero. Ten Shorts reached the
+chain, including the case the badge had been silently refusing:
+
+```
+scrobbled (block): @enefectoescine17 — Karol G se Llevó la Mayor Sorpresa… — tx ef73c4ff…
+```
+
+The remaining refusals were all correct: two ads caught by the literal signal, the rest genuinely
+under threshold.
+
+### The seekbar cause, answered by the split message
+
+The split earned itself back on the first run. Since the install: **82 ×
+`readable Shorts seekbar time; found 0`, and zero of `visible Shorts seekbar container`.** The
+container is present; it holds no readable time. That is **picture-in-picture**, confirmed by the
+owner from the other side — in PiP the Shorts chrome collapses to the video plus expand/close, and
+the seekbar is simply not on screen.
+
+So a Short watched in PiP acquires proof, then freezes: `MediaSession hidden while complete
+foreground Shorts proof is active` suppresses the only other progress source, the seekbar it was
+suppressed in favour of stops being readable, and the Short finalizes at `measured 0s`. Measured
+directly — the same three Shorts refused in PiP and then scrobbled on replay in the ordinary player.
+
+This is very probably what the 13h run was too, though that log predates the split and cannot be
+re-read to prove it.
+
+**Not fixed here, deliberately.** The repair is a fallback from foreground proof to MediaSession
+when the seekbar becomes unreadable mid-Short, and that is a change to *measurement*, which is what
+gates every on-chain write. It wants its own measurement and its own decision, not a follow-on edit
+to a title fix.
+- **Both accessibility services appeared under `dumpsys accessibility`'s `crashed services`**, and
+  `UrlWatcherService` had been dropped from `enabled_accessibility_services` without the owner
+  touching it — Android removes a crashed service from the enabled set. Browser scrobbling was dead
+  and nothing surfaced it. §9.3's `isEnabled` defect means the app would still have reported it
+  granted. Worth a visible health line, and it raises the priority of §9.3.
+
+---
+
 ## 9. Follow-ups
 
 ### 9.1 The remaining field test — §11.2 item 5

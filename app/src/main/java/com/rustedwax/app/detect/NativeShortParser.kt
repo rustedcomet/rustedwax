@@ -71,11 +71,16 @@ object NativeShortParser {
 		// Samsung's measured build places reel_time_bar beside, rather than
 		// beneath, reel_watch_fragment_root. The exact root/player still proves
 		// the surface; require one time-bar container in that same YouTube window
-		// and one unambiguous phrase inside it.
+		// and one unambiguous phrase inside it. The two refusals below used to
+		// share one message, which cost a field investigation real time on
+		// 2026-08-05: a run of them said nothing about whether the container was
+		// missing or its label unreadable, and the two have unrelated fixes.
 		val timeBars = scan.nodes.map(DepthNode::node)
 			.filter { it.visible && it.hasId(TIME_BAR_ID) }
 		if (timeBars.size != 1) {
-			return Result.Invalid("expected exactly one valid visible Shorts seekbar")
+			return Result.Invalid(
+				"expected exactly one visible Shorts seekbar container; found ${timeBars.size}",
+			)
 		}
 		val times = descendants(timeBars.single())
 			.filter(NativeShortNode::visible)
@@ -83,7 +88,9 @@ object NativeShortParser {
 			.mapNotNull(::parseTime)
 			.distinct()
 		if (times.size != 1) {
-			return Result.Invalid("expected exactly one valid visible Shorts seekbar")
+			return Result.Invalid(
+				"expected exactly one readable Shorts seekbar time; found ${times.size}",
+			)
 		}
 		val (current, total) = times.single()
 
@@ -212,6 +219,14 @@ object NativeShortParser {
 		if (CONTROL_ID_TOKENS.any(id::contains)) return false
 		val key = literal.lowercase()
 		if (CONTROL_PHRASES.any { it.containsMatchIn(key) }) return false
+		// YouTube's auto-dubbing rollout renders the badge as a bare semantic View
+		// with no resource id, no control vocabulary and no button class, so every
+		// other filter above misses it and it stands as a second title candidate.
+		// Measured 2026-08-05 on @enefectoescine17 ("Auto-dubbed"): two survivors
+		// made `singleOrNull` null, so the Short refused identity silently and
+		// finalized at `measured 0s`. Excluded by exact label only — a real prose
+		// title that genuinely conflicts still fails closed, as before.
+		if (key in BADGE_LABELS) return false
 		return key !in EXACT_CONTROLS
 	}
 
@@ -254,6 +269,22 @@ object NativeShortParser {
 		"play video", "pause video", "next video", "previous video", "mute video", "unmute video",
 		"me gusta", "no me gusta", "comentarios", "compartir",
 		"gostei", "não gostei", "comentários", "compartilhar",
+	)
+	/**
+	 * Auto-dub badge labels, which are annotations on the video rather than
+	 * controls of it. English is the measured spelling; the es/pt entries mirror
+	 * the locales [TIME_PATTERNS] and [EXACT_CONTROLS] already carry. An entry
+	 * here can only ever remove a title candidate, never admit one, so a wrong
+	 * spelling costs nothing beyond the refusal that already happens today.
+	 */
+	private val BADGE_LABELS = setOf(
+		"auto-dubbed",
+		"auto dubbed",
+		"auto-dubbed audio",
+		"dubbed automatically",
+		"doblado automáticamente",
+		"doblaje automático",
+		"dublado automaticamente",
 	)
 	private val CONTROL_PHRASES = listOf(
 		Regex("""^subscribe to @"""),

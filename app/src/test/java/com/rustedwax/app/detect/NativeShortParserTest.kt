@@ -142,6 +142,79 @@ class NativeShortParserTest {
 		assertTrue(outside is NativeShortParser.Result.Organic)
 	}
 
+	@Test
+	fun `measured auto-dub badge does not compete with the title`() {
+		// Captured from the live A12 tree on 2026-08-05, @enefectoescine17. The
+		// auto-dubbing badge is a bare semantic View: no resource id, no button
+		// class, no control vocabulary, so every other filter missed it. It stood
+		// as a second title candidate, `singleOrNull` returned null, and the Short
+		// refused identity silently and finalized at `measured 0s`.
+		val title = "Shakira Fue a Ver el Partido de Messi y Todos Pensaron lo Mismo 😱 #artista"
+		val overlay = node(
+			id = "reel_player_overlay_container",
+			children = listOf(
+				node(description = "Auto-dubbed"),
+				node(description = "Go to channel @enefectoescine17", clickable = true),
+				node(description = "@enefectoescine17"),
+				node(description = "Subscribe to @enefectoescine17.", clickable = true),
+				node(description = title, clickable = true),
+				node(description = "like this video along with 99 thousand other people", clickable = true),
+				node(description = "View 1,109 comments", clickable = true),
+				node(description = "Share this video", clickable = true),
+				node(description = "Remix this Short along with 11 other remixes", clickable = true),
+				node(description = "See more videos using this sound", clickable = true),
+			),
+		)
+		val structural = node(
+			id = "reel_watch_fragment_root",
+			children = listOf(overlay, node(id = "reel_watch_player")),
+		)
+		// Measured shape: reel_time_bar is a sibling of the Shorts root under
+		// android:id/content, carrying exactly one SeekBar child.
+		val timeBar = node(
+			id = "reel_time_bar",
+			children = listOf(
+				node(
+					description = "0 minutes 8 seconds of 1 minute 7 seconds",
+					className = "android.widget.SeekBar",
+				),
+			),
+		)
+		assertEquals(
+			NativeShortParser.Result.Organic(title, "@enefectoescine17", 8, 67),
+			NativeShortParser.parse(NativeShortTree(node(pkg = YT, children = listOf(structural, timeBar)))),
+		)
+	}
+
+	@Test
+	fun `excluding the badge does not admit a genuinely conflicting title`() {
+		assertInvalid(
+			player(
+				Case("Title", "@owner", 1, 20),
+				secondTitle = "Other title",
+				extraPlayer = listOf(node(description = "Auto-dubbed")),
+			),
+		)
+	}
+
+	@Test
+	fun `a missing seekbar container and an unreadable seekbar time refuse differently`() {
+		// One shared message for these two made a field log unable to say which
+		// had happened, and the two have unrelated fixes.
+		val missingContainer = NativeShortParser.parse(
+			player(Case("Title", "@owner", 1, 20), includeSeekbar = false),
+		)
+		val unreadableTime = NativeShortParser.parse(
+			player(Case("Title", "@owner", 1, 20), seekbarLabel = "8 of 67 seconds"),
+		)
+		assertTrue(missingContainer is NativeShortParser.Result.Invalid)
+		assertTrue(unreadableTime is NativeShortParser.Result.Invalid)
+		assertTrue(
+			(missingContainer as NativeShortParser.Result.Invalid).reason !=
+				(unreadableTime as NativeShortParser.Result.Invalid).reason,
+		)
+	}
+
 	private data class Case(val title: String, val handle: String, val current: Long, val total: Long)
 
 	private fun player(
@@ -153,6 +226,7 @@ class NativeShortParserTest {
 		secondHandle: String? = null,
 		secondTitle: String? = null,
 		secondSeekbar: Pair<Long, Long>? = null,
+		seekbarLabel: String? = null,
 		extraPlayer: List<NativeShortNode> = emptyList(),
 		extraRoot: List<NativeShortNode> = emptyList(),
 	): NativeShortTree {
@@ -163,7 +237,7 @@ class NativeShortParserTest {
 		if (includeHandle) playerChildren += node(text = "Go to channel ${case.handle}", visible = handleVisible)
 		secondHandle?.let { playerChildren += node(text = it) }
 		secondTitle?.let { playerChildren += node(id = "reel_title", text = it) }
-		if (includeSeekbar) playerChildren += seekbar(case.current, case.total)
+		if (includeSeekbar) playerChildren += seekbar(case.current, case.total, seekbarLabel)
 		secondSeekbar?.let { playerChildren += seekbar(it.first, it.second) }
 		playerChildren += extraPlayer
 		val structural = node(
@@ -173,10 +247,11 @@ class NativeShortParserTest {
 		return NativeShortTree(node(pkg = YT, children = listOf(structural)))
 	}
 
-	private fun seekbar(current: Long, total: Long): NativeShortNode = node(
+	private fun seekbar(current: Long, total: Long, label: String? = null): NativeShortNode = node(
 		id = "reel_time_bar",
-		description = "${current / 60} minutes ${current % 60} seconds of " +
-			"${total / 60} minutes ${total % 60} seconds",
+		description = label
+			?: ("${current / 60} minutes ${current % 60} seconds of " +
+				"${total / 60} minutes ${total % 60} seconds"),
 	)
 
 	private fun node(
