@@ -354,18 +354,58 @@ Both fixed:
 3. **On-device smoke test — done.** v0.9.6 installs, the settings row renders its "Not connected"
    state, the disclosure screen renders in full, and Google's real sign-in page loads in the
    WebView with no embedded-browser block.
-4. **Field test — pending.** It needs two things only the owner can do: re-enable both accessibility
-   services (the install revoked them, as always), and perform the Google sign-in.
+4. **Field test — done for the route itself** (§7c), **outstanding for the duplicate-upload case**
+   (§9.1). It needed two things only the owner could do: the accessibility grants and the Google
+   sign-in.
 
-### Still outstanding
+---
 
-- §11.2 item 0g, the two latency/ordering measurements.
-- §11.2 item 5: a non-playlist video with a known duplicate upload resolving to the right one, and a
-  backgrounded non-playlist video refusing cleanly.
+## 9. Follow-ups
+
+### 9.1 The remaining field test — §11.2 item 5
+
+The route is proven to work; it is not yet proven to be *right* on the case it exists for. Play a
+non-playlist video with a known duplicate upload and confirm history resolves the one actually
+played, not the other. Both pairs are duration-identical, which is what makes them the test:
+
+| Track | Played (correct) | The decoy search has been measured picking |
+| --- | --- | --- |
+| `Criminal` | `4ns8D959YtA` | `VqEbCxg2bNI` — both exactly 273 s |
+| `Unica` | `YbZwlNmnUvw` | `7uxTya2PX3c` — both exactly 218 s |
+
+Then confirm a backgrounded non-playlist video either resolves through history or refuses cleanly
+with an exact reason. Neither may reach the chain with the decoy id.
+
+### 9.2 The real simplification: can the native search fallbacks go?
+
+This is the item worth doing next, and it removes *risk*, not just code. Plain search,
+`NativeStructuredMusicMatcher` and the run-local candidate cache exist only to guess at the native
+no-id case, and search is the route measured three times choosing a duration-identical wrong upload
+(`Unica`, `Criminal`, `Chulo Sin H`). If history covers that case reliably, those paths are a
+liability rather than a safety net.
+
+Decide it from the log, not from taste: count how many native tracks history resolves against how
+many still reach search, over a real listening session. The `[history]` and `[resolve]` lines
+already carry everything needed.
+
+Note what must **not** be removed on the same reasoning: the browser address bar (free, instant, and
+works signed out), the playlist route (one fetch per hundred tracks, no credentials) and all
+MediaSession measurement (history says a video was *started*, never how much was played).
+
+### 9.3 `UrlWatcherService.isEnabled`
+
+Has the §2.3 defect — reads only `enabled_accessibility_services`, so a revoked service still
+reports as granted. One line, deliberately untouched here because §11.1 forbids changing
+browser-path files without the owner's sign-off.
+
+### 9.4 Smaller open questions
+
 - Which renderer the authenticated feed actually uses. The signed-out shape is measured; the
   signed-in shape is now read two ways (`videoRenderer` and `lockupViewModel`, wrapped or not) and
-  an empty result logs the shape report of §7a, so the first real fetch answers this from the log
-  instead of leaving it ambiguous.
+  an empty result logs the shape report of §7a, so the log answers this rather than leaving it
+  ambiguous.
 - Whether an account display label can be read from the feed at all. The extraction is best-effort
   over three known spellings and degrades to "the connected account" in the UI.
-- `UrlWatcherService.isEnabled` has the §2.3 defect and was left untouched per §11.1.
+- Out of scope and recorded so they are not re-derived: playlist continuation past 100 entries,
+  YouTube Music, and the Lounge/cast pairing protocol (pairing moves playback to the receiver,
+  which defeats the point of observing playback on the phone).
