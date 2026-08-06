@@ -152,7 +152,9 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 				// a stale cache is evidence about nothing at all — counting either
 				// toward the "your app is on another account" diagnosis would
 				// eventually stand the route down over a timing artefact.
-				if (!feed.fromCache && WatchHistoryMatcher.isAbsence(verdict)) health.recordMiss(now)
+				if (!feed.fromCache && WatchHistoryMatcher.isAbsence(verdict)) {
+					health.recordMiss(now, missKey(title, channel, durationSec))
+				}
 				EventLog.append("history", "refused \"$title\": ${verdict.reason}")
 				// Measured 2026-08-04: regular videos resolve from history at
 				// position 0 within ~3 s, while every Short refused — including
@@ -239,6 +241,14 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 				?.takeIf { it.isNotBlank() && it.length <= 80 }
 		}
 
+	/** Identifies the track a miss is about, so replaying one cannot count twice. */
+	private fun missKey(title: String, channel: String?, durationSec: Long?): String =
+		listOf(
+			SearchResultsParser.titleKey(title),
+			channel?.let(SearchResultsParser::channelKey).orEmpty(),
+			durationSec?.toString().orEmpty(),
+		).joinToString("|")
+
 	private sealed interface Feed {
 		data class Entries(
 			val entries: List<WatchHistoryParser.Entry>,
@@ -271,7 +281,18 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 	): List<String> {
 		if (!vault.hasSession) return emptyList()
 		val now = System.currentTimeMillis()
-		if (!health.mayRun(now)) return emptyList()
+		// A stood-down route used to return nothing here without saying so, and
+		// the Short's refusal then blamed sign-in — measured 2026-08-06, two
+		// untitled Shorts at 62% and 77% were lost inside a fifteen-minute pause
+		// that appears nowhere in a 58,000-line log. Whatever this route is not
+		// doing, it says.
+		if (!health.mayRun(now)) {
+			EventLog.append(
+				"history",
+				"not offering Shorts candidates: ${health.refusedBecause}",
+			)
+			return emptyList()
+		}
 		val feed = recentEntries(now, allowCache = true)
 		val shorts = (feed as? Feed.Entries)?.shorts ?: return emptyList()
 		if (shorts.isEmpty()) return emptyList()

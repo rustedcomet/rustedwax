@@ -48,6 +48,28 @@ class WatchHistoryHealthTest {
 		assertFalse(health.mayRun(3 * minute))
 	}
 
+	/**
+	 * Measured 2026-08-06. "See Every TIME Cover From 2025" was looked up three
+	 * times in three minutes as the owner replayed it, each absence counted, and
+	 * the route stood itself down on "the last 3 native tracks were not written"
+	 * — a claim about one track. Two untitled Shorts at 62% and 77% were then
+	 * refused inside the fifteen-minute pause that followed.
+	 */
+	@Test
+	fun `one track missing repeatedly is one data point, not three`() {
+		val health = WatchHistoryHealth()
+		repeat(5) { health.recordMiss(it * minute, "see every time cover from 2025|time|208") }
+		assertNull(health.refusedBecause)
+		assertTrue(health.mayRun(5 * minute))
+
+		// Different tracks going missing is the condition this exists for, and
+		// it still diagnoses on the third one.
+		health.recordMiss(6 * minute, "another track|channel|100")
+		assertNull(health.refusedBecause)
+		health.recordMiss(7 * minute, "a third track|channel|120")
+		assertNotNull(health.refusedBecause)
+	}
+
 	@Test
 	fun `a track landing in the feed clears the refusal`() {
 		val health = WatchHistoryHealth()

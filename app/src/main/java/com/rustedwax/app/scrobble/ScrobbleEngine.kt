@@ -756,7 +756,14 @@ object ScrobbleEngine {
 				?: VideoResolutionAttempt(
 					refusalReason = "this Short's title could not be read and watch history " +
 						"could not identify it from its owner handle and length; " +
-						"sign-in and the watch-history switch are what make these resolvable",
+						// Naming the actual state, when there is one, rather than
+						// always pointing at sign-in: measured 2026-08-06, two of
+						// these were refused with this wording while the route was
+						// standing itself down for fifteen minutes.
+						(
+							history.refusedBecause?.let { "the route is not running: $it" }
+								?: "sign-in and the watch-history switch are what make these resolvable"
+							),
 				)
 		}
 		val title = session.title

@@ -38,6 +38,9 @@ class WatchHistoryHealth(
 
 	private var consecutiveMisses = 0
 
+	/** The track the last counted miss was about, so a replay cannot count twice. */
+	private var lastMissKey: String? = null
+
 	@Volatile
 	private var refusal: String? = null
 
@@ -60,15 +63,31 @@ class WatchHistoryHealth(
 	@Synchronized
 	fun recordHit() {
 		consecutiveMisses = 0
+		lastMissKey = null
 		refusal = null
 		refusedAtMillis = 0
 		lastProbeMillis = 0
 	}
 
-	/** The feed read fine and simply did not contain the track that just played. */
+	/**
+	 * The feed read fine and simply did not contain the track that just played.
+	 *
+	 * @param trackKey identifies the track this miss is about. Consecutive
+	 * misses of the *same* track are one data point, not several — measured
+	 * 2026-08-06, "See Every TIME Cover From 2025" was looked up three times in
+	 * three minutes as it was replayed, each absence counted separately, and the
+	 * route stood itself down on a diagnosis ("the last 3 native tracks were not
+	 * written to the watch history") that was true of exactly one track. Two
+	 * untitled Shorts were then refused during the fifteen-minute pause, in
+	 * silence, having already earned their listens. The diagnosis this exists
+	 * for — the YouTube app is on another account — shows up as *different*
+	 * tracks going missing, so requiring different tracks costs it nothing.
+	 */
 	@Synchronized
-	fun recordMiss(nowMillis: Long) {
+	fun recordMiss(nowMillis: Long, trackKey: String? = null) {
 		if (refusal != null) return
+		if (trackKey != null && trackKey == lastMissKey) return
+		lastMissKey = trackKey
 		consecutiveMisses++
 		if (consecutiveMisses < missesBeforeRefusing) return
 		refuse(
@@ -121,6 +140,7 @@ class WatchHistoryHealth(
 	@Synchronized
 	fun reset() {
 		consecutiveMisses = 0
+		lastMissKey = null
 		refusal = null
 		refusedAtMillis = 0
 		lastProbeMillis = 0
