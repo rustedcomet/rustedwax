@@ -1419,3 +1419,52 @@ permits regardless.
 Every entry still requires a verified video id and a canonical hyperlink; an unresolvable listen
 still fails closed with an exact logged reason; the dedup ledger is untouched; browser behaviour is
 unchanged; and no native gate applies outside `session.isNative`.
+
+## v0.9.8 identity contract (2026-08-06)
+
+Field evidence and per-change reasoning: [FIELD_2026-08-05.md](FIELD_2026-08-05.md) §14. One ruling
+is superseded; the other two entries record rules that were never written down.
+
+### 1. A video's two published names are both its name
+
+**Supersedes the v0.9.7 §1 wording** that the displayed title is *substituted* for the canonical one
+when it equals the frozen title.
+
+Substitution was the defect. The displayed name replaced the canonical one whenever their title
+**keys** matched, and an all-hashtag title has an empty key — so every such title matched vacuously
+and the wrong one of the two was compared. Measured 2026-08-06 on `RTQFqbCPUGg`: the upload is
+Spanish, the resolver's `en-US` fetch renders the same page in English, and the corroborator refused
+a 100% listen because the English rendering is not the Spanish one the screen showed.
+
+**New rule.** A watch page may publish two names for one id — `videoDetails.title` and the
+`videoPrimaryInfoRenderer` rendering. Both are compared against the frozen title and the
+**strongest** evidence decides; neither is preferred and neither can weaken the other. This admits
+no new candidate: both names come from the one page being verified for the one id, and duration,
+channel/owner handle, and the unique-id rule all still bind independently. A refusal names both.
+
+### 2. A stood-down watch-history route must say so, and must not stand down over one track
+
+**Not previously written down**, and both halves cost listens on 2026-08-06.
+
+`WatchHistoryHealth` refuses the route after three consecutive misses, on the reasoning that the
+YouTube app is signed out, on another account, or in incognito. That diagnosis is about *tracks*
+going missing, so:
+
+- **A miss is per track.** Consecutive misses of the same track count once. One video replayed three
+  times armed a fifteen-minute pause on a claim ("the last 3 native tracks were not written") that
+  was true of exactly one.
+- **A refusal is never silent.** `recentShortIds` returned an empty list without a line in the log,
+  and two untitled Shorts at 62% and 77% were refused inside that pause with a message blaming
+  sign-in. A route that is not running states why, in the log and in the refusal the user reads.
+
+### 3. Unmeasured lead-in is stated, never credited
+
+**Not previously written down.** Measured 2026-08-06: YouTube published a MediaSession for
+`_zR6ROjoOX0` for seven seconds, ninety-four seconds into a 227-second video, and nothing before or
+after. The finalize line read `played 12s of 227s` and looked like a fault.
+
+**New rule.** Where the player was when RustedWax first saw a track is **not** evidence that the
+track played that far in this session — a resumed video opens mid-track having played nothing now —
+so it is never credited. It *is* reported: a track first seen more than 10s in says so on its
+finalize line, unless progress was carried across a replacement session, which accounts for its own
+lead-in. Silence about what could not be measured is the failure mode this exists to prevent.
