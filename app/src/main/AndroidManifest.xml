@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+	xmlns:tools="http://schemas.android.com/tools">
 
 	<!--
 		Phases 0–2: detection probe, encrypted key storage, manual broadcast.
@@ -9,6 +10,19 @@
 	<!-- Talking to Hive nodes: validating a key, and broadcasting scrobbles. -->
 	<uses-permission android:name="android.permission.INTERNET" />
 	<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+	<!--
+		Picture-in-picture measurement. A PiP Short publishes no progress at all,
+		so the only way to credit it is to observe that YouTube still holds a
+		visible window while media audio is playing. Usage Access is what makes
+		that attributable to YouTube rather than to "some app" — AudioManager
+		alone hands out anonymized playback configurations with no package on
+		them. Special access, granted by the user in Settings; the app works
+		without it and simply does not count PiP.
+	-->
+	<uses-permission
+		android:name="android.permission.PACKAGE_USAGE_STATS"
+		tools:ignore="ProtectedPermissions" />
 
 	<!-- Lets us resolve app labels for the packages publishing media sessions. -->
 	<queries>

@@ -30,6 +30,7 @@ import com.rustedwax.app.detect.MonitorSwitch
 import com.rustedwax.app.detect.NativeShortsAccessibilityService
 import com.rustedwax.app.detect.NativeShortsObserver
 import com.rustedwax.app.detect.NativeSourceSwitches
+import com.rustedwax.app.detect.PipPlaybackProbe
 import com.rustedwax.app.detect.ProbeHolder
 import com.rustedwax.app.detect.ScrobbleBuilder
 import com.rustedwax.app.detect.SessionProbe
@@ -93,6 +94,10 @@ class MainActivity : ComponentActivity() {
 				var nativeShortsNotLiveSince by remember { mutableStateOf(0L) }
 				var enrichment by remember { mutableStateOf(settings.enrichment) }
 				var shortClips by remember { mutableStateOf(settings.shortClips) }
+				var pipInference by remember { mutableStateOf(settings.pipInference) }
+				// Re-read on every tick rather than remembered: Usage access is
+				// granted in another app, so the only way back is to notice it.
+				val usageAccessGranted = PipPlaybackProbe(applicationContext).hasUsageAccess()
 				// Read once per composition rather than held in a flow: mutes change
 				// only by the button below, so recomposing on that is enough.
 				var mutedIds by remember { mutableStateOf(ScrobbleEngine.mutedVideos().keys) }
@@ -188,6 +193,8 @@ class MainActivity : ComponentActivity() {
 					urlWatcherDropped = urlWatcherDropped,
 					enrichment = enrichment,
 					shortClips = shortClips,
+					pipInference = pipInference,
+					usageAccessGranted = usageAccessGranted,
 					recent = recent,
 					skipped = skipped,
 					mutedIds = mutedIds,
@@ -244,6 +251,21 @@ class MainActivity : ComponentActivity() {
 							"video lookup ${if (enabled) "on" else "off"}",
 						)
 					},
+					onTogglePipInference = { enabled ->
+						settings.pipInference = enabled
+						pipInference = enabled
+						EventLog.append(
+							"native-shorts",
+							if (enabled) {
+								"picture-in-picture time on — a Short that keeps playing " +
+									"in PiP is credited from elapsed wall-clock, recorded " +
+									"as inferred rather than measured"
+							} else {
+								"picture-in-picture time off — time in PiP counts for nothing"
+							},
+						)
+					},
+					onGrantUsageAccess = { openUsageAccessSettings() },
 					onToggleShortClips = { enabled ->
 						settings.shortClips = enabled
 						shortClips = enabled
@@ -532,6 +554,23 @@ class MainActivity : ComponentActivity() {
 				"needs 'Allow restricted settings' from App info first",
 		)
 		startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS))
+	}
+
+	/**
+	 * Usage access, which is what makes PiP audio attributable to YouTube.
+	 *
+	 * Special access rather than a runtime permission, so there is no prompt to
+	 * show — the only route is the Settings screen, and the user has to find
+	 * RustedWax in the list themselves.
+	 */
+	private fun openUsageAccessSettings() {
+		EventLog.append(
+			"native-shorts",
+			"opening Usage access settings — needed so picture-in-picture audio can " +
+				"be attributed to YouTube rather than to any app that happens to be " +
+				"playing",
+		)
+		startActivity(Intent(AndroidSettings.ACTION_USAGE_ACCESS_SETTINGS))
 	}
 
 	private fun exportLog() {

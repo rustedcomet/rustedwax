@@ -139,6 +139,23 @@ class Settings internal constructor(
 		get() = store.getBoolean(KEY_SHORTS_EVER_GRANTED, false)
 		set(value) = store.putBoolean(KEY_SHORTS_EVER_GRANTED, value)
 
+	/**
+	 * Whether a Short that continues in picture-in-picture may be credited with
+	 * inferred wall-clock time.
+	 *
+	 * PiP publishes no progress of any kind, so this is the difference between
+	 * a PiP session counting for something and counting for nothing. It is
+	 * inference, not measurement — see `PipPlaybackInference` — so it is its own
+	 * switch, it never applies while a readable seekbar exists, and it needs
+	 * Usage Access before it can attribute anything to YouTube at all.
+	 *
+	 * On by default: with it off the behaviour is exactly what shipped before,
+	 * and a Short watched in PiP is silently worth nothing.
+	 */
+	var pipInference: Boolean
+		get() = store.getBoolean(KEY_PIP_INFERENCE, true)
+		set(value) = store.putBoolean(KEY_PIP_INFERENCE, value)
+
 	/** `scrobblePercent` upstream — stored as a percentage, used as a fraction. */
 	var scrobbleThreshold: Double
 		get() = store.getInt(KEY_PERCENT, 60).coerceIn(20, 95) / 100.0
@@ -156,6 +173,7 @@ class Settings internal constructor(
 		const val KEY_WATCH_HISTORY = "watchHistoryLookup"
 		const val KEY_BROWSER_EVER_GRANTED = "browserEvidenceEverGranted"
 		const val KEY_SHORTS_EVER_GRANTED = "nativeShortsEverGranted"
+		const val KEY_PIP_INFERENCE = "pipInference"
 
 		/** Same key the extension uses. */
 		const val KEY_PERCENT = "scrobblePercent"

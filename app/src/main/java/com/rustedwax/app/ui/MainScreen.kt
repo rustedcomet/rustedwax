@@ -81,6 +81,8 @@ fun MainScreen(
 	urlWatcherDropped: Boolean,
 	enrichment: Boolean,
 	shortClips: Boolean,
+	pipInference: Boolean,
+	usageAccessGranted: Boolean,
 	recent: List<ScrobbleEngine.ScrobbleRecord>,
 	skipped: List<ScrobbleEngine.SkipRecord>,
 	mutedIds: Set<String>,
@@ -101,6 +103,8 @@ fun MainScreen(
 	onOpenAccessibility: () -> Unit,
 	onToggleEnrichment: (Boolean) -> Unit,
 	onToggleShortClips: (Boolean) -> Unit,
+	onTogglePipInference: (Boolean) -> Unit,
+	onGrantUsageAccess: () -> Unit,
 	onToggleAutoScrobble: (Boolean) -> Unit,
 	onMute: (ScrobbleEngine.ScrobbleRecord) -> Unit,
 	onRetryQueue: () -> Unit,
@@ -273,6 +277,8 @@ fun MainScreen(
 						urlWatcherDropped = urlWatcherDropped,
 						enrichment = enrichment,
 						shortClips = shortClips,
+					pipInference = pipInference,
+					usageAccessGranted = usageAccessGranted,
 						youTubeAccount = youTubeAccount,
 						watchHistory = watchHistory,
 						watchHistoryRefusal = watchHistoryRefusal,
@@ -281,6 +287,8 @@ fun MainScreen(
 						onOpenAccessibility = onOpenAccessibility,
 						onToggleEnrichment = onToggleEnrichment,
 						onToggleShortClips = onToggleShortClips,
+					onTogglePipInference = onTogglePipInference,
+					onGrantUsageAccess = onGrantUsageAccess,
 						onToggleWatchHistory = onToggleWatchHistory,
 						onConnectYouTube = onConnectYouTube,
 						onDisconnectYouTube = onDisconnectYouTube,
@@ -381,6 +389,8 @@ private fun ScrobbleControls(
 	urlWatcherDropped: Boolean,
 	enrichment: Boolean,
 	shortClips: Boolean,
+	pipInference: Boolean,
+	usageAccessGranted: Boolean,
 	youTubeAccount: YouTubeSessionVault.Session?,
 	watchHistory: Boolean,
 	watchHistoryRefusal: String?,
@@ -389,6 +399,8 @@ private fun ScrobbleControls(
 	onOpenAccessibility: () -> Unit,
 	onToggleEnrichment: (Boolean) -> Unit,
 	onToggleShortClips: (Boolean) -> Unit,
+	onTogglePipInference: (Boolean) -> Unit,
+	onGrantUsageAccess: () -> Unit,
 	onToggleWatchHistory: (Boolean) -> Unit,
 	onConnectYouTube: () -> Unit,
 	onDisconnectYouTube: () -> Unit,
@@ -627,6 +639,42 @@ private fun ScrobbleControls(
 					onCheckedChange = onToggleShortClips,
 					enabled = anyShortProofAvailable && enrichment,
 				)
+			}
+
+			// Picture-in-picture publishes no seekbar and no MediaSession
+			// position, so this is the only thing standing between a PiP Short
+			// and counting for nothing at all. Usage Access is what makes the
+			// audio evidence attributable to YouTube rather than to "some app".
+			Spacer(Modifier.height(8.dp))
+			Row(verticalAlignment = Alignment.CenterVertically) {
+				Column(Modifier.weight(1f)) {
+					Text("Count picture-in-picture", style = MaterialTheme.typography.titleSmall)
+					Text(
+						when {
+							!usageAccessGranted ->
+								"Needs Usage access — without it YouTube can't be told " +
+									"apart from any other app playing audio"
+							pipInference ->
+								"On — a Short that keeps playing in PiP is credited from " +
+									"elapsed time, marked inferred rather than measured"
+							else -> "Off — time in PiP counts for nothing"
+						},
+						style = MaterialTheme.typography.bodySmall,
+					)
+				}
+				Switch(
+					checked = pipInference && usageAccessGranted,
+					onCheckedChange = onTogglePipInference,
+					enabled = usageAccessGranted,
+				)
+			}
+			if (!usageAccessGranted) {
+				Row(
+					horizontalArrangement = Arrangement.spacedBy(8.dp),
+					modifier = Modifier.padding(top = 4.dp),
+				) {
+					OutlinedButton(onClick = onGrantUsageAccess) { Text("Grant usage access") }
+				}
 			}
 
 			if (queuedCount > 0) {
