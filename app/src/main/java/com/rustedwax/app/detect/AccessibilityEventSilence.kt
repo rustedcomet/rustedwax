@@ -44,35 +44,47 @@ enum class ObservedSurface {
  * So this measures it first: the next occurrence writes its own name, its own
  * duration and what was on screen at the time.
  *
- * ## Why the surface has to come from *every* capture, not just a good one
+ * ## What the first field day proved about this detector, 2026-08-06
  *
- * The first cut of this class reported only when a YouTube capture succeeded,
- * which would have stayed silent through the very event it exists to catch.
- * Those two 30s-apart lines in the field log are the *throttled* idle poll: the
- * captures were running the whole time and finding nothing. Whatever went wrong
- * took the accessibility tree with it, so requiring a successful YouTube capture
- * as the precondition for reporting is requiring the outage not to be happening.
+ * It reported **111 outages in one day**, median 111 seconds. Almost none were
+ * real, and two measurements killed the design that produced them.
  *
- * [ObservedSurface.NO_ROOT] with the screen on is therefore a first-class
- * reportable state, and the most likely shape of the real fault.
+ * **Event silence is not observer silence.** At 15:08:39 it reported
+ * `silent for 45s … (Shorts player on screen) — anything played in this window
+ * is unobserved` while, inside that exact window, the service had measured the
+ * seekbar thirteen times and credited forty seconds. Once a Short is latched the
+ * observer stops needing callbacks and polls on its own second, so *events* stop
+ * while *observation* continues perfectly. A successful capture is therefore
+ * liveness, and the only liveness that matters.
  *
- * ## Why silence alone is still not enough
+ * **`YOUTUBE_NO_PLAYER` is usually the user leaving Shorts.** Reproduced on
+ * demand, first try: press Back out of the Shorts player and YouTube keeps
+ * `reel_time_bar` in its hierarchy while `reel_watch_fragment_root` stops being
+ * visible, so every capture reads `found 0; captured 2 nodes`. 36% of the day's
+ * captures were that shape. It is the app being open and idle, not an outage.
  *
- * Event silence is *normal* for ordinary watch playback. Once a song is playing
- * the watch UI is static and YouTube emits no accessibility events at all —
- * measured 2026-08-04, six minutes of playback produced zero observations, which
- * is why [NativeShortsAccessibilityService] polls for the playlist bar rather
- * than waiting for callbacks. It is equally normal with the screen off, or while
- * the user is in another app.
+ * ## The evidence that a report actually needs
  *
- * So a report requires the screen to be on and the surface not to be
- * [ObservedSurface.OTHER_APP], and every line says which surface it saw. That
- * keeps the cases apart in the log without pretending the quiet watch screen is
- * a fault.
+ * The report has to answer "is something playing that we cannot see?", and the
+ * accessibility tree cannot answer it — measured 2026-08-06, while a Short plays
+ * YouTube's MediaSession is `active=false`, `state=1`, `metadata: size=0`. It
+ * says nothing about Shorts at all, so asking it would be circular.
  *
- * A paused Short left on screen reports as [ObservedSurface.YOUTUBE_SHORTS_PLAYER].
- * That is a known and accepted false positive: it is indistinguishable from the
- * real thing without crediting time this app deliberately never credits.
+ * The independent answer already exists, built for picture-in-picture (§8.3):
+ * media audio in the `started` state paired with a YouTube window that
+ * `UsageStatsManager` reports visible. That pair is what [PipPlaybackProbe]
+ * answers, and it is true exactly when a listen is being lost.
+ *
+ * So a report now requires the screen on, the surface not to be another app, no
+ * successful capture within the window — and evidence that something is playing
+ * that **nothing else is already counting**. Ordinary watch playback is measured
+ * by the MediaSession, and picture-in-picture time is credited by its own
+ * inference; neither is a loss, so neither reports. When Usage Access is missing
+ * the question cannot be answered at all, and only [ObservedSurface.NO_ROOT] —
+ * the state where the service cannot see anything — still reports on its own.
+ *
+ * A paused Short left on screen no longer reports at all: paused audio drops out
+ * of the started list, which is the same property the PiP inference relies on.
  *
  * ## Reporting-only
  *
@@ -115,7 +127,7 @@ class AccessibilityEventSilence(
 	fun eventReceived(atElapsed: Long): String? {
 		val since = lastSignalAtElapsed
 		val recovered = if (reported && since != null) {
-			"accessibility event stream recovered after ${seconds(atElapsed - since)}s of silence"
+			"accessibility observation recovered after ${seconds(atElapsed - since)}s"
 		} else {
 			null
 		}
@@ -127,18 +139,39 @@ class AccessibilityEventSilence(
 	}
 
 	/**
+	 * A capture parsed a complete Shorts player: the observer can see.
+	 *
+	 * Identical to [eventReceived] in effect, and separate only so the call site
+	 * reads as what it is. A latched Short is measured by the service's own 1s
+	 * poll, and YouTube emits no callbacks while it does — measured 2026-08-06,
+	 * the old detector called forty seconds of successful per-second measurement
+	 * an outage because none of it arrived as an event.
+	 */
+	@Synchronized
+	fun captureSucceeded(atElapsed: Long): String? = eventReceived(atElapsed)
+
+	/**
 	 * The outcome of one capture attempt, whatever it found.
 	 *
 	 * @param screenInteractive the display is on. Silence with the screen off is
 	 * correct behaviour and must never be reported.
-	 * @return a line to log, or null when the stream is healthy, the silence is
-	 * explained, or a report is not yet due.
+	 * @param unmeasuredPlayback asked only when a report is otherwise due,
+	 * because it costs a `UsageStatsManager` query and this runs on every
+	 * capture. True when something is playing in YouTube that nothing else is
+	 * counting — not the seekbar, not the MediaSession, not the picture-in-
+	 * picture inference. False when nothing is playing *or* when something else
+	 * already has it. `null` when Usage Access is not granted and the question
+	 * cannot be answered at all, which is not the same as "nothing is playing"
+	 * and is treated as unknown.
+	 * @return a line to log, or null when the observer is alive, the quiet is
+	 * explained, nothing is playing, or a report is not yet due.
 	 */
 	@Synchronized
 	fun observed(
 		atElapsed: Long,
 		surface: ObservedSurface,
 		screenInteractive: Boolean,
+		unmeasuredPlayback: () -> Boolean? = { null },
 	): String? {
 		val since = lastSignalAtElapsed
 		if (since == null) {
@@ -151,15 +184,26 @@ class AccessibilityEventSilence(
 		val silentFor = atElapsed - since
 		if (silentFor < silenceThresholdMillis) return null
 		lastReportAtElapsed?.let { if (atElapsed - it < repeatIntervalMillis) return null }
+		// Nothing is being lost unless something is playing. Proven false is a
+		// full stop; unknown still reports the one state where the service
+		// cannot see anything at all, because that is anomalous by itself.
+		val audible = unmeasuredPlayback()
+		if (audible == false) return null
+		if (audible == null && surface != ObservedSurface.NO_ROOT) return null
 		lastReportAtElapsed = atElapsed
 		val first = !reported
 		reported = true
-		return if (first) {
-			"accessibility event stream silent for ${seconds(silentFor)}s with the screen on " +
-				"(${describe(surface)}) — anything played in this window is unobserved, not idle"
+		val playing = if (audible == true) {
+			"YouTube is playing audio with a visible window"
 		} else {
-			"accessibility event stream still silent after ${seconds(silentFor)}s " +
-				"(${describe(surface)})"
+			"whether anything is playing is unknown without Usage Access"
+		}
+		return if (first) {
+			"nothing observable for ${seconds(silentFor)}s with the screen on " +
+				"(${describe(surface)}; $playing) — anything played in this window is " +
+				"unobserved, not idle"
+		} else {
+			"still nothing observable after ${seconds(silentFor)}s (${describe(surface)}; $playing)"
 		}
 	}
 

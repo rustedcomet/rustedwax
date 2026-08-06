@@ -162,9 +162,62 @@ class NativeShortsAccessibilityService : AccessibilityService() {
 		val screenOn = runCatching {
 			getSystemService(PowerManager::class.java)?.isInteractive == true
 		}.getOrDefault(false)
-		eventSilence.observed(SystemClock.elapsedRealtime(), surface, screenOn)
-			?.let { EventLog.append("native-shorts", it) }
+		eventSilence.observed(
+			SystemClock.elapsedRealtime(),
+			surface,
+			screenOn,
+			unmeasuredPlayback = ::unmeasuredPlayback,
+		)?.let { EventLog.append("native-shorts", it) }
 	}
+
+	/**
+	 * Whether something is playing in YouTube right now, or `null` for "cannot
+	 * tell".
+	 *
+	 * Deliberately independent of the accessibility tree, because the tree is
+	 * the thing suspected of failing, and independent of the MediaSession, which
+	 * measured 2026-08-06 publishes `active=false`, `state=1` and no metadata at
+	 * all while a Short plays. The audio-plus-visible-window pair built for
+	 * picture-in-picture is the only signal that answers the question without
+	 * asking the suspect.
+	 *
+	 * Read regardless of the picture-in-picture switch: that switch governs
+	 * whether time may be *credited*, and this credits nothing.
+	 */
+	private fun unmeasuredPlayback(): Boolean? {
+		// Ordinary watch playback is measured by the MediaSession, which
+		// publishes a title and a duration for it — measured 2026-08-06, a Short
+		// publishes neither. So a titled native YouTube session means the
+		// playback is already being counted and nothing is being lost, however
+		// quiet the accessibility tree is. Without this the detector would fire
+		// on every long video, which is the failure mode it exists to avoid.
+		if (nativeWatchSessionMeasuring()) return false
+		if (!pipProbe.hasUsageAccess()) return null
+		return runCatching {
+			pipProbe.youTubePlayingWithoutSurface(System.currentTimeMillis())
+		}.getOrNull()
+	}
+
+	/**
+	 * Whether the MediaSession is already measuring native YouTube playback.
+	 *
+	 * A title is the discriminator, not the playing state: the session survives
+	 * a pause, and a paused watch video is not an outage either.
+	 */
+	private fun nativeWatchSessionMeasuring(): Boolean = runCatching {
+		ProbeHolder.current?.sessions?.value.orEmpty().any {
+			it.packageName == YouTubeProbe.YOUTUBE_PACKAGE &&
+				it.isNative &&
+				// A foreground Short's snapshot carries the title the *observer*
+				// read off the screen, not one the MediaSession published — so
+				// the title alone matches Shorts too, and measured 2026-08-06 it
+				// silenced the detector on exactly the staged outage it was
+				// supposed to catch. Watch playback is the case where the title
+				// came from the session itself.
+				!it.isForegroundShort &&
+				!it.title.isNullOrBlank()
+		}
+	}.getOrDefault(false)
 
 	/**
 	 * Whether a Short whose seekbar has gone is nonetheless still playing.
@@ -250,14 +303,28 @@ class NativeShortsAccessibilityService : AccessibilityService() {
 		}
 		val result = NativeShortParser.parse(tree)
 		if (destroyed) return
-		// Reporting-only; nothing below branches on it.
-		reportEventSilence(
-			if (result is NativeShortParser.Result.Invalid) {
-				ObservedSurface.YOUTUBE_NO_PLAYER
-			} else {
-				ObservedSurface.YOUTUBE_SHORTS_PLAYER
-			},
-		)
+		// Only asked for the PiP signature. Every other refusal means the Short
+		// is gone, not unmeasurable, and must not accrue anything.
+		val inferredPlaying = result is NativeShortParser.Result.Invalid &&
+			result.progressSurfaceLost && pipPlaying(now)
+		// Reporting-only; nothing below branches on it. A parsed player is the
+		// observer proving it can see, and is the liveness signal the event
+		// callbacks are not: a latched Short is measured by the 1s poll while
+		// YouTube emits no events at all.
+		if (result is NativeShortParser.Result.Invalid) {
+			// Time the picture-in-picture inference is already crediting is not
+			// time being lost, so it is not an outage either — but only while
+			// there is a latched Short to credit it to. Measured 2026-08-06: with
+			// the proof already ended, audio playing and nothing latched,
+			// suppressing on `inferredPlaying` alone silenced the detector in
+			// exactly the state it exists for. `shouldRefresh` is the probe
+			// asking for the next frame of a Short it is still tracking.
+			val crediting = inferredPlaying && NativeShortsObserver.shouldRefresh()
+			if (!crediting) reportEventSilence(ObservedSurface.YOUTUBE_NO_PLAYER)
+		} else {
+			eventSilence.captureSucceeded(SystemClock.elapsedRealtime())
+				?.let { EventLog.append("native-shorts", it) }
+		}
 		if (SystemClock.elapsedRealtime() - captureStartedElapsed > MAX_CAPTURE_AGE_MS) {
 			NativeShortsObserver.missing(
 				"$reason: accessibility capture exceeded the freshness bound",
@@ -270,9 +337,7 @@ class NativeShortsAccessibilityService : AccessibilityService() {
 				"$reason: ${result.reason}",
 				now,
 				progressSurfaceLost = result.progressSurfaceLost,
-				// Only asked for the PiP signature. Every other refusal means the
-				// Short is gone, not unmeasurable, and must not accrue anything.
-				inferredPlaying = result.progressSurfaceLost && pipPlaying(now),
+				inferredPlaying = inferredPlaying,
 			)
 		} else {
 			lastCompleteProofAtMillis = now
