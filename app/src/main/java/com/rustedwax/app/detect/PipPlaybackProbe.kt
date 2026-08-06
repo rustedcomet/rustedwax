@@ -22,13 +22,14 @@ import androidx.annotation.RequiresApi
 class PipPlaybackProbe(private val context: Context) {
 
 	/**
-	 * Last activity-lifecycle event seen for YouTube.
+	 * Which YouTube activities are currently started.
 	 *
 	 * Kept across calls so each query only has to cover the window since the
 	 * previous one. Querying a wide window every second would be wasteful and,
-	 * on a busy device, slow.
+	 * on a busy device, slow. See [VisibleActivities] for why this is a set
+	 * rather than the single last event it used to be.
 	 */
-	private var lastActivityEvent: Int = UNKNOWN_EVENT
+	private val visibleActivities = VisibleActivities()
 	private var queriedUpToMillis: Long = 0
 
 	/** Whether Usage Access has been granted. Without it PiP cannot be attributed. */
@@ -94,27 +95,23 @@ class PipPlaybackProbe(private val context: Context) {
 			(queriedUpToMillis - QUERY_OVERLAP_MS).coerceAtLeast(0)
 		}
 		runCatching {
-			val events = usage.queryEvents(from, nowMillis) ?: return lastActivityEventMeansVisible()
+			val events = usage.queryEvents(from, nowMillis) ?: return visibleActivities.visible
 			val event = UsageEvents.Event()
 			while (events.hasNextEvent()) {
 				events.getNextEvent(event)
 				if (event.packageName != YouTubeProbe.YOUTUBE_PACKAGE) continue
-				when (event.eventType) {
-					UsageEvents.Event.ACTIVITY_RESUMED,
-					UsageEvents.Event.ACTIVITY_PAUSED,
-					UsageEvents.Event.ACTIVITY_STOPPED,
-					-> lastActivityEvent = event.eventType
+				val lifecycle = when (event.eventType) {
+					UsageEvents.Event.ACTIVITY_RESUMED -> VisibleActivities.Lifecycle.RESUMED
+					UsageEvents.Event.ACTIVITY_PAUSED -> VisibleActivities.Lifecycle.PAUSED
+					UsageEvents.Event.ACTIVITY_STOPPED -> VisibleActivities.Lifecycle.STOPPED
+					else -> continue
 				}
+				visibleActivities.onEvent(event.className, lifecycle)
 			}
 			queriedUpToMillis = nowMillis
 		}.onFailure { return false }
-		return lastActivityEventMeansVisible()
+		return visibleActivities.visible
 	}
-
-	@RequiresApi(Build.VERSION_CODES.Q)
-	private fun lastActivityEventMeansVisible(): Boolean =
-		lastActivityEvent == UsageEvents.Event.ACTIVITY_RESUMED ||
-			lastActivityEvent == UsageEvents.Event.ACTIVITY_PAUSED
 
 	private companion object {
 		/**
@@ -124,8 +121,6 @@ class PipPlaybackProbe(private val context: Context) {
 		 * so on 26–28 the feature is simply absent rather than approximated.
 		 */
 		val SUPPORTED = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-
-		const val UNKNOWN_EVENT = -1
 
 		/** Enough to catch the transition that opened the Short being watched. */
 		const val COLD_START_LOOKBACK_MS = 60 * 60 * 1000L
