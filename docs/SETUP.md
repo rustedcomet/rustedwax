@@ -18,9 +18,16 @@ Installing, granting access, and adding your posting key.
    YouTube ad labels) — on Android 13+, allow restricted settings from App info first.
 5. Optionally enable **Native YouTube** and/or **Native YouTube Music**. Both are off by default.
    Foreground native Shorts additionally require the separate **Foreground Shorts evidence**
-   accessibility grant, which is OS-scoped only to the YouTube package. PiP/background Shorts are
-   intentionally not counted.
-6. Play something in Brave, Chrome or an enabled native package. The **Now** tab shows the source
+   accessibility grant, which is OS-scoped only to the YouTube package. Background, screen-off and
+   lock-screen time are never counted.
+6. Optionally enable **Count picture-in-picture**, which needs Android's **Usage access**. A Short
+   in PiP publishes no seekbar and no MediaSession position, so without this it counts for nothing.
+   With it, elapsed time is credited from two signals together — YouTube holding a visible window,
+   and media audio being started — and every such listen states how much was measured and how much
+   inferred. The same two signals are also what let the log say when something is playing that
+   nothing is counting; that reporting credits nothing by itself. Revoking Usage access disables
+   both, immediately.
+7. Play something in Brave, Chrome or an enabled native package. The **Now** tab shows the source
    package/origin, live session and the exact payload
    it would broadcast; **History** shows the newest 50 results for the current app process, with tx
    ids. History is diagnostic memory, not permanent local storage; the chain remains authoritative.
