@@ -56,6 +56,21 @@ data class SessionSnapshot(
 	 * made a PiP session indistinguishable from a parser bug for most of a day.
 	 */
 	val foregroundProgressLost: Boolean = false,
+	/**
+	 * The part of [playedMs] that was inferred rather than measured.
+	 *
+	 * Non-zero only for a foreground Short that continued in picture-in-picture,
+	 * where no progress source exists at all and elapsed wall-clock was credited
+	 * on the evidence that YouTube still held a visible window and media audio
+	 * was started. See [PipPlaybackInference] for what that evidence can and
+	 * cannot prove.
+	 *
+	 * Carried separately so every listen can say how much of it was watched on a
+	 * seekbar we could read and how much was deduced. A scrobble built on this
+	 * is still a claim about a real listen — it is just a weaker one, and the log
+	 * has to be able to say so.
+	 */
+	val inferredPlayedMs: Long = 0,
 	val isPlaying: Boolean,
 	/** playedMs / durationMs; null when duration is unknown. */
 	val percentPlayed: Double?,

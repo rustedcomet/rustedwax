@@ -1,6 +1,8 @@
 package com.rustedwax.app.detect
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -98,11 +100,11 @@ class NativeShortParserTest {
 
 	@Test
 	fun `controls and sound labels cannot become the title`() {
-		val tree = player(
-			Case("Use this sound", "@owner", 1, 20),
-			titleId = "sound_button",
+		// The control is excluded, leaving no title at all — which is a Short
+		// with an unread title, not a refusal.
+		assertNoTitle(
+			player(Case("Use this sound", "@owner", 1, 20), titleId = "sound_button"),
 		)
-		assertInvalid(tree)
 	}
 
 	@Test
@@ -110,7 +112,7 @@ class NativeShortParserTest {
 		assertInvalid(player(Case("Title", "@owner", 1, 20), includeHandle = false))
 		assertInvalid(player(Case("Title", "@owner", 1, 20), includeSeekbar = false))
 		assertInvalid(player(Case("Title", "@owner", 1, 20), secondHandle = "@different"))
-		assertInvalid(player(Case("Title", "@owner", 1, 20), secondTitle = "Other title"))
+		assertNoTitle(player(Case("Title", "@owner", 1, 20), secondTitle = "Other title"))
 		assertInvalid(player(Case("Title", "@owner", 1, 20), secondSeekbar = 2L to 30L))
 	}
 
@@ -188,7 +190,10 @@ class NativeShortParserTest {
 
 	@Test
 	fun `excluding the badge does not admit a genuinely conflicting title`() {
-		assertInvalid(
+		// Two real candidates must never resolve to one of them. The Short is
+		// still tracked and measured — identity comes from watch history — but
+		// the on-screen title is dropped rather than guessed.
+		assertNoTitle(
 			player(
 				Case("Title", "@owner", 1, 20),
 				secondTitle = "Other title",
@@ -215,11 +220,249 @@ class NativeShortParserTest {
 		)
 	}
 
+	@Test
+	fun `only a present container with no readable time is the lost-surface signature`() {
+		// FIELD_2026-08-05.md §4.2: with a Short live in picture-in-picture the
+		// tree keeps reel_watch_fragment_root, reel_watch_player and
+		// reel_time_bar but the time bar loses its SeekBar child, so no time text
+		// exists anywhere in the window. 82 of these were measured during PiP and
+		// zero container failures. That exact pair is the only thing that may set
+		// the marker; everything else is an ordinary refusal.
+		val pip = NativeShortParser.parse(
+			player(Case("Title", "@owner", 1, 20), seekbarLabel = "8 of 67 seconds"),
+		)
+		assertTrue((pip as NativeShortParser.Result.Invalid).progressSurfaceLost)
+
+		// A missing container is a structural miss, not a live-but-unmeasurable
+		// player. This is the case a swipe between Shorts produces.
+		val noContainer = NativeShortParser.parse(
+			player(Case("Title", "@owner", 1, 20), includeSeekbar = false),
+		)
+		assertFalse((noContainer as NativeShortParser.Result.Invalid).progressSurfaceLost)
+
+		// Two readable times is an ambiguous read of a surface that is still
+		// there — refuse, but do not claim the surface went away.
+		val ambiguous = NativeShortParser.parse(
+			player(Case("Title", "@owner", 1, 20), secondSeekbar = 2L to 30L),
+		)
+		assertFalse((ambiguous as NativeShortParser.Result.Invalid).progressSurfaceLost)
+	}
+
+	@Test
+	fun `ordinary refusals never claim the progress surface was lost`() {
+		// The regression this guards: wiring the marker to generic proof loss put
+		// it on essentially every Short finalize (FIELD §3.1).
+		listOf(
+			player(Case("Title", "@owner", 1, 20), includeHandle = false),
+			player(Case("Title", "@owner", 1, 20), secondHandle = "@different"),
+			player(Case("Title", "@owner", 1, 20)).copy(exceededCaptureBudget = true),
+			NativeShortTree(node(pkg = "com.other.app")),
+		).forEach { tree ->
+			val result = NativeShortParser.parse(tree)
+			assertFalse(
+				"$result should not claim a lost progress surface",
+				(result as NativeShortParser.Result.Invalid).progressSurfaceLost,
+			)
+		}
+	}
+
+	@Test
+	fun `the measured id-less footer resolves despite its like and comment counters`() {
+		// Captured from the device on 2026-08-05 (@MontRecaps). YouTube had
+		// dropped `reel_title` from the Shorts footer entirely, so the id-bound
+		// pass finds nothing and the fallback sees every text node. The like and
+		// comment counters are bare ViewGroups carrying only their number, with
+		// no id, no button class and no control vocabulary — so before the count
+		// filter there were three survivors and every organic Short refused.
+		val footer = listOf(
+			node(description = "Go to channel @MontRecaps"),
+			node(text = "@MontRecaps", description = "@MontRecaps"),
+			node(text = "@MontRecaps", className = "android.widget.Button"),
+			node(description = "Subscribe to @MontRecaps.", className = "android.widget.Button"),
+			node(text = "Subscribe", description = "Subscribe"),
+			node(text = "He Chose Hell for Love ❤️", description = "He Chose Hell for Love ❤️"),
+			node(
+				description = "like this video along with 2 thousand other people",
+				className = "android.widget.RadioButton",
+			),
+			node(text = "2K", description = "2K"),
+			node(description = "View 14 comments", className = "android.widget.Button"),
+			node(text = "14", description = "14"),
+			node(description = "Share this video", className = "android.widget.Button"),
+			node(text = "Share", description = "Share"),
+			node(description = "Remix", className = "android.widget.Button"),
+			node(text = "Remix", description = "Remix"),
+			node(
+				description = "See more videos using this sound",
+				className = "android.widget.Button",
+			),
+		)
+		val structural = node(
+			id = "reel_watch_fragment_root",
+			children = listOf(node(id = "reel_watch_player", children = footer)),
+		)
+		val timeBar = node(
+			id = "reel_time_bar",
+			children = listOf(
+				node(className = "android.widget.SeekBar", description = "1 minute 21 seconds of 2 minutes 59 seconds"),
+			),
+		)
+		assertEquals(
+			NativeShortParser.Result.Organic("He Chose Hell for Love ❤️", "@montrecaps", 81, 179),
+			NativeShortParser.parse(
+				NativeShortTree(node(pkg = YT, children = listOf(structural, timeBar))),
+			),
+		)
+	}
+
+	@Test
+	fun `counters are excluded by shape but real titles are not`() {
+		// Only a literal that is *entirely* a count is dropped. A title that
+		// merely contains or starts with a number keeps its text.
+		listOf("14", "2K", "1.2M", "999", "2,5 mil", "12 500", "3B").forEach { counter ->
+			assertEquals(
+				"$counter should not be a title",
+				NativeShortParser.Result.Organic("Real title", "@owner", 1, 20),
+				NativeShortParser.parse(
+					player(
+						Case("Real title", "@owner", 1, 20),
+						titleId = null,
+						extraPlayer = listOf(node(text = counter, description = counter)),
+					),
+				),
+			)
+		}
+		// A genuinely conflicting prose title is still never guessed at.
+		assertNoTitle(
+			player(
+				Case("Real title", "@owner", 1, 20),
+				titleId = null,
+				extraPlayer = listOf(node(text = "2000 reasons to leave", description = "2000 reasons to leave")),
+			),
+		)
+	}
+
+	@Test
+	fun `an uncounted View comments control is not a title`() {
+		// Measured 2026-08-05. A Short with no comments renders a bare "View
+		// comments"; the counted-only phrase missed it, so it stood as a second
+		// title candidate and refused identity on every such Short.
+		listOf("View comments", "View 14 comments", "View 1 comment", "View 2,417 comments")
+			.forEach { control ->
+				assertEquals(
+					"$control should not be a title",
+					NativeShortParser.Result.Organic("Real title", "@owner", 1, 20),
+					NativeShortParser.parse(
+						player(
+							Case("Real title", "@owner", 1, 20),
+							titleId = null,
+							extraPlayer = listOf(node(description = control)),
+						),
+					),
+				)
+			}
+	}
+
+	@Test
+	fun `position resolves an id-less footer the blocklist cannot`() {
+		// The real shape measured on the device: no resource ids anywhere in the
+		// footer, and an unknown control the blocklist has never seen. Before
+		// geometry this refused; the title runs along the bottom-left while every
+		// control that keeps being mistaken for it is pinned to the right column.
+		val footer = listOf(
+			bounded(30, 1360, 640, 1390, text = "He Chose Hell for Love ❤️"),
+			bounded(630, 880, 700, 950, text = "2K"),
+			bounded(630, 980, 700, 1050, text = "14"),
+			bounded(628, 1100, 700, 1170, description = "Some brand new control"),
+			bounded(30, 1300, 300, 1340, description = "Go to channel @MontRecaps"),
+		)
+		val structural = node(
+			id = "reel_watch_fragment_root",
+			children = listOf(node(id = "reel_watch_player", children = footer)),
+		)
+		val timeBar = node(
+			id = "reel_time_bar",
+			children = listOf(node(description = "1 minute 21 seconds of 2 minutes 59 seconds")),
+		)
+		assertEquals(
+			NativeShortParser.Result.Organic("He Chose Hell for Love ❤️", "@montrecaps", 81, 179),
+			NativeShortParser.parse(
+				NativeShortTree(node(pkg = YT, children = listOf(structural, timeBar))),
+			),
+		)
+	}
+
+	@Test
+	fun `two left-aligned candidates still refuse rather than guess`() {
+		// Geometry narrows; it never picks. A wrong title is a permanent wrong
+		// scrobble, so genuine ambiguity must still fail closed.
+		val footer = listOf(
+			bounded(30, 1360, 640, 1390, text = "He Chose Hell for Love ❤️"),
+			bounded(30, 1240, 620, 1280, text = "A completely different sentence"),
+			bounded(630, 880, 700, 950, text = "2K"),
+			bounded(30, 1300, 300, 1340, description = "Go to channel @MontRecaps"),
+		)
+		val structural = node(
+			id = "reel_watch_fragment_root",
+			children = listOf(node(id = "reel_watch_player", children = footer)),
+		)
+		val timeBar = node(
+			id = "reel_time_bar",
+			children = listOf(node(description = "0 minutes 8 seconds of 0 minutes 48 seconds")),
+		)
+		assertNoTitle(NativeShortTree(node(pkg = YT, children = listOf(structural, timeBar))))
+	}
+
+	private fun bounded(
+		left: Int,
+		top: Int,
+		right: Int,
+		bottom: Int,
+		text: String? = null,
+		description: String? = null,
+	) = NativeShortNode(
+		text = text,
+		contentDescription = description,
+		left = left,
+		top = top,
+		right = right,
+		bottom = bottom,
+	)
+
+	@Test
+	fun `a bare upload date is not a title`() {
+		// Measured 2026-08-05: a Short finalized with the title "August 5, 2026".
+		// It failed closed, but letting the date chip through cost the real title.
+		listOf(
+			"August 5, 2026", "5 August 2026", "2026-08-05", "5/8/2026",
+			"Aug 5, 2026", "5 de agosto de 2026",
+		).forEach { date ->
+			assertEquals(
+				"$date should not be a title",
+				NativeShortParser.Result.Organic("Real title", "@owner", 1, 20),
+				NativeShortParser.parse(
+					player(
+						Case("Real title", "@owner", 1, 20),
+						titleId = null,
+						extraPlayer = listOf(node(text = date, description = date)),
+					),
+				),
+			)
+		}
+		// A title that merely mentions a date keeps its text.
+		assertEquals(
+			NativeShortParser.Result.Organic("August 5, 2026 was the day it all changed", "@owner", 1, 20),
+			NativeShortParser.parse(
+				player(Case("August 5, 2026 was the day it all changed", "@owner", 1, 20)),
+			),
+		)
+	}
+
 	private data class Case(val title: String, val handle: String, val current: Long, val total: Long)
 
 	private fun player(
 		case: Case,
-		titleId: String = "reel_title",
+		titleId: String? = "reel_title",
 		includeHandle: Boolean = true,
 		includeSeekbar: Boolean = true,
 		handleVisible: Boolean = true,
@@ -273,6 +516,18 @@ class NativeShortParserTest {
 		className = className,
 		children = children,
 	)
+
+	/**
+	 * A proven, measurable Short whose on-screen title could not be read.
+	 *
+	 * The listen survives — identity is resolved from watch history on owner
+	 * handle + duration — but the title is never guessed from two candidates.
+	 */
+	private fun assertNoTitle(tree: NativeShortTree) {
+		val result = NativeShortParser.parse(tree)
+		assertTrue("expected Organic, got $result", result is NativeShortParser.Result.Organic)
+		assertNull((result as NativeShortParser.Result.Organic).title)
+	}
 
 	private fun assertInvalid(tree: NativeShortTree) {
 		assertTrue(NativeShortParser.parse(tree) is NativeShortParser.Result.Invalid)

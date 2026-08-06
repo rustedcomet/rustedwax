@@ -256,6 +256,20 @@ object SearchResultsParser {
 		?.replace(Regex("""[^\p{L}\p{N}]+"""), "")
 		?.takeIf { it.isNotEmpty() }
 
+	/**
+	 * The uploading channel at the head of a collaborative byline.
+	 *
+	 * `"La Melma Music and 2 more"` -> `"La Melma Music"`. Null when the name is
+	 * not a byline at all, so a caller can tell "no collaborators" apart from
+	 * "leader did not match".
+	 */
+	fun collaboratorLeader(channel: String?): String? = channel
+		?.trim()
+		?.let { COLLABORATOR_LEADER.matchEntire(it) }
+		?.groupValues?.get(1)
+		?.trim()
+		?.takeIf { it.isNotEmpty() }
+
 	private val COLLABORATOR_LEADER = Regex(
 		"""^(.+?)\s+(?:and|&|x|×)\s+(?:\d+\s+more|.+)$""",
 		RegexOption.IGNORE_CASE,

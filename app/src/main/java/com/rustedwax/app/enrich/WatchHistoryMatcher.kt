@@ -37,7 +37,22 @@ object WatchHistoryMatcher {
 	 * covers a user skipping ahead during a finalize; beyond that the feed is
 	 * describing a different listening session and must not answer for this one.
 	 */
-	const val RECENT_WINDOW = 5
+	/**
+	 * How far down the feed an ordinary entry may be found.
+	 *
+	 * Was 5, on the reasoning that position in the ordinary-entry list *is*
+	 * recency. Autoplay breaks that: measured 2026-08-06, "Nicki Minaj - Red Ruby
+	 * Da Sleeze" resolved at entry 0 during playback and had been pushed past the
+	 * window by the time it finalized, because YouTube had auto-advanced through
+	 * several more videos in between. The lookup that decides the scrobble is the
+	 * one at finalize, and that is exactly when the track is furthest down.
+	 *
+	 * Widening the haystack relaxes nothing: the match still requires exact title,
+	 * channel and duration agreement, so a bigger window can only find the *same*
+	 * video further down, never a different one. This is the same correction
+	 * already made for Shorts, which search the whole feed for the same reason.
+	 */
+	const val RECENT_WINDOW = 30
 
 	sealed interface Verdict {
 		data class Candidate(

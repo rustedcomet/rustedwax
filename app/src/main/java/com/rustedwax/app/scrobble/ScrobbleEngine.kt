@@ -234,6 +234,8 @@ object ScrobbleEngine {
 			durationMs = session.durationMs,
 			threshold = settings.scrobbleThreshold,
 			explicitAdSignal = session.explicitAdSignal,
+			progressSurfaceLost = session.foregroundProgressLost,
+			inferredMs = session.inferredPlayedMs,
 		)?.let { reason ->
 			skip(session, reason)
 			return
@@ -344,13 +346,17 @@ object ScrobbleEngine {
 				resolvedWithoutExactUrl = session.confirmed == null,
 				accessibilityCovered = session.accessibilityCoverage != null,
 				progressSurfaceLost = session.foregroundProgressLost,
+				inferredMs = session.inferredPlayedMs,
 			)
 			if (!decision.shouldScrobble) {
 				skip(session, decision.skippedBecause ?: "no reason given", durationMs)
 				return@launch
 			}
 
-			val basePayload = ScrobbleBuilder.from(session, facts, mb, videoId, durationMs)
+			val basePayload = ScrobbleBuilder.from(
+				session, facts, mb, videoId, durationMs,
+				resolvedTitle = resolution.title,
+			)
 			if (basePayload == null) {
 				skip(session, "payload not buildable", durationMs)
 				return@launch
@@ -672,7 +678,7 @@ object ScrobbleEngine {
 	 */
 	private suspend fun watchHistoryResolution(
 		session: SessionSnapshot,
-		title: String,
+		title: String?,
 		durationSec: Long?,
 	): VideoResolutionAttempt? {
 		if (!settings.watchHistory || !session.isNative ||
@@ -706,14 +712,18 @@ object ScrobbleEngine {
 			EventLog.append(
 				"history",
 				attempt.resolution?.let {
-					"resolved Short \"$title\" → ${it.videoId} from watch history, " +
-						"corroborated on its own watch page"
-				} ?: "watch-history Short candidates did not corroborate \"$title\": " +
+					"resolved Short ${title?.let { t -> "\"$t\"" } ?: "with no readable title"} " +
+						"→ ${it.videoId} from watch history, corroborated on its own watch page"
+				} ?: "watch-history Short candidates did not corroborate " +
+					"${title?.let { t -> "\"$t\"" } ?: "this untitled Short"}: " +
 					attempt.refusalReason,
 			)
 			return attempt
 		}
 
+		// Every non-Short route still needs a title; only the handle path above
+		// can stand without one.
+		if (title == null) return null
 		return history.resolveEvidence(
 			title = title,
 			channel = session.artist,
@@ -726,9 +736,31 @@ object ScrobbleEngine {
 		if (!settings.enrichment) {
 			return VideoResolutionAttempt(refusalReason = "video lookup is disabled")
 		}
+		val durationSec = session.durationMs?.div(1000)
+		// A foreground Short may legitimately arrive with no title: the footer
+		// lost its resource ids and YouTube keeps restyling it, so the title is
+		// the least reliable thing on screen. Its owner handle and its seekbar
+		// duration are not, and the watch-history route resolves on exactly those.
+		// Every other source still requires a title, because nothing else has a
+		// second discriminator to fall back on.
+		if (session.title == null &&
+			session.isForegroundShort &&
+			session.ownerHandle != null &&
+			durationSec != null
+		) {
+			// Straight to watch history: the search and playlist routes below all
+			// need a title to query with, and the pre-resolved carry can only
+			// exist for a Short that already had one. History does not — it joins
+			// on owner handle + duration and still requires a unique match.
+			return watchHistoryResolution(session, null, durationSec)
+				?: VideoResolutionAttempt(
+					refusalReason = "this Short's title could not be read and watch history " +
+						"could not identify it from its owner handle and length; " +
+						"sign-in and the watch-history switch are what make these resolvable",
+				)
+		}
 		val title = session.title
 			?: return VideoResolutionAttempt(refusalReason = "the finalized title is missing")
-		val durationSec = session.durationMs?.div(1000)
 		val preResolvedNativeId = session.resolverContext.preResolvedNativeVideoId
 		if (preResolvedNativeId != null) {
 			val artist = session.artist ?: return VideoResolutionAttempt(
@@ -746,7 +778,7 @@ object ScrobbleEngine {
 				"re-fetching pre-resolved native carry authority $preResolvedNativeId " +
 					"($preResolvedRoute) for \"$title\"",
 			)
-			return runCatching {
+			val carryAttempt = runCatching {
 				when (preResolvedRoute) {
 					NativePreResolvedRoute.STRUCTURED_MUSIC ->
 						idResolver.revalidatePreResolvedNativeMusic(
@@ -799,6 +831,24 @@ object ScrobbleEngine {
 					refusalReason = "pre-resolved native revalidation failed: ${it.message}",
 				)
 			}
+			if (carryAttempt.resolution != null) return carryAttempt
+
+			// A carry that no longer revalidates is not proof that the track is
+			// unidentifiable — only that *this* route can no longer vouch for it.
+			// Measured 2026-08-06: "Nicki Minaj - Barbie Tingz" had its id named
+			// by watch history during playback, and at finalize the carry route
+			// refused and returned, so the history route was never asked again
+			// and a listen that history could still identify was thrown away.
+			//
+			// Falling through costs nothing in rigour: every remaining route has
+			// its own uniqueness proof, and VideoIdentityCorroborator still runs
+			// on whatever any of them returns.
+			EventLog.append(
+				"resolve",
+				"carried $preResolvedNativeId ($preResolvedRoute) no longer revalidates " +
+					"for \"$title\" — ${carryAttempt.refusalReason}; asking the ordinary " +
+					"routes rather than refusing the listen",
+			)
 		}
 		return runCatching {
 			val cachedIds = VerifiedIdentityCandidateCache.candidates(

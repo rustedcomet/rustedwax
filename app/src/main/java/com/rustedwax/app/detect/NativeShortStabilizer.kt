@@ -24,7 +24,7 @@ class NativeShortStabilizer {
 
 	private sealed interface Key {
 		data class Organic(
-			val title: String,
+			val title: String?,
 			val ownerHandle: String,
 			val totalSeconds: Long,
 		) : Key

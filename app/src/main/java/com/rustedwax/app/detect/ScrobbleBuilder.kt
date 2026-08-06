@@ -76,18 +76,22 @@ object ScrobbleBuilder {
 		session: SessionSnapshot,
 		facts: VideoFacts? = null,
 		mb: MusicBrainzVerifier.Match? = null,
+		/** The resolver's canonical title, for a Short the screen never titled. */
+		resolvedTitle: String? = null,
 	): Parsed? {
-		val rawTitle = sourceTitle(session, facts) ?: return null
+		val rawTitle = sourceTitle(session, facts, resolvedTitle) ?: return null
 		val channel = sourceArtist(session, facts)
 
 		// Native apps already publish separated title/artist fields. Preserve
 		// those clean values rather than feeding them back through the browser's
 		// Artist–Title grammar or replacing them with fetched page presentation.
-		if (session.isNative && !session.title.isNullOrBlank()) {
+		val nativeTitle = session.title?.takeIf(String::isNotBlank)
+			?: resolvedTitle?.takeIf(String::isNotBlank)
+		if (session.isNative && nativeTitle != null) {
 			return Parsed(
 				artist = session.artist?.trim()?.takeIf(String::isNotEmpty)
 					?: TitleParser.cleanChannel(facts?.author),
-				track = session.title.trim(),
+				track = nativeTitle.trim(),
 			)
 		}
 
@@ -141,6 +145,18 @@ object ScrobbleBuilder {
 		mb: MusicBrainzVerifier.Match? = null,
 		videoId: String? = session.confirmed?.videoId,
 		durationMs: Long? = effectiveDurationMs(session, facts),
+		/**
+		 * The canonical title of the video the resolver proved, for the case
+		 * where the screen never showed one.
+		 *
+		 * A Short sent straight to picture-in-picture exposes no readable title,
+		 * and identity now comes from watch history on owner handle + duration
+		 * instead. Measured 2026-08-06: such a Short counted to 100%, resolved
+		 * correctly, and was then dropped with "payload not buildable" because
+		 * the builder had no title to write. The resolver had one all along —
+		 * it corroborated the id on that video's own watch page.
+		 */
+		resolvedTitle: String? = null,
 	): HiveScrobblePayload? {
 		// The session itself may not have published a duration; `durationMs` is
 		// the shared session-or-watch-page value used by rules and payload.
@@ -148,12 +164,19 @@ object ScrobbleBuilder {
 		val verifiedVideoId = videoId
 			?.takeIf { YOUTUBE_VIDEO_ID.matches(it) }
 			?: return null
-		val sessionTitle = session.title?.takeIf { it.isNotBlank() } ?: return null
+		// The screen's title, when there was one. A Short that went straight to
+		// picture-in-picture never showed one, and that is no longer fatal: the
+		// resolver proved the video on its own watch page and its canonical title
+		// is the better name anyway.
+		val sessionTitle = session.title?.takeIf { it.isNotBlank() }
+			?: facts?.title?.takeIf { it.isNotBlank() }
+			?: resolvedTitle?.takeIf { it.isNotBlank() }
+			?: return null
 		val duration = durationMs?.takeIf { it > 0 } ?: return null
 
 		// Enrichment's title is the video's real one; the media session's can be
 		// whatever the page chose to publish.
-		val rawTitle = sourceTitle(session, facts) ?: sessionTitle
+		val rawTitle = sourceTitle(session, facts, resolvedTitle) ?: sessionTitle
 		val channel = sourceArtist(session, facts)
 
 		val siteSaysMusic = when (val id = session.identity) {
@@ -181,7 +204,7 @@ object ScrobbleBuilder {
 		)
 
 		// Credits depend on the kind — a video is not split into artist/track.
-		val credits = creditsForKind(kind.kind, session, facts, mb) ?: return null
+		val credits = creditsForKind(kind.kind, session, facts, mb, resolvedTitle) ?: return null
 
 		return HiveScrobblePayload(
 			kind = kind.kind,
@@ -248,8 +271,15 @@ object ScrobbleBuilder {
 		).reason
 	}
 
-	private fun sourceTitle(session: SessionSnapshot, facts: VideoFacts?): String? =
-		if (session.isNative) session.title ?: facts?.title else facts?.title ?: session.title
+	private fun sourceTitle(
+		session: SessionSnapshot,
+		facts: VideoFacts?,
+		resolvedTitle: String? = null,
+	): String? = if (session.isNative) {
+		session.title ?: facts?.title ?: resolvedTitle
+	} else {
+		facts?.title ?: session.title ?: resolvedTitle
+	}
 
 	private fun sourceArtist(session: SessionSnapshot, facts: VideoFacts?): String? =
 		if (session.isNative) session.artist ?: facts?.author else facts?.author ?: session.artist

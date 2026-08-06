@@ -711,4 +711,18 @@ class TitleParserTest {
 		assertEquals("South of Heaven", parsed.track)
 	}
 	// endregion
+
+	@Test
+	fun `the AtVEVO channel form resolves to the artist`() {
+		// Measured 2026-08-05: stripping bare "VEVO" from "NickiMinajAtVEVO"
+		// left "NickiMinajAt", whose key never equalled "nickiminaj", so every
+		// Nicki Minaj upload was rejected as "channel contradicts ended channel"
+		// — 14 in one session — when the two names are the same channel.
+		assertEquals("NickiMinaj", TitleParser.cleanChannel("NickiMinajAtVEVO"))
+		assertEquals("Korn", TitleParser.cleanChannel("KornVEVO"))
+		assertEquals("Spice", TitleParser.cleanChannel("SpiceOfficialVEVO"))
+		assertEquals("Korn", TitleParser.cleanChannel("Korn - Topic"))
+		// A channel that is only the marker word is never erased.
+		assertEquals("VEVO", TitleParser.cleanChannel("VEVO"))
+	}
 }

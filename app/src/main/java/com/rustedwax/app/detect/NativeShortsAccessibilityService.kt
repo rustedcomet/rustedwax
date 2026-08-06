@@ -5,9 +5,11 @@ import android.content.Context
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
+import com.rustedwax.app.storage.Settings as AppSettings
 import android.view.accessibility.AccessibilityNodeInfo
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -22,6 +24,14 @@ class NativeShortsAccessibilityService : AccessibilityService() {
 	@Volatile private var lastCompleteProofAtMillis = 0L
 	private var acquisitionRefreshUntilElapsed = 0L
 	private var lastPlaylistPollElapsed = 0L
+
+	/** Reporting-only detector for the §5.1 event-stream outage. */
+	private val eventSilence = AccessibilityEventSilence()
+
+	/** Public-API evidence that a surface-less Short is still playing. */
+	private val pipProbe by lazy { PipPlaybackProbe(applicationContext) }
+	private var pipInferenceEnabled = false
+	private var loggedMissingUsageAccess = false
 	private val refresh = object : Runnable {
 		override fun run() {
 			val now = System.currentTimeMillis()
@@ -37,9 +47,15 @@ class NativeShortsAccessibilityService : AccessibilityService() {
 					now,
 				)
 			}
+			// Deliberately last, and only asked when nothing else already brings
+			// a capture: the outage worth catching is the one where no Short is
+			// latched and a latched playlist has stopped the acquisition poll,
+			// so nothing runs and the observer goes quiet without a trace.
+			val silenceProbeDue = eligible() && eventSilence.probeDue(SystemClock.elapsedRealtime())
 			if (NativeShortsObserver.shouldRefresh() ||
 				SystemClock.elapsedRealtime() <= acquisitionRefreshUntilElapsed ||
-				playlistAcquisitionDue()
+				playlistAcquisitionDue() ||
+				silenceProbeDue
 			) {
 				requestObservation("bounded foreground refresh")
 			}
@@ -71,6 +87,7 @@ class NativeShortsAccessibilityService : AccessibilityService() {
 	override fun onServiceConnected() {
 		MonitorSwitch.init(applicationContext)
 		NativeSourceSwitches.init(applicationContext)
+		eventSilence.started(SystemClock.elapsedRealtime())
 		NativeShortsObserver.connected()
 		EventLog.append(
 			"native-shorts",
@@ -83,6 +100,8 @@ class NativeShortsAccessibilityService : AccessibilityService() {
 	override fun onAccessibilityEvent(event: AccessibilityEvent?) {
 		if (!eligible()) return
 		if (event?.packageName?.toString() != YouTubeProbe.YOUTUBE_PACKAGE) return
+		eventSilence.eventReceived(SystemClock.elapsedRealtime())
+			?.let { EventLog.append("native-shorts", it) }
 		// YouTube can publish its final root/title/seekbar after its last content
 		// callback. Retry only this exact foreground package for a short bounded
 		// acquisition window; once proven, SessionProbe requests active refreshes.
@@ -131,6 +150,54 @@ class NativeShortsAccessibilityService : AccessibilityService() {
 		}
 	}
 
+	/**
+	 * One capture outcome into the §5.1 detector.
+	 *
+	 * The screen check is read here rather than inside the detector so the
+	 * decision stays pure and testable. `isInteractive` is the display state,
+	 * which is what "the user could have been watching this" actually needs —
+	 * playback with the screen off is unobservable by design, not by fault.
+	 */
+	private fun reportEventSilence(surface: ObservedSurface) {
+		val screenOn = runCatching {
+			getSystemService(PowerManager::class.java)?.isInteractive == true
+		}.getOrDefault(false)
+		eventSilence.observed(SystemClock.elapsedRealtime(), surface, screenOn)
+			?.let { EventLog.append("native-shorts", it) }
+	}
+
+	/**
+	 * Whether a Short whose seekbar has gone is nonetheless still playing.
+	 *
+	 * Off unless the user opted in, and inert without Usage Access — without it
+	 * the audio list cannot be attributed to YouTube at all, so the honest
+	 * answer is "don't know", which credits nothing. Said once per service life
+	 * rather than every second.
+	 */
+	private fun pipPlaying(nowMillis: Long): Boolean {
+		// Read here rather than in `eligible()`: this path is only reached on the
+		// PiP signature, whereas `eligible()` runs on every accessibility event.
+		// Reading per call also means toggling the switch takes effect on the
+		// next poll instead of the next reconnect.
+		pipInferenceEnabled = runCatching {
+			AppSettings(applicationContext).pipInference
+		}.getOrDefault(false)
+		if (!pipInferenceEnabled) return false
+		if (!pipProbe.hasUsageAccess()) {
+			if (!loggedMissingUsageAccess) {
+				loggedMissingUsageAccess = true
+				EventLog.append(
+					"native-shorts",
+					"picture-in-picture time is on, but Usage Access is not granted — " +
+						"YouTube cannot be told apart from any other app playing audio, " +
+						"so PiP will keep counting for nothing until it is granted",
+				)
+			}
+			return false
+		}
+		return pipProbe.youTubePlayingWithoutSurface(nowMillis)
+	}
+
 	private fun observeForeground(reason: String) {
 		val captureStartedElapsed = SystemClock.elapsedRealtime()
 		val now = System.currentTimeMillis()
@@ -139,12 +206,21 @@ class NativeShortsAccessibilityService : AccessibilityService() {
 				"observer idle: Monitoring and Native YouTube must both be on",
 				now,
 			)
+			// Hold the silence clock at "now" while switched off, so the quiet of
+			// a deliberate opt-out never accumulates into an outage that gets
+			// reported the moment monitoring comes back on.
+			eventSilence.started(SystemClock.elapsedRealtime())
 			NativePlaylistObserver.clear("Monitoring or Native YouTube switched off")
 			return
 		}
 		val root = rootInActiveWindow
 		if (root == null) {
 			NativeShortsObserver.missing("no active native YouTube accessibility root", now)
+			// With the screen off this is ordinary. With the screen on it means
+			// the service cannot see any window at all, which is the most likely
+			// shape of the §5.1 outage — hence reporting it rather than only
+			// reporting captures that succeeded.
+			reportEventSilence(ObservedSurface.NO_ROOT)
 			// Backgrounded or screen off. The latch holds through this — playback
 			// continues without any tree at all.
 			NativePlaylistObserver.observe(
@@ -169,10 +245,19 @@ class NativeShortsAccessibilityService : AccessibilityService() {
 		NativePlaylistObserver.observe(NativePlaylistParser.parse(playlistCapture), now)
 		if (tree == null) {
 			NativeShortsObserver.missing("foreground root was hidden or not native YouTube", now)
+			reportEventSilence(ObservedSurface.OTHER_APP)
 			return
 		}
 		val result = NativeShortParser.parse(tree)
 		if (destroyed) return
+		// Reporting-only; nothing below branches on it.
+		reportEventSilence(
+			if (result is NativeShortParser.Result.Invalid) {
+				ObservedSurface.YOUTUBE_NO_PLAYER
+			} else {
+				ObservedSurface.YOUTUBE_SHORTS_PLAYER
+			},
+		)
 		if (SystemClock.elapsedRealtime() - captureStartedElapsed > MAX_CAPTURE_AGE_MS) {
 			NativeShortsObserver.missing(
 				"$reason: accessibility capture exceeded the freshness bound",
@@ -181,7 +266,14 @@ class NativeShortsAccessibilityService : AccessibilityService() {
 			return
 		}
 		if (result is NativeShortParser.Result.Invalid) {
-			NativeShortsObserver.missing("$reason: ${result.reason}", now)
+			NativeShortsObserver.missing(
+				"$reason: ${result.reason}",
+				now,
+				progressSurfaceLost = result.progressSurfaceLost,
+				// Only asked for the PiP signature. Every other refusal means the
+				// Short is gone, not unmeasurable, and must not accrue anything.
+				inferredPlaying = result.progressSurfaceLost && pipPlaying(now),
+			)
 		} else {
 			lastCompleteProofAtMillis = now
 			NativeShortsObserver.parsed(result, now)
@@ -294,6 +386,11 @@ class NativeShortsAccessibilityService : AccessibilityService() {
 				child.recycle()
 			}
 		}
+		// Geometry is what lets the parser pick the title by *where it is* rather
+		// than by being the last survivor of a blocklist. See
+		// NativeShortParser.titleCandidate.
+		val bounds = android.graphics.Rect()
+		runCatching { node.getBoundsInScreen(bounds) }
 		return NativeShortNode(
 			packageName = node.packageName?.toString(),
 			resourceId = node.viewIdResourceName,
@@ -302,6 +399,10 @@ class NativeShortsAccessibilityService : AccessibilityService() {
 			className = node.className?.toString(),
 			visible = node.isVisibleToUser,
 			clickable = node.isClickable,
+			left = bounds.left,
+			top = bounds.top,
+			right = bounds.right,
+			bottom = bounds.bottom,
 			children = children,
 		)
 	}

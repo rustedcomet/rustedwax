@@ -233,7 +233,20 @@ object TitleParser {
 
 	/** Channel suffixes that mark an artist-owned channel. */
 	private val CHANNEL_SUFFIXES =
-		listOf("VEVO", " - Topic", "Official", "Music", "TV", "Records")
+		listOf(
+		// "AtVEVO" first: stripping bare "VEVO" off `NickiMinajAtVEVO` leaves
+		// `NickiMinajAt`, whose key never equals `nickiminaj`. Measured
+		// 2026-08-05 — 14 rejections in one session, every Nicki Minaj upload,
+		// each logged as "channel contradicts ended channel" when the two names
+		// are the same channel.
+		"AtVEVO",
+		"VEVO",
+		" - Topic",
+		"Official",
+		"Music",
+		"TV",
+		"Records",
+	)
 
 	fun parse(rawTitle: String, channel: String?): Parsed {
 		// Note this is [cleanCore], not [clean]: the trailing year must not be

@@ -433,7 +433,12 @@ class SessionProbe(context: Context) {
 			is NativeShortsObserver.Event.Disconnected ->
 				foregroundShortTracker.discard(event.reason)
 			is NativeShortsObserver.Event.Missing ->
-				foregroundShortTracker.proofMissing(event.observedAtMillis, event.reason)
+				foregroundShortTracker.proofMissing(
+					event.observedAtMillis,
+					event.reason,
+					progressSurfaceLost = event.progressSurfaceLost,
+					inferredPlaying = event.inferredPlaying,
+				)
 			is NativeShortsObserver.Event.Parsed -> {
 				val epoch = NativeSourceSwitches.epochFor(YouTubeProbe.YOUTUBE_PACKAGE)
 					?: return
@@ -465,6 +470,21 @@ class SessionProbe(context: Context) {
 				}
 			}
 		}
+		// A Short opened and sent straight to picture-in-picture never gives the
+		// accessibility tree a stably readable seekbar, so the foreground route
+		// acquires nothing and there is no active Short to credit. Its
+		// MediaSession still carries title and duration and still publishes
+		// STATE_NONE, so the same evidence is fed to the media-session watch
+		// instead. Only reached when nothing is latched, so a Short being tracked
+		// properly can never be credited twice.
+		if (!foregroundShortTracker.hasActive) {
+			val pipEvent = event as? NativeShortsObserver.Event.Missing
+			if (pipEvent != null && pipEvent.progressSurfaceLost) {
+				watches.values
+					.filter { it.packageName == YouTubeProbe.YOUTUBE_PACKAGE }
+					.forEach { it.creditPipInference(pipEvent.observedAtMillis, pipEvent.inferredPlaying) }
+			}
+		}
 		foregroundShortSnapshot = update.active
 		NativeShortsObserver.setRefreshNeeded(foregroundShortTracker.hasActive)
 		watches.values
@@ -491,10 +511,15 @@ class SessionProbe(context: Context) {
 			EventLog.append(
 				"finalize",
 				"${ended.packageName} [foreground Short lifecycle] ${ended.title} — " +
-					"measured ${ended.playedMs / 1000}s of ${(ended.durationMs ?: 0) / 1000}s" +
-					if (ended.foregroundProgressLost) {
-						" (progress surface lost — the Short left the foreground " +
-							"player, so the remainder is unmeasured, not zero)"
+					"played ${ended.playedMs / 1000}s of ${(ended.durationMs ?: 0) / 1000}s" +
+					if (ended.inferredPlayedMs > 0) {
+						" (${(ended.playedMs - ended.inferredPlayedMs) / 1000}s measured " +
+							"from the seekbar + ${ended.inferredPlayedMs / 1000}s inferred " +
+							"in picture-in-picture)"
+					} else if (ended.foregroundProgressLost) {
+						" (progress surface lost — the seekbar container was still " +
+							"there but published no readable time, so the remainder " +
+							"is unmeasured, not zero)"
 					} else {
 						""
 					},
@@ -653,6 +678,46 @@ class SessionProbe(context: Context) {
 				if (discardNativeDurationFragment) {
 					cancelNativeStoppedFinalization()
 					cancelContinuation()
+					// A downward replacement that lands on a fragment which has
+					// already earned a listen is not an ad fragment — it is the
+					// real track, with an interstitial's length published over it
+					// at the very end. Measured 2026-08-06: "Nicki Minaj - Barbie
+					// Dreams" (301s) and "Red Ruby Da Sleeze" (207s) both had a
+					// ~13s duration swapped in near the end, and discarding threw
+					// the whole listen away — the log then read
+					// "played 18s of 13s" and every route refused, because they
+					// all require the duration to agree.
+					//
+					// Finalizing instead freezes the duration that was in force
+					// while it was playing, which is the only one it was ever
+					// measured against. The discard still happens for everything
+					// that had not earned a listen, which is the ad case the
+					// branch was written for.
+					val priorDuration = maxOf(
+						trackIdentity.durationMs ?: 0,
+						longestDurationMs ?: 0,
+					).takeIf { it > 0 }
+					val replacementIsDownward = priorDuration != null &&
+						(newIdentity.durationMs ?: 0) < priorDuration
+					if (replacementIsDownward) {
+						// Same title, shorter number, still playing: this is
+						// YouTube churning the length, not a different item. Hold
+						// the longest length and keep accumulating, so the watch
+						// stays one listen instead of becoming a pile of scraps.
+						longestDurationMs = priorDuration
+						EventLog.append(
+							"native-identity",
+							"$packageName reported a shorter length " +
+								"(${priorDuration / 1000}s → " +
+								"${(newIdentity.durationMs ?: 0) / 1000}s) for an unchanged " +
+								"title after ${playedMsNow() / 1000}s played; keeping the " +
+								"longer length and continuing the same listen",
+						)
+						metadata = md
+						logMetadata(md, "shorter length reported for an unchanged title")
+						publish()
+						return
+					}
 					EventLog.append(
 						"native-identity",
 						"$packageName exact-ID-less same-metadata duration changed from " +
@@ -1037,6 +1102,10 @@ class SessionProbe(context: Context) {
 			cancelNativeStoppedFinalization()
 			invalidateNativeResolution()
 			playedMs = 0
+			longestDurationMs = null
+			// Per-track, exactly like playedMs: its duration cap belongs to the
+			// track that is ending, never to the next one.
+			resetPipInference()
 			fastestSpeedSeen = 1.0
 			loopDetected = false
 			playingSince = if (isPlaying(state)) SystemClock.elapsedRealtime() else 0
@@ -1435,6 +1504,63 @@ class SessionProbe(context: Context) {
 		 * the window that just ended was played at the rate that was in effect
 		 * during it, not at the rate being switched to.
 		 */
+		/**
+		 * Wall-clock credited while this session was unmeasurable in PiP.
+		 *
+		 * The foreground-Short route cannot help here: opening a Short and going
+		 * straight to picture-in-picture never gives the accessibility tree a
+		 * stably readable seekbar, so nothing is ever acquired. Measured
+		 * 2026-08-05 on "BECKY G, MAYORES" — the MediaSession carried
+		 * `TITLE` and `DURATION = 50000` and then reported `state=NONE`,
+		 * `pos=0`, `isActive=false` for the whole session. Title and duration are
+		 * there; only progress is missing, which is exactly what this supplies.
+		 */
+		/**
+		 * The longest length this unchanged title has ever claimed.
+		 *
+		 * YouTube republishes a *shorter* length for the same material — measured
+		 * 2026-08-06, a 415s live set reported 415s, then 11s, then 6s while it
+		 * was still playing the same thing. Taking each new number at face value
+		 * chopped one seven-minute watch into scraps of 6 and 11 seconds, none of
+		 * which could clear any threshold.
+		 *
+		 * Keeping the longest is strictly safer than taking the newest: the case
+		 * the shorter number would create is a song looking complete because an
+		 * interstitial's length was written over it, which is the exact failure
+		 * the old pre-roll guard existed to prevent.
+		 */
+		private var longestDurationMs: Long? = null
+
+		private var pipInference: PipPlaybackInference? = null
+		private var pipInferredMs: Long = 0
+
+		/**
+		 * One tick of PiP evidence for a session the MediaSession cannot measure.
+		 *
+		 * Only ever credits when the session publishes no usable progress of its
+		 * own: a regular video in PiP keeps reporting position and is measured
+		 * normally, and must not be double-counted.
+		 */
+		fun creditPipInference(nowMillis: Long, playing: Boolean) {
+			if (suppressedByForegroundShort || !isNative) return
+			val duration = durationOf(metadata) ?: return
+			if (duration <= 0 || isPlaying(state)) {
+				pipInference?.observe(nowMillis, playing = false)
+				return
+			}
+			val running = pipInference ?: PipPlaybackInference(
+				durationMs = duration,
+				measuredMs = playedMs,
+			).also { pipInference = it }
+			running.observe(nowMillis, playing)
+			pipInferredMs = running.credited
+		}
+
+		private fun resetPipInference() {
+			pipInference = null
+			pipInferredMs = 0
+		}
+
 		private fun accumulate() {
 			if (suppressedByForegroundShort) {
 				playingSince = 0
@@ -1452,7 +1578,7 @@ class SessionProbe(context: Context) {
 		private fun playedMsNow(): Long = if (suppressedByForegroundShort) {
 			0
 		} else {
-			playedMs + if (playingSince != 0L) {
+			playedMs + pipInferredMs + if (playingSince != 0L) {
 				((SystemClock.elapsedRealtime() - playingSince) * speedOf(state)).toLong()
 			} else {
 				0
@@ -1529,6 +1655,8 @@ class SessionProbe(context: Context) {
 			val md = metadata
 			val ps = state
 			val duration = MetadataDump.longOrNull(md, MediaMetadata.METADATA_KEY_DURATION)
+				?.let { published -> maxOf(published, longestDurationMs ?: 0) }
+				?: longestDurationMs
 			val position = extrapolatedPosition(ps)
 			val played = playedMsNow()
 			// A finalized snapshot may not consult the later foreground URL. Live
@@ -1575,6 +1703,7 @@ class SessionProbe(context: Context) {
 				// division are content milliseconds, which is why the accumulator
 				// has to be speed-scaled.
 				percentPlayed = duration?.takeIf { it > 0 }?.let { played.toDouble() / it },
+				inferredPlayedMs = pipInferredMs,
 				identity = identity,
 				resolverContext = frozenResolver,
 				notificationHint = boundHint(md),

@@ -266,7 +266,7 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 	 * emoji. The account's own history knows exactly which video it was.
 	 */
 	suspend fun recentShortIds(
-		title: String,
+		title: String?,
 		limit: Int = MAX_SHORT_CANDIDATES,
 	): List<String> {
 		if (!vault.hasSession) return emptyList()
@@ -285,6 +285,20 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 		//
 		// This selects; it decides nothing. Every id still has its own watch
 		// page re-fetched and must agree on title, duration and @handle.
+		// With no on-screen title there is nothing to select *by*, so offer the
+		// most recent Shorts and let owner handle + duration decide. That is the
+		// same gate as always, minus the selector — and the selector was never
+		// authority. This is the path a Short takes when YouTube's footer restyle
+		// costs the title but leaves the handle and the seekbar intact.
+		if (title == null) {
+			val recent = shorts.map(WatchHistoryParser.ShortEntry::videoId).distinct().take(limit)
+			EventLog.append(
+				"history",
+				"no on-screen title for this Short; offering the ${recent.size} most recent " +
+					"of ${shorts.size} feed Shorts for owner-handle + duration verification",
+			)
+			return recent
+		}
 		val wanted = SearchResultsParser.titleKey(title)
 		val byTitle = shorts
 			.filter { SearchResultsParser.titleKey(it.title) == wanted }

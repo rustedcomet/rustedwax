@@ -89,10 +89,19 @@ object VideoIdentityCorroborator {
 			if (!resolution.uniquelyResolved) {
 				return "foreground Short id was not the only corroborated candidate"
 			}
-			val frozenTitle = session.title ?: return "foreground Short title was missing"
+			// A missing title is no longer a refusal. YouTube's footer lost its
+			// resource ids, and a Short sent straight to picture-in-picture never
+			// exposes a readable title at all — measured 2026-08-06, a Short
+			// counted to 100% and was rejected here for having none. The title
+			// was only ever one of three agreeing fields; duration, owner handle
+			// and the watch page's own handle all still bind below, and the id
+			// itself was resolved from the account's watch history against those
+			// same two fields. When a title *is* present it must still agree.
+			val frozenTitle = session.title
 			val resolvedTitle = displayedTitle ?: resolution.title
 				?: return "resolved candidate omitted the canonical title"
-			if (SearchResultsParser.titleKey(frozenTitle) !=
+			if (frozenTitle != null &&
+				SearchResultsParser.titleKey(frozenTitle) !=
 				SearchResultsParser.titleKey(resolvedTitle)
 			) {
 				return "resolved candidate title \"$resolvedTitle\" contradicts foreground title \"$frozenTitle\""
@@ -264,7 +273,23 @@ object VideoIdentityCorroborator {
 			val titleAndDurationCorroborate = titleEvidence != null &&
 				titleEvidence != VideoTitleMatcher.Evidence.CONTRADICTION &&
 				SessionProbe.durationsCorroborate(session.durationMs, lengthSeconds)
+			// A watch page credits collaborators where the media session names
+			// only the uploader: "La Melma Music and 2 more" against
+			// "La Melma Music", "Eladio Carrion and CAZZU" against
+			// "Eladio Carrion". Same channel, longer byline — measured
+			// 2026-08-05, 12 rejections in one session. The *leader* of the
+			// byline is the uploader, so matching it is not a relaxation: title
+			// and duration still have to agree, and a byline whose leader is a
+			// different channel still contradicts.
+			// Requires the title and the duration to agree as well, so this is
+			// three matching fields, not a relaxation to one. A byline whose
+			// leader is a different channel still contradicts, and a name with no
+			// separator ("Owner Collaborator") is not a byline at all.
+			val bylineLeaderMatches = wanted != null && titleAndDurationCorroborate &&
+				SearchResultsParser.collaboratorLeader(channel)
+					?.let { SearchResultsParser.channelKey(it) } == wanted
 			if (wanted != null && actual != null && wanted != actual &&
+				!bylineLeaderMatches &&
 				!(sameObservedGeneration && titleAndDurationCorroborate) &&
 				!allowCollaborativeByline && !allowStructuredNativeMusic &&
 				!(allowPlaylistChannelAlias && titleAndDurationCorroborate)

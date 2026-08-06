@@ -89,4 +89,31 @@ class YouTubeAdDetectorTest {
 		)
 		assertFalse(SessionProbe.adEvidenceMatches(short.copy(isShort = false), evidence))
 	}
+
+	@Test
+	fun `measured multi-line Shorts ad card is recognised by its own line`() {
+		// Captured on the device 2026-08-05. The whole ad card arrives as one
+		// content description, with the label on its own line rather than in its
+		// own node. Whole-literal matching missed every one of these, so the ad
+		// refused on the owner-handle gate — ads have no channel — and was logged
+		// as an identity failure instead of an ad.
+		assertEquals(
+			"Ad",
+			YouTubeAdDetector.signalFor("Dola: Smart AI Assistant\nAd\n4.4 stars\nFREE"),
+		)
+		assertEquals(
+			"Ad",
+			YouTubeAdDetector.signalFor("TikTok\nAd\n4.4 stars\nFREE"),
+		)
+	}
+
+	@Test
+	fun `a line has to be nothing but the label`() {
+		// The guarantee that keeps brand and channel names safe: "ad" occurring
+		// inside a line never counts, however many lines there are.
+		assertNull(YouTubeAdDetector.signalFor("Adele Live\n2 million views"))
+		assertNull(YouTubeAdDetector.signalFor("Read this now\nbefore it goes"))
+		assertNull(YouTubeAdDetector.signalFor("How to add spice\nto anything"))
+		assertNull(YouTubeAdDetector.signalFor("Bad Bunny\nnew single"))
+	}
 }

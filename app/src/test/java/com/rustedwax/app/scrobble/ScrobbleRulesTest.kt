@@ -401,6 +401,54 @@ class ScrobbleRulesTest {
 		val why = ScrobbleRules.prefilter(playedMs = 1_000, durationMs = null)
 		assertTrue(why!!.contains("too little"))
 	}
+
+	@Test
+	fun `prefilter refuses a lost progress surface without quoting a percentage`() {
+		// The shipped defect (FIELD §3.2): the honest wording was added to
+		// decide(), but a sub-threshold Short is rejected here and never reaches
+		// decide() at all — so the log went on printing "played 0%, below 60%
+		// threshold" for a session that was never measured. This is the common
+		// path, and it is the one the field log actually showed.
+		val why = ScrobbleRules.prefilter(
+			playedMs = 0,
+			durationMs = fourMinutes,
+			progressSurfaceLost = true,
+		)
+		assertFalse(why!!.contains("%"))
+		assertTrue(why.contains("cannot be measured"))
+
+		// Both stages must word it identically, or the same event reads as two
+		// different failures depending on which one caught it.
+		assertEquals(
+			ScrobbleRules.decide(
+				playedMs = 0,
+				durationMs = fourMinutes,
+				progressSurfaceLost = true,
+			).skippedBecause,
+			why,
+		)
+	}
+
+	@Test
+	fun `a lost progress surface still cannot rescue a track prefilter would pass`() {
+		// The marker only ever changes the wording of a refusal.
+		assertNull(
+			ScrobbleRules.prefilter(
+				playedMs = 145_000,
+				durationMs = fourMinutes,
+				progressSurfaceLost = true,
+			),
+		)
+		// And an explicit ad signal still outranks it, as in decide().
+		assertTrue(
+			ScrobbleRules.prefilter(
+				playedMs = 0,
+				durationMs = fourMinutes,
+				explicitAdSignal = "Sponsored",
+				progressSurfaceLost = true,
+			)!!.contains("marked this track as an ad"),
+		)
+	}
 	// endregion
 
 	@Test

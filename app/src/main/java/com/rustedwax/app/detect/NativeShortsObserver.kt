@@ -21,7 +21,14 @@ object NativeShortsObserver {
 	sealed interface Event {
 		data object Connected : Event
 		data class Parsed(val result: NativeShortParser.Result, val observedAtMillis: Long) : Event
-		data class Missing(val reason: String, val observedAtMillis: Long) : Event
+		data class Missing(
+			val reason: String,
+			val observedAtMillis: Long,
+			/** Carries [NativeShortParser.Result.Invalid.progressSurfaceLost] through. */
+			val progressSurfaceLost: Boolean = false,
+			/** Evidence the Short is still playing despite having no progress surface. */
+			val inferredPlaying: Boolean = false,
+		) : Event
 		data class Disconnected(val reason: String) : Event
 	}
 
@@ -96,7 +103,12 @@ object NativeShortsObserver {
 		onEvent?.invoke(Event.Parsed(result, observedAtMillis))
 	}
 
-	fun missing(reason: String, observedAtMillis: Long) {
+	fun missing(
+		reason: String,
+		observedAtMillis: Long,
+		progressSurfaceLost: Boolean = false,
+		inferredPlaying: Boolean = false,
+	) {
 		stabilizer.reset()
 		_status.value = _status.value.copy(
 			connected = true,
@@ -108,7 +120,9 @@ object NativeShortsObserver {
 			lastObservationAtMillis = observedAtMillis,
 			exactReason = reason,
 		)
-		onEvent?.invoke(Event.Missing(reason, observedAtMillis))
+		onEvent?.invoke(
+			Event.Missing(reason, observedAtMillis, progressSurfaceLost, inferredPlaying),
+		)
 	}
 
 	fun disconnected(reason: String) {

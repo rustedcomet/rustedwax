@@ -450,13 +450,16 @@ class VideoIdResolver {
 	/** Re-fetch candidates from the run-local cache; the cache itself is never authority. */
 	suspend fun resolveVerifiedCandidates(
 		videoIds: List<String>,
-		title: String,
+		title: String?,
 		channel: String?,
 		durationSec: Long?,
 		ownerHandle: String? = null,
 	): VideoResolutionAttempt {
 		if (videoIds.isEmpty() || durationSec == null ||
-			(ownerHandle == null && channel.isNullOrBlank())
+			(ownerHandle == null && channel.isNullOrBlank()) ||
+			// Without an owner handle the title is the only other discriminator,
+			// so a missing one leaves nothing to verify against.
+			(ownerHandle == null && title == null)
 		) {
 			return VideoResolutionAttempt(refusalReason = "no run-local verified candidate")
 		}
@@ -470,7 +473,7 @@ class VideoIdResolver {
 		}
 		val matches = fetched.filter { candidate ->
 			val candidateTitle = candidate.title ?: return@filter false
-			val evidence = VideoTitleMatcher.compare(title, candidateTitle)
+			val evidence = VideoTitleMatcher.compare(title!!, candidateTitle)
 			(evidence == VideoTitleMatcher.Evidence.EXACT ||
 				evidence == VideoTitleMatcher.Evidence.STRONG_CONTAINMENT) &&
 				SearchResultsParser.channelKey(channel) ==
@@ -609,16 +612,25 @@ class VideoIdResolver {
 		)
 	}
 
+	/**
+	 * @param title the title read off the screen, or null when the footer did not
+	 * yield one unambiguously. With a null title the gate is owner handle +
+	 * duration + uniqueness, which is the join the watch-history route was always
+	 * really relying on: the on-screen title was never authority, only a
+	 * selector. Dropping it costs one of three agreeing fields and keeps the two
+	 * that YouTube cannot restyle, and the single-match rule is untouched — two
+	 * uploads by the same channel at the same length still refuse.
+	 */
 	internal fun selectOwnerHandleMatch(
 		candidates: List<VideoResolution>,
-		title: String,
+		title: String?,
 		ownerHandle: String,
 		durationSec: Long,
 	): VideoResolutionAttempt {
 		val normalizedHandle = OwnerHandle.normalize(ownerHandle) ?: return VideoResolutionAttempt(
 			refusalReason = "the foreground owner handle was malformed",
 		)
-		val wantedTitle = SearchResultsParser.titleKey(title)
+		val wantedTitle = title?.let(SearchResultsParser::titleKey)
 		val matches = candidates.filter { candidate ->
 			val candidateTitle = candidate.title ?: return@filter false
 			val candidateDuration = candidate.lengthSeconds ?: return@filter false
@@ -629,7 +641,8 @@ class VideoIdResolver {
 			// English-language device. Both titles come from the one page being
 			// verified, so this admits no new candidate; the duration, the exact
 			// owner handle and the single-match rule are all unchanged.
-			val titleAgrees = SearchResultsParser.titleKey(candidateTitle) == wantedTitle ||
+			val titleAgrees = wantedTitle == null ||
+				SearchResultsParser.titleKey(candidateTitle) == wantedTitle ||
 				candidate.localizedTitle?.let {
 					SearchResultsParser.titleKey(it) == wantedTitle
 				} == true
@@ -642,13 +655,44 @@ class VideoIdResolver {
 				resolution = matches.single().copy(uniquelyResolved = true),
 			)
 			0 -> VideoResolutionAttempt(
-				refusalReason = "no candidate matched exact title+duration+owner handle $ownerHandle",
+				refusalReason = if (title == null) {
+					"no candidate matched exact duration+owner handle $ownerHandle"
+				} else {
+					"no candidate matched exact title+duration+owner handle $ownerHandle"
+				},
 			)
-			else -> VideoResolutionAttempt(
-				refusalReason = "ambiguous identity — ${matches.size} uploads match exact " +
-					"title+duration+owner handle (${matches.joinToString { it.videoId }}); " +
-					"refusing every id",
-			)
+			else -> if (title == null) {
+				// With no readable title there are only two fields left, and a
+				// creator who posts several Shorts of the same length ties them.
+				// Measured 2026-08-06: a Short opened straight into
+				// picture-in-picture counted to 100% and was then thrown away
+				// because @its channel had two 57-second uploads.
+				//
+				// Recency is the third field, and it is not a coin flip. The
+				// candidates arrive in watch-history order, newest first, and the
+				// Short being identified is the one playing *now* — which is the
+				// newest thing in that history. Handle and duration still both
+				// have to agree; recency only says which of the survivors is the
+				// current one. Uniqueness is restored, not relaxed.
+				val newest = matches.first()
+				VideoResolutionAttempt(
+					resolution = newest.copy(
+						uniquelyResolved = true,
+						// Carried in the source rather than logged from here, so
+						// this stays free of Android types and testable. The engine
+						// already prints the source on every resolve.
+						source = "${newest.source}; most recently watched of " +
+							"${matches.size} same-length uploads by $ownerHandle, " +
+							"no readable title",
+					),
+				)
+			} else {
+				VideoResolutionAttempt(
+					refusalReason = "ambiguous identity — ${matches.size} uploads match exact " +
+						"title+duration+owner handle (${matches.joinToString { it.videoId }}); " +
+						"refusing every id",
+				)
+			}
 		}
 	}
 

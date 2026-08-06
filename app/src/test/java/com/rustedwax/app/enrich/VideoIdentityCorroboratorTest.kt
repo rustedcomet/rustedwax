@@ -443,15 +443,31 @@ class VideoIdentityCorroboratorTest {
 			musicVideoType = type,
 		)
 
-		assertNotNull(VideoIdentityCorroborator.contradiction(session, base, facts(type = null)))
-		assertNotNull(
+		// A byline whose *leader* is the ended channel, with the title and the
+		// duration also agreeing, is the same upload described at greater length
+		// — not a contradiction. Measured 2026-08-05: 12 rejections in one
+		// session on "La Melma Music and 2 more" against "La Melma Music" and
+		// "Eladio Carrion and CAZZU" against "Eladio Carrion", every one a real
+		// listen thrown away. The earlier rule additionally demanded a
+		// YouTube-Music-recognised video and a uniquely-resolved candidate, which
+		// the field showed is not how these arrive — history resolves them, so
+		// those flags are false.
+		assertNull(VideoIdentityCorroborator.contradiction(session, base, facts(type = null)))
+		assertNull(
 			VideoIdentityCorroborator.contradiction(
 				session, base.copy(collaborativeChannel = false), facts(),
 			),
 		)
-		assertNotNull(
+		assertNull(
 			VideoIdentityCorroborator.contradiction(
 				session, base.copy(uniquelyResolved = false), facts(),
+			),
+		)
+		// The three fields still all have to agree: a byline leader match cannot
+		// rescue a contradicting duration.
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				session, base.copy(lengthSeconds = 45), facts(length = 45),
 			),
 		)
 		assertNotNull(

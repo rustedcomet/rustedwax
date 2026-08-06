@@ -11,8 +11,21 @@ data class NativeShortNode(
 	val className: String? = null,
 	val visible: Boolean = true,
 	val clickable: Boolean = false,
+	/**
+	 * On-screen bounds, when the capture supplied them.
+	 *
+	 * All-zero means "not captured", which is the case for every hand-built test
+	 * tree, so geometry is only ever applied when it is actually present.
+	 */
+	val left: Int = 0,
+	val top: Int = 0,
+	val right: Int = 0,
+	val bottom: Int = 0,
 	val children: List<NativeShortNode> = emptyList(),
-)
+) {
+	val hasBounds: Boolean get() = right > left && bottom > top
+	val width: Int get() = right - left
+}
 
 data class NativeShortTree(
 	val root: NativeShortNode,
@@ -24,7 +37,18 @@ object NativeShortParser {
 
 	sealed interface Result {
 		data class Organic(
-			val title: String,
+			/**
+			 * Null when the on-screen title could not be read unambiguously.
+			 *
+			 * The footer lost its resource ids, so the title is the one piece of
+			 * this that YouTube keeps breaking — five separate causes in a single
+			 * day, and still only ~1 Short in 6 identified. The handle and the
+			 * seekbar are far more stable, and together they already prove a Short
+			 * is playing and give its exact length. Identity is then resolved at
+			 * finalize from the account's own watch history, joined on owner
+			 * handle + duration, which is evidence YouTube cannot restyle away.
+			 */
+			val title: String?,
 			val ownerHandle: String,
 			val currentSeconds: Long,
 			val totalSeconds: Long,
@@ -37,7 +61,27 @@ object NativeShortParser {
 			val totalSeconds: Long,
 		) : Result
 
-		data class Invalid(val reason: String) : Result
+		data class Invalid(
+			val reason: String,
+			/**
+			 * The one refusal that means "playing, but unmeasurable" rather than
+			 * "not a Shorts player".
+			 *
+			 * Set only for the exact measured picture-in-picture signature — a
+			 * single visible `reel_time_bar` container with no readable time
+			 * inside it (`FIELD_2026-08-05.md` §4.2: 82 of these and zero
+			 * container failures during PiP). Every other refusal leaves this
+			 * false, including a missing container, a second container, and an
+			 * ambiguous pair of times.
+			 *
+			 * It exists because the honest refusal wording and the finalize
+			 * marker must key off *this* outcome. Keying them off generic proof
+			 * loss instead — which is true whenever any Short ends, scrolling
+			 * away included — put "(progress surface lost …)" on essentially
+			 * every Short finalize (§3.1).
+			 */
+			val progressSurfaceLost: Boolean = false,
+		) : Result
 	}
 
 	fun parse(tree: NativeShortTree): Result {
@@ -90,6 +134,11 @@ object NativeShortParser {
 		if (times.size != 1) {
 			return Result.Invalid(
 				"expected exactly one readable Shorts seekbar time; found ${times.size}",
+				// The container is proven present by the check above, so zero
+				// readable times is the surface going away underneath a live
+				// player, not a structural miss. Two or more is an ambiguous
+				// read of a surface that is still there.
+				progressSurfaceLost = times.isEmpty(),
 			)
 		}
 		val (current, total) = times.single()
@@ -114,7 +163,10 @@ object NativeShortParser {
 		if (handles.size != 1) {
 			return Result.Invalid("expected exactly one exact visible owner handle")
 		}
-		if (title == null) return Result.Invalid("expected exactly one non-control title")
+		// Deliberately NOT refusing on a missing title. It is no longer identity
+		// evidence — the watch-history route is — and refusing here threw away the
+		// measurement as well, which is what made a footer restyle cost the whole
+		// listen rather than just its label.
 		return Result.Organic(title, handles.single(), current, total)
 	}
 
@@ -185,21 +237,77 @@ object NativeShortParser {
 		return out
 	}
 
+	/**
+	 * The title, by resource id where one exists and by *position* where none
+	 * does.
+	 *
+	 * ### Why position
+	 *
+	 * YouTube has removed the resource ids from the Shorts footer — measured
+	 * 2026-08-05, there is no `reel_title` and no id on anything around it. That
+	 * left the fallback choosing the title as "the single survivor of a
+	 * blocklist", which is a losing game: every footer element YouTube adds is a
+	 * new way to produce two survivors and refuse the Short outright. Three
+	 * separate causes were fixed in one day that way — the auto-dub badge, the
+	 * like/comment counters, and an uncounted `View comments` — and the
+	 * acquisition rate was still about one Short in six.
+	 *
+	 * The title has a stable *place*: it runs along the bottom-left of the
+	 * player, spanning most of the width, while every control that keeps being
+	 * mistaken for it lives in the right-hand action column. That is positive
+	 * evidence, and it does not decay each time the footer gains an element.
+	 *
+	 * ### Still fails closed
+	 *
+	 * Geometry narrows the candidates; it never picks between them. If two
+	 * left-aligned candidates survive, this refuses exactly as before — a wrong
+	 * title is a wrong scrobble, and those are permanent.
+	 *
+	 * Applied only when the capture actually supplied bounds, so hand-built trees
+	 * (and any capture where geometry is unavailable) keep the old behaviour.
+	 */
 	private fun titleCandidate(nodes: List<NativeShortNode>): String? {
-		fun candidates(positiveIdOnly: Boolean): List<String> = nodes.flatMap { node ->
-			if (positiveIdOnly && node.resourceId?.contains("title", ignoreCase = true) != true) {
-				return@flatMap emptyList()
+		fun candidates(positiveIdOnly: Boolean): List<Pair<NativeShortNode, String>> =
+			nodes.flatMap { node ->
+				if (positiveIdOnly && node.resourceId?.contains("title", ignoreCase = true) != true) {
+					return@flatMap emptyList()
+				}
+				listOf(node.text, node.contentDescription).mapNotNull { value ->
+					val literal = value?.trim()?.replace(Regex("""\s+"""), " ")
+						?.takeIf(String::isNotEmpty) ?: return@mapNotNull null
+					literal.takeIf { isTitleLike(node, it) }?.let { node to it }
+				}
 			}
-			listOf(node.text, node.contentDescription).mapNotNull { value ->
-				val literal = value?.trim()?.replace(Regex("""\s+"""), " ")
-					?.takeIf(String::isNotEmpty) ?: return@mapNotNull null
-				literal.takeIf { isTitleLike(node, it) }
-			}
-		}.distinct()
 
-		val resourceBound = candidates(positiveIdOnly = true)
+		val resourceBound = candidates(positiveIdOnly = true).map { it.second }.distinct()
 		if (resourceBound.isNotEmpty()) return resourceBound.singleOrNull()
-		return candidates(positiveIdOnly = false).singleOrNull()
+
+		val all = candidates(positiveIdOnly = false)
+		all.map { it.second }.distinct().singleOrNull()?.let { return it }
+		return leftAlignedTitle(all)
+	}
+
+	/**
+	 * Narrow an ambiguous fallback to the candidates in the title's own region.
+	 *
+	 * The action column (like, comment count, share, remix) is pinned to the
+	 * right edge; the title starts at the left. Requiring a candidate to begin in
+	 * the leftmost part of the player's width removes the entire column at once,
+	 * without naming any of its labels.
+	 */
+	private fun leftAlignedTitle(candidates: List<Pair<NativeShortNode, String>>): String? {
+		val measured = candidates.filter { it.first.hasBounds }
+		if (measured.isEmpty()) return null
+		val playerRight = measured.maxOf { it.first.right }
+		val playerLeft = measured.minOf { it.first.left }
+		val span = playerRight - playerLeft
+		if (span <= 0) return null
+		val cutoff = playerLeft + span * TITLE_LEFT_FRACTION / 100
+		return measured
+			.filter { it.first.left <= cutoff }
+			.map { it.second }
+			.distinct()
+			.singleOrNull()
 	}
 
 	private fun isTitleLike(node: NativeShortNode, literal: String): Boolean {
@@ -227,6 +335,25 @@ object NativeShortParser {
 		// finalized at `measured 0s`. Excluded by exact label only — a real prose
 		// title that genuinely conflicts still fails closed, as before.
 		if (key in BADGE_LABELS) return false
+		// The like and comment counters render as bare `ViewGroup`s carrying only
+		// their number — `2K`, `14` — with no resource id, no button class and no
+		// control vocabulary, so every filter above misses them exactly as the
+		// auto-dub badge did. Measured 2026-08-05 on @MontRecaps: the footer had
+		// lost its `reel_title` id entirely, so the id-bound pass found nothing
+		// and the fallback saw three survivors — the real title plus both
+		// counters — making `singleOrNull` null and refusing every organic Short
+		// on the device.
+		//
+		// Excluded by shape, and deliberately only this shape: a count is a bare
+		// number with an optional magnitude suffix. A title that merely *starts*
+		// with a number keeps its own text and still fails closed on conflict.
+		if (COUNT_LABEL.matches(literal)) return false
+		// The upload-date chip, which sits in the same id-less footer and reads as
+		// ordinary prose to every rule above. Measured 2026-08-05: a Short
+		// finalized with the title "August 5, 2026". It failed closed — the
+		// history gate requires title agreement — but a bare date is never a
+		// title, and letting it through cost the real one.
+		if (DATE_LABEL.matches(literal)) return false
 		return key !in EXACT_CONTROLS
 	}
 
@@ -247,8 +374,49 @@ object NativeShortParser {
 	private const val MAX_NODES = 500
 	private const val MAX_TITLE_LENGTH = 500
 
+	/**
+	 * How far into the player's width a title may start, as a percentage.
+	 *
+	 * Measured on the 720px A12: the title begins at x≈30 while the action
+	 * column sits at x≈630 of 720. A third of the width separates them by a wide
+	 * margin in both directions.
+	 */
+	private const val TITLE_LEFT_FRACTION = 33
+
 	private val DIRECT_HANDLE = Regex("""^@[A-Za-z0-9._-]{3,30}$""")
 	private val SINGLE_HASHTAG = Regex("""^#[\p{L}\p{M}\p{N}_-]+$""")
+
+	/**
+	 * A bare engagement counter: `14`, `2K`, `1.2M`, `2,5 mil`.
+	 *
+	 * Both the decimal comma and the decimal point appear depending on locale,
+	 * and the magnitude suffix is localized too (`K`/`M`/`B`, `mil`, `mn`, `tis`).
+	 * Anchored at both ends so only a literal that is *entirely* a count is
+	 * excluded.
+	 */
+	/**
+	 * A bare upload date: `August 5, 2026`, `5 Aug 2026`, `2026-08-05`, `5/8/2026`.
+	 *
+	 * Anchored at both ends, so only a literal that is *entirely* a date is
+	 * excluded — a title that merely mentions one keeps its text.
+	 */
+	private val DATE_LABEL = Regex(
+		"""^(?:""" +
+			// 2026-08-05, 05/08/2026, 5.8.26
+			"""\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}""" +
+			"""|""" +
+			// August 5, 2026  /  5 August 2026  /  ago 5, 2026
+			"""(?:\d{1,2}\s+)?[\p{L}]{3,12}\.?\s+\d{1,2},?(?:\s+\d{4})?""" +
+			"""|""" +
+			"""\d{1,2}\s+(?:de\s+)?[\p{L}]{3,12}\.?(?:\s+(?:de\s+)?\d{4})?""" +
+			""")$""",
+		RegexOption.IGNORE_CASE,
+	)
+
+	private val COUNT_LABEL = Regex(
+		"""^\d{1,3}(?:[.,\s]\d{1,3})*\s?(?:K|M|B|G|mil|mn|mio|tis|rb|jt)?$""",
+		RegexOption.IGNORE_CASE,
+	)
 	private val CHANNEL_DESCRIPTION = Regex(
 		"""^(?:Go to channel|Ir al canal|Acessar canal)\s+(@[A-Za-z0-9._-]{3,30})$""",
 		RegexOption.IGNORE_CASE,
@@ -290,8 +458,24 @@ object NativeShortParser {
 		Regex("""^subscribe to @"""),
 		Regex("""^(?:original|use this|see more videos using this) sound"""),
 		Regex("""^like this video\b"""),
-		Regex("""^view [\d,.]+ comments?$"""),
+		// The count is optional. A Short with no comments yet renders a bare
+		// "View comments", which the counted form missed entirely — so it
+		// survived as a second title candidate and refused identity on every
+		// such Short. Measured 2026-08-05 on "do you remember Maggie Lindemann".
+		Regex("""^view(?:\s+[\d,.]+)?\s+comments?$"""),
 		Regex("""^share this video$"""),
 		Regex("""^remix this short\b"""),
+		// The sound/effect attribution row, which sits directly under the title
+		// and is left-aligned with it, so geometry cannot separate the two.
+		// Measured 2026-08-05 on a Short using the Green screen effect, where it
+		// rendered as two nodes — "Green screen with @MirajYts" and
+		// "Green screen, Effect · 297M Shorts," — both surviving as title
+		// candidates and refusing the Short.
+		//
+		// Both forms are attribution rather than prose: an effect or sound name
+		// followed by an author handle, or by a Shorts usage count. Anchored
+		// tightly so a title that merely mentions a creator is untouched.
+		Regex("""\bwith @[a-z0-9._-]{3,30}$"""),
+		Regex("""\beffect\s*[·•]\s*[\d,.]+[kmb]?\s*shorts,?$"""),
 	)
 }
