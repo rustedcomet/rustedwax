@@ -76,14 +76,18 @@ object VideoIdentityCorroborator {
 		// Experienced…". They are the same video, and both names come from its
 		// own page.
 		//
-		// Substituted only when the displayed title *is* the frozen one, and
-		// only for native sessions. Duration, channel/handle and the unique-id
-		// rule all still bind independently, so this admits nothing new.
-		val displayedTitle = resolution.localizedTitle?.takeIf { displayed ->
-			session.isNative && session.title?.let {
-				SearchResultsParser.titleKey(displayed) == SearchResultsParser.titleKey(it)
-			} == true
-		}
+		// Both are offered, and agreement with *either* is agreement. Choosing
+		// one and comparing only that was itself a defect: measured 2026-08-06,
+		// `RTQFqbCPUGg` is titled entirely in hashtags, its title key is
+		// therefore empty, every title matched it vacuously, and the guard
+		// substituted the English rendering of a Spanish title the screen had
+		// shown in Spanish — then refused the listen for the difference. The
+		// same page fetched as `es-419` renders it in Spanish, so which of the
+		// two names the resolver sees is a property of the fetch, not of the
+		// video. Duration, channel/handle and the unique-id rule all still bind
+		// independently, and both names come from the one page being verified,
+		// so this admits no new candidate.
+		val localizedTitle = resolution.localizedTitle
 
 		session.ownerHandle?.let { wantedHandle ->
 			if (!resolution.uniquelyResolved) {
@@ -98,13 +102,17 @@ object VideoIdentityCorroborator {
 			// itself was resolved from the account's watch history against those
 			// same two fields. When a title *is* present it must still agree.
 			val frozenTitle = session.title
-			val resolvedTitle = displayedTitle ?: resolution.title
+			val resolvedTitle = resolution.title ?: localizedTitle
 				?: return "resolved candidate omitted the canonical title"
 			if (frozenTitle != null &&
-				SearchResultsParser.titleKey(frozenTitle) !=
-				SearchResultsParser.titleKey(resolvedTitle)
+				listOfNotNull(resolution.title, localizedTitle).none {
+					SearchResultsParser.titleKey(frozenTitle) == SearchResultsParser.titleKey(it)
+				}
 			) {
-				return "resolved candidate title \"$resolvedTitle\" contradicts foreground title \"$frozenTitle\""
+				return "resolved candidate title \"$resolvedTitle\"" +
+					localizedTitle?.takeIf { it != resolvedTitle }?.let { " (displayed \"$it\")" }
+						.orEmpty() +
+					" contradicts foreground title \"$frozenTitle\""
 			}
 			if (!SessionProbe.durationsCorroborate(session.durationMs, resolution.lengthSeconds)) {
 				return "resolved candidate duration did not corroborate the foreground seekbar"
@@ -170,7 +178,8 @@ object VideoIdentityCorroborator {
 		contradictionFor(
 			session = session,
 			videoId = resolution.videoId,
-			title = displayedTitle ?: resolution.title,
+			title = resolution.title,
+			alternateTitle = localizedTitle,
 			channel = resolution.channel,
 			lengthSeconds = resolution.lengthSeconds,
 			label = "${resolution.source} candidate",
@@ -199,7 +208,11 @@ object VideoIdentityCorroborator {
 		contradictionFor(
 			session = session,
 			videoId = resolution.videoId,
-			title = displayedTitle ?: facts?.title,
+			title = facts?.title,
+			// The displayed name belongs to the resolved id's own page, so it is
+			// only the second name of *these* facts when the facts describe that
+			// same id.
+			alternateTitle = localizedTitle?.takeIf { facts?.videoId == resolution.videoId },
 			channel = facts?.author,
 			lengthSeconds = facts?.lengthSeconds,
 			label = "enriched watch facts",
@@ -234,17 +247,25 @@ object VideoIdentityCorroborator {
 		allowStructuredNativeMusic: Boolean,
 		/** Relaxes the *channel* comparison only; title and duration still bind. */
 		allowPlaylistChannelAlias: Boolean = false,
+		/** The same page's other name for the same id, when it publishes two. */
+		alternateTitle: String? = null,
 	): String? {
 		val frozenTitle = session.title
-		val titleEvidence = if (!title.isNullOrBlank() && !frozenTitle.isNullOrBlank()) {
-			VideoTitleMatcher.compare(frozenTitle, title)
+		val published = listOfNotNull(title, alternateTitle).filter(String::isNotBlank)
+		// The strongest of the names this one page publishes. A translated
+		// rendering is not a second candidate, so it cannot weaken the evidence
+		// either — only the best of them decides.
+		val titleEvidence = if (published.isNotEmpty() && !frozenTitle.isNullOrBlank()) {
+			published.map { VideoTitleMatcher.compare(frozenTitle, it) }.minByOrNull(::rank)
 		} else {
 			null
 		}
 		if (!allowStructuredNativeMusic &&
 			titleEvidence == VideoTitleMatcher.Evidence.CONTRADICTION
 		) {
-			return "$label title \"$title\" contradicts ended title \"$frozenTitle\""
+			return "$label title \"$title\"" +
+				alternateTitle?.takeIf { it != title }?.let { " (displayed \"$it\")" }.orEmpty() +
+				" contradicts ended title \"$frozenTitle\""
 		}
 		if (!allowStructuredNativeMusic &&
 			titleEvidence == VideoTitleMatcher.Evidence.WEAK_SHORT_CANONICAL_CORE &&
@@ -305,6 +326,14 @@ object VideoIdentityCorroborator {
 		return null
 	}
 
+	/** Ranked strength, strongest first, so the best of two names can be chosen. */
+	private fun rank(evidence: VideoTitleMatcher.Evidence): Int = when (evidence) {
+		VideoTitleMatcher.Evidence.EXACT -> 0
+		VideoTitleMatcher.Evidence.STRONG_CONTAINMENT -> 1
+		VideoTitleMatcher.Evidence.WEAK_SHORT_CANONICAL_CORE -> 2
+		VideoTitleMatcher.Evidence.CONTRADICTION -> 3
+	}
+
 	/** Strong search-presentation exception; never a substring or runtime History lookup. */
 	private fun collaborativeCandidateCompatible(
 		session: SessionSnapshot,
@@ -356,9 +385,14 @@ object VideoIdentityCorroborator {
 		session.ownerHandle?.let { wantedHandle ->
 			val title = facts?.title ?: resolution.title ?: return false
 			val length = facts?.lengthSeconds ?: resolution.lengthSeconds ?: return false
+			// Either published name, for the same reason the corroborator takes
+			// either: a page that renders its title in the viewer's language has
+			// not become a different video.
+			val frozenKey = SearchResultsParser.titleKey(session.title ?: return false)
 			return resolution.uniquelyResolved &&
-				SearchResultsParser.titleKey(session.title ?: return false) ==
-					SearchResultsParser.titleKey(title) &&
+				listOfNotNull(title, resolution.localizedTitle).any {
+					frozenKey == SearchResultsParser.titleKey(it)
+				} &&
 				SessionProbe.durationsCorroborate(session.durationMs, length) &&
 				OwnerHandle.matches(wantedHandle, resolution.ownerHandle) &&
 				OwnerHandle.matches(wantedHandle, facts?.ownerHandle)

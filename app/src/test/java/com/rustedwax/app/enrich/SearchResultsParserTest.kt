@@ -369,4 +369,33 @@ class SearchResultsParserTest {
 		val page = "<html><script>var ytInitialData = $fixture;</script></html>"
 		assertNotNull(WatchPageParser.extractJson(page, "ytInitialData"))
 	}
+
+	/**
+	 * Shorts titles read off the screen carry `U+200B` between hashtags —
+	 * measured across the 2026-08-06 acceptance log, where every hashtag in a
+	 * foreground Short's title was followed by one. A watch page publishes the
+	 * same title without them, so both title comparisons have to survive it.
+	 */
+	@Test
+	fun `zero-width spaces in a screen title are not identity evidence`() {
+		val screen = "#music​ #news​ #hiphop​"
+		val page = "#music #news #hiphop"
+		assertEquals(SearchResultsParser.titleKey(page), SearchResultsParser.titleKey(screen))
+		assertEquals(
+			com.rustedwax.app.detect.VideoTitleMatcher.Evidence.EXACT,
+			com.rustedwax.app.detect.VideoTitleMatcher.compare(screen, page),
+		)
+
+		// A zero-width space inside a word is a different question — it must not
+		// silently join or split one. Both sides normalize the same way.
+		assertEquals(
+			SearchResultsParser.titleKey("Barbie Tingz"),
+			SearchResultsParser.titleKey("Barbie​ Tingz"),
+		)
+
+		// And it must not survive into a key as a character of its own, which
+		// would make two identical titles compare unequal.
+		val withMarks = "Bam Bam Dance​ Performance​"
+		assertEquals("bam bam dance performance", SearchResultsParser.titleKey(withMarks))
+	}
 }

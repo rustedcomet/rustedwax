@@ -619,4 +619,103 @@ class VideoIdentityCorroboratorTest {
 			),
 		)
 	}
+
+	/**
+	 * Measured 2026-08-06 on `RTQFqbCPUGg`, and the mirror image of the Karol G
+	 * case above: there the *uploaded* title was Spanish and the screen showed
+	 * English, here the upload is Spanish and the screen shows it while the
+	 * resolver's own `en-US` fetch of the same page renders the auto-translated
+	 * English one.
+	 *
+	 * Verified by fetching the page twice on 2026-08-06:
+	 *
+	 * | `Accept-Language` | `videoDetails.title` | `videoPrimaryInfoRenderer` |
+	 * | --- | --- | --- |
+	 * | `en-US` | `#musica … #noticias` | `#music … #news` |
+	 * | `es-419` | `#musica … #noticias` | `#musica … #noticias` |
+	 *
+	 * The old guard substituted the displayed title whenever its title *key*
+	 * equalled the frozen one — and an all-hashtag title has an empty key, so
+	 * every such title matched vacuously and the English rendering replaced the
+	 * Spanish one the screen had actually shown. A page publishes two names for
+	 * one id; agreement with either is agreement.
+	 */
+	@Test
+	fun `either of a page's two titles may corroborate an all-hashtag Short`() {
+		val onScreen = "#xbox​ #trendingnow​ #rap​ #musica​ #hiphop​ " +
+			"#hiphopindiadancerealtyshowand​ #noticias​ #pubg​ #hindisong​"
+		val uploaded = "#xbox #trendingnow #rap #musica #hiphop " +
+			"#hiphopindiadancerealtyshowand #noticias #pubg #hindisong"
+		val translated = "#xbox #trendingnow #rap #music #hiphop " +
+			"#hiphopindiadancerealtyshowand #news #pubg #hindisong"
+		val session = ended(onScreen, "@shortsvideo", 21_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube Shorts (foreground)",
+			sourceProof = SourceProof.NATIVE_FOREGROUND_SHORT,
+			ownerHandle = "@shortsvideo",
+		)
+		val resolution = VideoResolution(
+			videoId = "RTQFqbCPUGg",
+			source = "run-local verified candidate",
+			title = uploaded,
+			channel = "Shorts Video",
+			lengthSeconds = 21,
+			uniquelyResolved = true,
+			ownerHandle = "@shortsvideo",
+			localizedTitle = translated,
+		)
+		val facts = VideoFacts(
+			videoId = "RTQFqbCPUGg",
+			title = uploaded,
+			author = "Shorts Video",
+			ownerHandle = "@shortsvideo",
+			lengthSeconds = 21,
+		)
+		assertNull(VideoIdentityCorroborator.contradiction(session, resolution, facts))
+
+		// The translated rendering alone still corroborates: it is the name the
+		// screen shows when the phone itself is the one being translated for.
+		assertNull(
+			VideoIdentityCorroborator.contradiction(
+				session.copy(title = translated),
+				resolution,
+				facts,
+			),
+		)
+	}
+
+	/** Neither name agreeing is still a refusal, and the message names both. */
+	@Test
+	fun `a candidate whose two titles both disagree is still refused`() {
+		val session = ended("Nicki Minaj - Barbie Tingz", "@NickiMinaj", 60_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube Shorts (foreground)",
+			sourceProof = SourceProof.NATIVE_FOREGROUND_SHORT,
+			ownerHandle = "@NickiMinaj",
+		)
+		val resolution = VideoResolution(
+			videoId = "IcrbM1l_BoI",
+			source = "run-local verified candidate",
+			title = "Some other upload",
+			channel = "Nicki Minaj",
+			lengthSeconds = 60,
+			uniquelyResolved = true,
+			ownerHandle = "@NickiMinaj",
+			localizedTitle = "Otra subida distinta",
+		)
+		val refusal = VideoIdentityCorroborator.contradiction(
+			session,
+			resolution,
+			VideoFacts(
+				videoId = "IcrbM1l_BoI",
+				title = "Some other upload",
+				author = "Nicki Minaj",
+				ownerHandle = "@NickiMinaj",
+				lengthSeconds = 60,
+			),
+		)
+		assertNotNull(refusal)
+		assertTrue(refusal!!.contains("Some other upload"))
+		assertTrue(refusal.contains("Otra subida distinta"))
+	}
 }
