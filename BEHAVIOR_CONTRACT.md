@@ -1324,3 +1324,98 @@ Each invariant must have all four artifacts before a build is considered ready:
 | Simplified native music metadata (v0.9.2) | Native-only fully fetched parsed work/credit/duration uniqueness plus tokenized STOPPED replacement grace | Four measured shapes, presentation/credit variants, partial/containment/duration/ambiguity negatives and exact-ID-less replacement isolation | Physical zero-carry 218→20→207 replacement and two-upload structured refusal confirmed; unique-write reconciliation pending | README + TESTING §26 + PHASE_NATIVE_PLAYLIST; installed field continuation pending |
 | Native artist-aware budget and controller continuation (v0.9.3) | Exact work+complete credit before page budget; pre-resolved immutable id plus independently same-id replacement and route-matched final re-fetch | Budget noise/over-budget, same/different/unresolved id claim, duration replacement, route provenance and dynamic diagnostic-key regressions | Diagnostic coalescing, multiple unique writes and natural same-id `Unica` recreation/final write confirmed | README + TESTING §§27–28 + PHASE_NATIVE_PLAYLIST |
 | Exact native author credit and featured-work symmetry (v0.9.4) | Canonical author remains an independent complete credit; the same explicit feature suffix reduces native/candidate works | Criminal exact-author positive, partial/unrelated negatives, Ella ambiguity and Si Te Dejas contradiction fixtures | Exact APK installed; ambiguity/no-result/zero-carry controls retained; unique `CGjuWHEPxgc` write block-confirmed | README + TESTING §28 + PHASE_NATIVE_PLAYLIST |
+
+---
+
+## v0.9.7 identity and picture-in-picture contract (2026-08-06)
+
+Field evidence and per-change reasoning: [FIELD_2026-08-05.md](FIELD_2026-08-05.md) §8–§12. This
+section records the invariants that **changed**, because three of them supersede earlier rulings.
+
+### 1. The on-screen title is no longer identity evidence
+
+**Superseded:** the foreground-Short route previously refused any Short whose footer title could not
+be read unambiguously, discarding the measurement with it.
+
+YouTube removed the resource ids from the Shorts footer, so the title was being chosen as the single
+survivor of a blocklist. Five separate causes were corrected in one day and the measured acquisition
+rate stayed at roughly **one Short in six**. The title was never authority — it was a selector.
+
+**New rule.** `NativeShortParser.Result.Organic.title` may be null. A Short is proven by its
+structural player, its exact owner handle and a readable seekbar. Identity is resolved at finalize
+from the signed-in account's watch history, joined on **owner handle + duration**, and every
+candidate is still re-fetched and corroborated on its own watch page. When a title *is* present it
+must still agree exactly. Measured after the change: **8 of 8 Shorts reached a finalize.**
+
+### 2. Recency breaks a tie the other two fields cannot
+
+**Superseded:** two candidates matching all available fields refused unconditionally.
+
+With no readable title only two fields remain, and a creator who posts several Shorts of the same
+length ties them. Measured 2026-08-06: a Short counted to 100% and was discarded because its channel
+had two 57-second uploads.
+
+**New rule.** When and only when the title is unavailable and two or more candidates match owner
+handle **and** duration, the most recently watched is taken. Candidates arrive in watch-history
+order, newest first, and the Short being identified is the one playing now — so recency is a third
+field that restores uniqueness, not a coin flip. **With a title present, two full matches still
+refuse.** Handle and duration remain mandatory; recency never admits a candidate that fails either.
+
+### 3. Collaborative bylines and the `AtVEVO` channel form
+
+**Supersedes the §823 ruling** ("accept only a unique exact-title/duration *hard-music* candidate
+whose owner matches the leading segment … all weaker bylines remain contradictions").
+
+That rule was too narrow to survive the field. 26 listens in one session were lost to a channel
+comparison that was simply wrong, and watch history had already resolved every one of them:
+
+| watch page | media session | count |
+| --- | --- | --- |
+| `NickiMinajAtVEVO` | `Nicki Minaj` | 14 |
+| `La Melma Music and 2 more` | `La Melma Music` | 9 |
+| `Eladio Carrion and CAZZU ` | `Eladio Carrion` | 2 |
+| `Lucky Brown and 2 more` | `Lucky Brown` | 1 |
+
+**New rules.** (a) `AtVEVO` is stripped before `VEVO`, because stripping the bare suffix left a
+trailing `At`. (b) A byline whose **leader** is the ended channel is not a contradiction **provided
+the title and the duration also corroborate** — three agreeing fields. The hard-music and
+uniquely-resolved preconditions are dropped: history resolves these, so both flags are false when
+they arrive. A byline whose leader is a different channel still contradicts, and a name with no
+separator is not a byline.
+
+### 4. Picture-in-picture time may be credited, marked as inferred
+
+**New capability, off the measured path.** PiP publishes no progress of any kind, so elapsed
+wall-clock is credited on the paired evidence that YouTube holds a visible window
+(`UsageStatsManager`, which names packages) *and* media audio is started (`AudioManager`, which
+cannot). Neither alone is sufficient and neither is used alone.
+
+Binding constraints:
+
+- Never used while a readable seekbar exists; it is a fallback, not a source.
+- Only for the exact measured PiP parser signature. A swipe, a blown budget or a hidden root are
+  "gone", not "unmeasurable", and must never accrue.
+- Credit advances only between two consecutive observations that both say playing; one step is
+  capped at 3s; measured + inferred never exceeds the item's own duration.
+- Carried separately as `SessionSnapshot.inferredPlayedMs` to the log and the refusal wording, so
+  every such listen states how much was measured and how much deduced.
+- Its own switch, on by default, inert without Usage Access, absent below API 29.
+
+**Accepted residual risk, recorded rather than hidden:** another app playing audio while a YouTube
+PiP window sits paused is indistinguishable from playback and would be credited. This is the cost of
+counting PiP at all.
+
+### 5. A completed listen is banked when it completes
+
+**Superseded:** a foreground Short ended only when something took it away.
+
+Left alone a Short loops, so it accumulated indefinitely and banked nothing — measured, a 105s Short
+reached `measured total 461s` across four loops without a single finalize. Reaching its own length
+is the end of a listen, so it finalizes there, **once** per viewing, which is all `capForKind`
+permits regardless.
+
+### Unchanged and not negotiable
+
+Every entry still requires a verified video id and a canonical hyperlink; an unresolvable listen
+still fails closed with an exact logged reason; the dedup ledger is untouched; browser behaviour is
+unchanged; and no native gate applies outside `session.isNative`.
