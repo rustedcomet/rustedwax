@@ -761,8 +761,16 @@ class VideoIdResolver {
 		const val PLAYLIST_SEARCH_URL =
 			"https://www.youtube.com/results?sp=EgIQAw%3D%3D&search_query="
 
-		/** Sentinel for "this name resolved to nothing", so misses cache too. */
-		const val NO_PLAYLIST = " none"
+		/**
+		 * Sentinel for "this name resolved to nothing", so misses cache too.
+		 *
+		 * `U+FFFF` is a permanent noncharacter, so no playlist id can collide
+		 * with it. It used to be a literal NUL, which made every `grep` in this
+		 * repository treat the whole file as binary and skip it in silence —
+		 * 2026-08-06, that cost a session an hour of concluding that
+		 * `resolveVerifiedCandidates` did not exist.
+		 */
+		const val NO_PLAYLIST = "￿none"
 		const val PLAYLIST_URL = "https://www.youtube.com/playlist?list="
 		const val WATCH_URL = "https://www.youtube.com/watch?v="
 
