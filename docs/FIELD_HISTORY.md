@@ -335,3 +335,34 @@ field ledger is [TESTING.md §22](../TESTING.md#22-v0815-final-physical-device-f
 
 The app does not automatically repair, rewrite, or rebroadcast any immutable
 historical entry described by any field record.
+
+### 2026-08-06 — the acceptance day, and the three rounds it forced
+
+Field record: [FIELD_2026-08-05.md](../FIELD_2026-08-05.md) §13–§15.
+
+A full day of ordinary use on v0.9.7 — gestures, minimise, lock screen,
+picture-in-picture on both Shorts and ordinary videos — produced **46 scrobbles**
+and a list of eight items the owner believed had been missed. The 58,000-line log
+answered for all eight, and the answer moved the work away from identity:
+
+| what was missed | why |
+| --- | --- |
+| 1 Short | identity refused it — a page publishes two titles and the wrong one was compared (v0.9.8) |
+| 1 Short | the watch-history route had stood itself down over one replayed track (v0.9.8) |
+| 1 video | its MediaSession lived 1.5 seconds and published `0s of 35s` |
+| 1 video | published a MediaSession for 7 seconds, 94 seconds into 227 |
+| 2 videos, 2 Shorts | never published or never observed at all — no title, no handle, no session, nothing |
+
+The owner supplied partial titles for the six that left no trace, which settled
+what an id search could not: titles and owner handles are both written *before*
+identity resolves, so their absence is absence of observation. **Identity was the
+gate for exactly one of the eight, and it is fixed.**
+
+The same day's §5.1 instrumentation was then found to be reporting **111 outages**
+on a day that scrobbled 46 tracks — it counted accessibility callbacks, which stop
+while a latched Short is being measured perfectly by the service's own poll. It
+now reports only when independent evidence says something is playing that nothing
+is counting. Staging a single true positive for the rebuilt detector uncovered a
+silent defect in shipped code: a departing activity's `ACTIVITY_STOPPED` arrives
+after the arriving one's `ACTIVITY_RESUMED`, so YouTube read as gone while
+visible — which had been quietly refusing picture-in-picture credit too.

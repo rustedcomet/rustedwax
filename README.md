@@ -36,7 +36,7 @@ off-chain and is listed, with its reason, under **Not logged**.
 | --- | --- |
 | [Behavior contract](BEHAVIOR_CONTRACT.md) | The canonical product invariants and as-built audit |
 | [Field results](docs/FIELD_HISTORY.md) | Every device round from v0.8.8, with the evidence behind each fix |
-| [Field session 2026-08-05/06](FIELD_2026-08-05.md) | The most recent session: PiP measurement, identity rebuild, and 13 fixes |
+| [Field session 2026-08-05/06](FIELD_2026-08-05.md) | The most recent sessions: PiP measurement, the identity rebuild, the owner acceptance day, and what §5.1 turned out to be |
 | [Release history](docs/RELEASE_HISTORY.md) | Version-by-version specification status |
 | [Testing](TESTING.md) | How the suite is structured and run |
 | [Development plan](DEVELOPMENT_PLAN.md) | Phased build plan and the port map from the extension |

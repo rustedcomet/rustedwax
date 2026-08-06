@@ -23,3 +23,28 @@ These follow from having no DOM access, not from missing work:
 - **Metadata quality depends on the site.** Whatever the page passes to the MediaSession API is what
   you get. Sites that don't set MediaSession metadata are invisible to the app.
 - **No guest (Google) ingest path.** Mobile is Hive-only by design.
+
+## Limits measured on the device, not inherited from the platform
+
+These are known, accepted, and recorded here rather than left to be rediscovered:
+
+- **Playback nothing published can be lost in silence.** RustedWax measures what the phone tells it.
+  Measured 2026-08-06: a 227-second video published a MediaSession for **seven seconds**, ninety-four
+  seconds in, and nothing before or after — so twelve seconds was a complete account of everything
+  it was ever shown. Where the player was when the app first saw it is not evidence that it played
+  that far in this session (a resumed video opens mid-track having played nothing now), so it is
+  never credited; it is now *stated* on the finalize line instead.
+- **A Short played with its audio stopped may be lost without a line.** The check for "something is
+  playing that nothing is counting" needs Usage Access and needs the audio to be started. Without
+  both, only the case where the observer can see no window at all still reports, and it says
+  outright that it does not know whether anything was playing. Under-reporting was chosen
+  deliberately: the previous, louder version produced 111 reports in a day, almost none of them
+  real, which teaches the reader to ignore the one line that matters.
+- **Two live windows of one app screen can be confused for each other.** Visibility is tracked per
+  activity class, because activity instance ids are not public API. Two live instances of the same
+  class share a key, and stopping either reads as stopping both — which fails toward "not visible",
+  so it under-credits rather than over-credits.
+- **Picture-in-picture credit is inferred, and says so.** Another app playing audio while a paused
+  YouTube PiP window sits on screen is indistinguishable from playback and would be credited. That
+  is the cost of counting PiP at all; every such listen states how much was measured and how much
+  deduced.

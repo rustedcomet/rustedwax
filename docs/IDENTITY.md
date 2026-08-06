@@ -95,6 +95,20 @@ channel, and multiple matching ids are refused as ambiguous — including two en
 and two entries of the recent history. Anything less certain is recorded in **Not logged** and never
 reaches the chain. URL-less YouTube entries are no longer a supported fallback.
 
+Two amendments came out of the field, both about the *title* half of that agreement:
+
+- **A video has two published names.** YouTube auto-translates titles for the viewer, so a watch page
+  carries the uploaded name in `videoDetails` and the rendered one in its page data, and which is
+  which depends on the language the fetch asks for — verified by fetching one page as `en-US` and as
+  `es-419` and getting the two names swapped. Both are compared against what was playing and the
+  stronger agreement decides. Both come from the one page being verified for the one id, so nothing
+  new is admitted; duration, channel/handle and the single-match rule are untouched.
+- **A foreground Short may have no readable title at all**, and refusing on that threw away a
+  measurement that was already complete. Handle + duration + a unique match carry it instead; where
+  no title exists and one channel has two uploads of the same length, the most recently watched is
+  taken, because candidates arrive newest-first and the Short being identified is the one playing
+  now. With a title present, two full matches still refuse.
+
 > This scrapes an undocumented blob out of the watch page and **will** break when YouTube changes it.
 > Failures are logged as `EXTRACTION FAILED` precisely so breakage is distinguishable from a video
 > that simply had nothing to add.

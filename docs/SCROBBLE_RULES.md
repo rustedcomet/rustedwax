@@ -41,6 +41,14 @@ than assumed: three consecutive tracks that were absent from a successfully-read
 outright, and the app says so on the settings row instead of quietly fetching a page per track
 forever. A dead session and a paused history are YouTube's own answers and refuse on sight.
 
+**Three tracks means three different tracks** (v0.9.8). Replaying one video used to count as a
+fresh miss each time: measured 2026-08-06, one video looked up three times in three minutes stood
+the route down for fifteen minutes on a claim ("the last 3 native tracks were not written") that was
+true of exactly one, and two Shorts already past the threshold were refused inside that window. The
+condition being diagnosed — the app is on another account — shows up as *different* tracks going
+missing, so requiring different tracks costs nothing. A route that is standing down now says so in
+the log and in the refusal, instead of pointing at sign-in.
+
 ### Short clips
 
 A **verified** YouTube short scrobbles from 10 seconds instead of 30. Verified means three things:

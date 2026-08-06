@@ -103,3 +103,27 @@ the audit trail behind the behavior contract.
 > 416/416 seconds, re-fetched the same page and block-confirmed one linked payload
 > as tx `49a46d159658d257706c9a3c6b32eed4ddd29ca1` in block 108,734,261 on two
 > independent Hive nodes.
+
+---
+
+## v0.9.5 – v0.9.9: the native Shorts field rounds
+
+The block above is the last version-by-version prose written in that style. From
+v0.9.5 the record is kept as measurements instead, because every change in this
+range was forced by one, and the evidence is more useful than the summary:
+[FIELD_2026-08-05.md](../FIELD_2026-08-05.md) §8–§15, with the invariants that
+changed in [BEHAVIOR_CONTRACT.md](../BEHAVIOR_CONTRACT.md) under v0.9.7, v0.9.8
+and v0.9.9.
+
+**Current development source: v0.9.9 / version code 45.** 574 tests, debug
+assembly and lint clean; the installed artifact verifies as
+`631e83b9b71de67fd4d109da43029b8078424673575cf773ccad3f88a8869d29`.
+
+| version | what it changed | proven by |
+| --- | --- | --- |
+| v0.9.5–v0.9.6 | Playlist-derived identity; signed-in watch history as an id route | on-chain writes with linked ids |
+| v0.9.7 | The on-screen title stops being identity; recency breaks an untitled tie; `AtVEVO` and collaborator bylines; **picture-in-picture is counted, marked inferred**; a completed listen banks when it completes | a full day of real use, 46 scrobbles |
+| v0.9.8 | Either of a page's two published titles may corroborate; watch-history stand-down needs three *different* tracks and says when it is standing down; unmeasured lead-in is stated, never credited | `tx 0d02673d…` on the exact video that had been refused |
+| v0.9.9 | The §5.1 outage report fires only when a listen is being lost; an app is visible while any of its activities is started (this one also un-refused picture-in-picture credit) | `tx 4ba912d3…`, plus a staged outage that reported and recovered on cue |
+
+Native sources and the separate Shorts grant remain experimental and default-off.

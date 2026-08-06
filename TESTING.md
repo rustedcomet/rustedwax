@@ -3006,3 +3006,62 @@ rather than freezing a number that drifts whenever a regression is added.
   finalize and against a second tap of its own (v0.5.4).
 - **Brave on a physical device is verified** — a full day of tablet use
   (2026-07-23/24) confirmed the notification sub-text behaves as Chrome's does.
+
+## 31. v0.9.7–v0.9.9 field rounds, and what to watch for in the log
+
+Full evidence: [FIELD_2026-08-05.md](FIELD_2026-08-05.md) §8–§15. **574 tests,
+0 failures**; lint 0 errors. New automated coverage:
+
+| Area | What it must prove |
+| --- | --- |
+| `VideoIdentityCorroborator` | either of a page's two published titles may corroborate; an all-hashtag title (empty key) no longer matches vacuously; a candidate whose *both* names disagree is still refused, and the refusal names both |
+| `SearchResultsParser` | `U+200B` between hashtags is not identity evidence — screen titles carry them, watch pages do not |
+| `WatchHistoryHealth` | one track missing repeatedly is one data point; three *different* tracks still arm the refusal |
+| `AccessibilityEventSilence` | a measuring observer with zero events is alive; an idle YouTube with nothing playing is never an outage; something playing that nothing counts names itself and its duration; the report is rate-limited and its recovery states the total |
+| `VisibleActivities` | a departing activity's `STOPPED` after the arriving one's `RESUMED` does not hide the app; stopping the last one does; tracking is bounded |
+
+### What a healthy log looks like now
+
+```
+foreground Short proof acquired: "…" / @handle / 1s of 60s
+foreground Short seekbar advanced to 37s of 60s; credited 5s (measured total 35s)
+foreground Short completed a full listen of 60s while still on screen; banked it
+[history] resolved Short "…" → <id> from watch history, corroborated on its own watch page
+[native-id] verified <id> via corroborated resolver (run-local verified candidate)
+[engine] scrobbled (block): @handle — … — tx <64 hex>
+```
+
+### Lines that are new in this range, and what each means
+
+| Line | Meaning |
+| --- | --- |
+| `nothing observable for Ns with the screen on (… ; YouTube is playing audio with a visible window)` | **The one to report.** Something is playing that nothing is counting — a real loss, in progress |
+| `accessibility observation recovered after Ns` | that outage ended, and this is how long it lasted |
+| `not offering Shorts candidates: …` | the watch-history route is standing itself down, and why |
+| `first seen Ns in — anything played before that was never published to RustedWax` | the player was already part-way through when the app first saw it; that lead-in was never measurable and is not credited |
+| `Ns measured from the seekbar + Ns inferred in picture-in-picture` | a PiP listen, stating the split |
+| `candidate title "X" (displayed "Y") contradicts ended title "Z"` | identity refused after comparing **both** of the page's names |
+
+### Lines that are gone, and why
+
+`accessibility event stream silent for Ns …` no longer exists. It counted
+accessibility callbacks, which legitimately stop while a latched Short is being
+measured perfectly by the service's own poll — it reported 111 outages in a day
+that scrobbled 46 tracks. See FIELD §15.
+
+### Useful greps
+
+```bash
+adb shell run-as com.rustedwax.app cat /data/data/com.rustedwax.app/files/rustedwax-log.txt > log.txt
+grep -c 'scrobbled (block)' log.txt              # what landed on chain
+grep 'skipped:' log.txt | sed 's/.*skipped: //' | sort | uniq -c | sort -rn   # why the rest did not
+grep 'nothing observable' log.txt                # real losses, in progress
+grep 'could not be verified' log.txt             # identity refusals, with their exact reason
+```
+
+**A note on searching by video id:** an id is only written *after* identity
+resolves, so a listen that never resolved never records one. An id search cannot
+tell "never identified" from "never observed" — a partial **title** can, because
+titles and owner handles are logged before identity runs. That is how all six
+untraceable ids of the 2026-08-06 acceptance day were finally accounted for
+(FIELD §14.8).
