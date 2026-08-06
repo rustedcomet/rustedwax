@@ -628,6 +628,18 @@ class SessionProbe(context: Context) {
 
 		/** Highest rate scored for this track, for the finalize line only. */
 		private var fastestSpeedSeen: Double = 1.0
+
+		/**
+		 * Where the player already was when this track was first seen.
+		 *
+		 * Measured 2026-08-06: `_zR6ROjoOX0` (Iggy Azalea, "Work") published no
+		 * MediaSession at all for the eleven minutes before RustedWax saw it,
+		 * then appeared 94 seconds into a 227-second video and was destroyed
+		 * seven seconds later. The finalize line read "played 12s of 227s" and
+		 * looked like a measurement fault; it was an accurate account of the only
+		 * playback that was ever published. Recorded so the line can say so.
+		 */
+		private var firstSeenPositionMs: Long? = null
 		/** End-to-start playback reset observed during this continuous viewing. */
 		private var loopDetected: Boolean = false
 		private var playingSince: Long = if (isPlaying(state)) SystemClock.elapsedRealtime() else 0
@@ -1081,7 +1093,8 @@ class SessionProbe(context: Context) {
 					// Named only when it applies, so the ordinary line is unchanged
 					// and a sped-up listen is obvious rather than looking like a
 					// mis-measured one.
-					if (fastestSpeedSeen > 1.0) " (up to ${fastestSpeedSeen}× speed)" else "",
+					(if (fastestSpeedSeen > 1.0) " (up to ${fastestSpeedSeen}× speed)" else "") +
+					unobservedLeadInNote(snapshot.playedMs),
 			)
 			onTrackFinalized?.invoke(snapshot)
 			if (isNative) {
@@ -1107,6 +1120,7 @@ class SessionProbe(context: Context) {
 			// track that is ending, never to the next one.
 			resetPipInference()
 			fastestSpeedSeen = 1.0
+			firstSeenPositionMs = null
 			loopDetected = false
 			playingSince = if (isPlaying(state)) SystemClock.elapsedRealtime() else 0
 			trackStartedAtEpochSec = System.currentTimeMillis() / 1000
@@ -1587,6 +1601,29 @@ class SessionProbe(context: Context) {
 
 		private fun speedOf(ps: PlaybackState?): Double = speedFactor(ps?.playbackSpeed)
 
+		/** The first position seen for a track, whatever announced it. */
+		private fun noteFirstSeenPosition(ps: PlaybackState?) {
+			if (firstSeenPositionMs != null) return
+			firstSeenPositionMs = ps?.position?.takeIf { it >= 0 }
+		}
+
+		/**
+		 * "…, first seen 94s in", when the player was already well into the track
+		 * when RustedWax first saw it. Everything before that point was never
+		 * published to us and can never have been measured, so a short `played`
+		 * against a long duration is an accurate report rather than a fault.
+		 * Silent for the ordinary case of a track seen from its start.
+		 */
+		private fun unobservedLeadInNote(playedMs: Long): String {
+			val firstSeen = firstSeenPositionMs ?: return ""
+			if (firstSeen < UNOBSERVED_LEAD_IN_MS) return ""
+			// A track whose progress was carried across a replacement session has
+			// already accounted for its lead-in; only an unexplained one is news.
+			if (playedMs >= firstSeen) return ""
+			return ", first seen ${firstSeen / 1000}s in — " +
+				"anything played before that was never published to RustedWax"
+		}
+
 		fun logMetadata(md: MediaMetadata?, reason: String) {
 			EventLog.appendBlock(
 				"metadata",
@@ -1625,6 +1662,7 @@ class SessionProbe(context: Context) {
 				EventLog.append("playback", "$packageName ($reason) <null state>")
 				return
 			}
+			noteFirstSeenPosition(ps)
 			EventLog.append(
 				"playback",
 				"$packageName ($reason) state=${stateName(ps.state)} " +
@@ -1764,6 +1802,13 @@ class SessionProbe(context: Context) {
 		/** Measured 8 s STOPPED gap between same-title native duration phases. */
 		const val NATIVE_STOPPED_FINALIZE_GRACE_MS = 10_000L
 		const val MIN_NATIVE_PRE_RESOLVE_DURATION_MS = 60_000L
+
+		/**
+		 * How far into a track the player may already be before its lead-in is
+		 * worth naming. Ten seconds — below that it is ordinary startup jitter,
+		 * above it something played that RustedWax was never shown.
+		 */
+		private const val UNOBSERVED_LEAD_IN_MS = 10_000L
 
 		/**
 		 * Select an identity after latch corroboration without resurrecting a
