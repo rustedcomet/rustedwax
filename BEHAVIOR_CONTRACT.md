@@ -1468,3 +1468,50 @@ track played that far in this session — a resumed video opens mid-track having
 so it is never credited. It *is* reported: a track first seen more than 10s in says so on its
 finalize line, unless progress was carried across a replacement session, which accounts for its own
 lead-in. Silence about what could not be measured is the failure mode this exists to prevent.
+
+## v0.9.9 observation contract (2026-08-06)
+
+Field evidence and per-change reasoning: [FIELD_2026-08-05.md](FIELD_2026-08-05.md) §15. Both entries
+are about *reporting*; neither changes what may be credited or scrobbled.
+
+### 1. An app is visible while any of its activities is started
+
+**Supersedes the implicit rule** in the picture-in-picture probe that the most recent `ACTIVITY_*`
+event names the app's current state.
+
+Measured 2026-08-06: opening a Short by URL emits `RESUMED MainActivity` and then
+`STOPPED Shell_UrlActivity` in the same second, so the departing activity's stop overwrote the
+arriving one's resume and the probe called a visible, audible YouTube gone. PiP credit reads the same
+signal, so this silently refused time to any Short opened through an activity transition.
+
+**New rule.** Visibility is per activity. `ACTIVITY_RESUMED` and `ACTIVITY_PAUSED` both mean visible —
+a picture-in-picture window leaves its activity paused, which is the case the probe exists for — and
+only `ACTIVITY_STOPPED` removes one. The app is visible while any remain. Activities are keyed by
+class name because instance ids are not public API, so two live instances of one class share a key
+and stopping either reads as stopping both: that fails toward *not* visible, which under-credits
+rather than over-credits.
+
+### 2. An outage is only reported when a listen is being lost
+
+**Supersedes the v0.9.x instrumentation rule** that event silence with the screen on, on any YouTube
+surface, is reportable.
+
+That rule produced 111 reports in a day, on a day that scrobbled 46 tracks. Two of its three states
+were benign: a latched Short is measured by the service's own poll while YouTube emits no callbacks
+at all, and a capture that finds no player is usually the user having left the Shorts feed.
+
+**New rule.** A report requires all of: the screen on; the surface not another app; no successful
+capture within the window; and independent evidence that something is playing which nothing else is
+counting. "Nothing else is counting" excludes MediaSession-measured watch playback and
+picture-in-picture time the inference is already crediting. The evidence is media audio `started`
+paired with a visible YouTube window — never the accessibility tree, which is the suspect, and never
+the MediaSession, which publishes `active=false`, `state=1` and no metadata at all while a Short
+plays.
+
+Where that evidence cannot be obtained — no Usage Access — only the state in which the service can
+see no window at all still reports, and it says outright that it does not know whether anything was
+playing.
+
+**Accepted residual, recorded rather than hidden:** a Short played with its audio stopped, on a
+device without Usage Access, can still be lost without a line. Under-reporting was chosen
+deliberately over a report the reader learns to ignore.
