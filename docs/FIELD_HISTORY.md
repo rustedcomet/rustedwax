@@ -366,3 +366,22 @@ is counting. Staging a single true positive for the rebuilt detector uncovered a
 silent defect in shipped code: a departing activity's `ACTIVITY_STOPPED` arrives
 after the arriving one's `ACTIVITY_RESUMED`, so YouTube read as gone while
 visible — which had been quietly refusing picture-in-picture credit too.
+
+### 2026-08-07 — the night YouTube stopped drawing the Shorts seekbar
+
+Field record: [FIELD_2026-08-05.md](../FIELD_2026-08-05.md) §16.
+
+After a day that scrobbled 77 tracks, Shorts stopped counting: **71 finalized in 85 minutes, 4
+scrobbled**, nearly all reading `0s measured from the seekbar`. The device said why —
+`reel_time_bar` present and empty, no `SeekBar` node anywhere in the tree, and no bar drawn on
+screen while audio played. YouTube's own app version had not changed.
+
+The wall-clock fallback built for picture-in-picture was enabled and correct and did nothing,
+because it never ran: a Short could only be *started* from a seekbar reading, and nothing that is
+not started can accrue anything. The fix makes a proven, named player with no reading a proof rather
+than a refusal, and identity now needs the `@handle` plus any one of title or length.
+
+The owner then found the reproduction, which no amount of scrolling had: **a Shorts player resumed
+by tab navigation renders without its bar**, where one opened fresh renders with it. Verified step by
+step, and a back-to-back pair both reached the chain — one inferred over 149 seconds with no bar at
+any point (`tx 80c427db…`), one measured normally after a swipe restored the bar (`tx 48f78ee7…`).

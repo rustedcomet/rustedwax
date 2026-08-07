@@ -35,16 +35,23 @@ never reused for them, and the app does not guess from brands, titles, ids, dura
 Foreground native Shorts are narrower: the separate YouTube-only service requires the measured
 Shorts player and accepts only exact literal ad labels within it. Identity must remain stable across
 the transition window before a session exists, preventing outgoing and incoming frames from mixing.
-Progress is derived from seekbar movement; pause, seek, rewind and missing proof add nothing.
+Progress is derived from seekbar movement where a seekbar exists; pause, seek, rewind and missing
+proof add nothing.
 
-Three parts of that changed once the app met a real day of Shorts use:
+Four parts of that changed once the app met real days of Shorts use — every one of them because
+YouTube stopped rendering something the app had been treating as mandatory:
 
 - **The on-screen title is not identity** (v0.9.7). YouTube removed the resource ids from the Shorts
-  footer, and a Short opened straight into picture-in-picture never shows a title at all. A Short is
-  proven by its structural player, its exact `ownerProfileUrl` handle and a readable seekbar;
-  identity is resolved at finalize from the account's watch history on handle + duration, and every
-  candidate is still re-fetched and corroborated on its own watch page. When a title *is* present it
-  must still agree.
+  footer, and a Short opened straight into picture-in-picture never shows a title at all. Identity
+  is resolved at finalize from the account's watch history, and every candidate is still re-fetched
+  and corroborated on its own watch page. When a title *is* present it must still agree.
+- **The seekbar is not a precondition either** (v0.9.10). YouTube draws no progress bar at all for a
+  Shorts player that is *resumed* by tab navigation rather than opened fresh — no `SeekBar` node in
+  the tree and no bar on screen. That cost 47 of 71 Shorts in 85 minutes, because a Short with no
+  reading could never be *started* and so could never accrue anything. A visible player root, one
+  time-bar container and exactly one exact `@handle` now prove a Short; a readable time is credited
+  as measurement when present, and its absence is credited from wall-clock and reported as inferred.
+  A bar appearing mid-viewing supplies the real length and continues the same listen.
 - **A page publishes two titles** (v0.9.8). `videoDetails` keeps the uploaded name while the page
   renders an auto-translated one for the viewer, and which of the two the resolver sees depends on
   the language its own fetch asks for. Both are compared and the stronger agreement decides; a
@@ -53,6 +60,12 @@ Three parts of that changed once the app met a real day of Shorts use:
   so elapsed wall-clock is credited on the paired evidence that YouTube holds a visible window and
   media audio is started — never while a readable seekbar exists, capped at the item's own duration,
   and carried separately so every such listen says how much was measured and how much deduced.
+
+Identity follows from whatever survived. The handle is mandatory — it is the field that has outlived
+every restyle — and it needs **one** of the other two beside it: a title, or a length. Handle plus
+title, or handle plus length, each with a unique match; handle alone resolves only when the account's
+own recent history holds exactly one Short by that channel, and refuses outright when two or more are
+indistinguishable.
 
 A Short publishes **nothing** to its MediaSession — measured 2026-08-06, `active=false`, `state=1`,
 `metadata: size=0` — so the accessibility observer is the only thing that can see one at all. When

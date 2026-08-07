@@ -44,6 +44,11 @@ These are known, accepted, and recorded here rather than left to be rediscovered
   activity class, because activity instance ids are not public API. Two live instances of the same
   class share a key, and stopping either reads as stopping both — which fails toward "not visible",
   so it under-credits rather than over-credits.
+- **A Short YouTube draws no progress bar for is timed, not measured.** Its seconds come from
+  wall-clock on the same audio-plus-visible-window evidence, so they are reported as inferred and
+  never as measured. Until identity resolves, the app does not know how long the Short is; the
+  ceiling until then is the format's own three-minute maximum, and the real length replaces it the
+  moment a bar appears or the video's own page is read.
 - **Picture-in-picture credit is inferred, and says so.** Another app playing audio while a paused
   YouTube PiP window sits on screen is indistinguishable from playback and would be credited. That
   is the cost of counting PiP at all; every such listen states how much was measured and how much

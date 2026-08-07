@@ -108,6 +108,20 @@ Two amendments came out of the field, both about the *title* half of that agreem
   no title exists and one channel has two uploads of the same length, the most recently watched is
   taken, because candidates arrive newest-first and the Short being identified is the one playing
   now. With a title present, two full matches still refuse.
+- **It may have no length either** (v0.9.10). YouTube draws no progress bar for a Shorts player that
+  is *resumed* by tab navigation, so the field that used to be mandatory can simply not exist. The
+  `@handle` is what has outlived every restyle, so it stays mandatory and needs **one** of the other
+  two beside it:
+
+  | available | gate |
+  | --- | --- |
+  | handle + length | unique match; recency breaks a tie between same-length uploads |
+  | handle + title | unique match |
+  | handle alone | resolves only if the account's recent history holds exactly **one** Short by that channel — and recency may **not** break a tie here, because nothing is left to prefer one by |
+
+  A field that *is* published must still agree, every candidate is still re-fetched and corroborated
+  on its own watch page, and the length the page reports is what the percentage is then measured
+  against.
 
 > This scrapes an undocumented blob out of the watch page and **will** break when YouTube changes it.
 > Failures are logged as `EXTRACTION FAILED` precisely so breakage is distinguishable from a video
