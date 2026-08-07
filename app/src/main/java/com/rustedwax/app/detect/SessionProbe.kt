@@ -521,11 +521,20 @@ class SessionProbe(context: Context) {
 			EventLog.append(
 				"finalize",
 				"${ended.packageName} [foreground Short lifecycle] ${ended.title} — " +
-					"played ${ended.playedMs / 1000}s of ${(ended.durationMs ?: 0) / 1000}s" +
+					"played ${ended.playedMs / 1000}s of " +
+					// A Short whose seekbar YouTube never drew has no length to
+					// quote here at all. "of 0s" read like a measurement fault;
+					// the length is simply not known until identity resolves.
+					(ended.durationMs?.let { "${it / 1000}s" } ?: "an unknown length") +
 					if (ended.inferredPlayedMs > 0) {
 						" (${(ended.playedMs - ended.inferredPlayedMs) / 1000}s measured " +
 							"from the seekbar + ${ended.inferredPlayedMs / 1000}s inferred " +
-							"in picture-in-picture)"
+							// Never "in picture-in-picture": the same inference now
+							// also carries a fullscreen Short whose progress bar
+							// YouTube declined to render, and saying PiP there sent
+							// a field investigation looking for a PiP session that
+							// never happened.
+							"from wall-clock while no progress surface existed)"
 					} else if (ended.foregroundProgressLost) {
 						" (progress surface lost — the seekbar container was still " +
 							"there but published no readable time, so the remainder " +

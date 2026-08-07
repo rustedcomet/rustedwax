@@ -462,10 +462,11 @@ class VideoIdResolver {
 			(ownerHandle == null && title == null) ||
 			// A length is required unless an owner handle carries the check —
 			// YouTube stopped rendering the Shorts seekbar 2026-08-06, so a
-			// foreground Short can arrive with a title and a handle and no
-			// length at all. Handle + title + uniqueness still binds; only the
-			// third field is absent, and it is absent because it does not exist.
-			(durationSec == null && (ownerHandle == null || title == null))
+			// foreground Short can arrive with a handle and neither a title nor
+			// a length. Uniqueness on whatever *is* present then decides, and
+			// [selectOwnerHandleMatch] tightens to a single match when the handle
+			// is all there is.
+			(durationSec == null && ownerHandle == null)
 		) {
 			return VideoResolutionAttempt(refusalReason = "no run-local verified candidate")
 		}
@@ -675,7 +676,18 @@ class VideoIdResolver {
 					"no candidate matched exact title+duration+owner handle $ownerHandle"
 				},
 			)
-			else -> if (title == null) {
+			// Neither a title nor a length: the handle is the only evidence there
+			// is, so uniqueness has to carry the whole weight and recency may not
+			// break the tie. Two Shorts by one creator watched back to back are
+			// indistinguishable here, and a coin flip writes a wrong id to a
+			// chain nothing can edit.
+			else -> if (title == null && durationSec == null) {
+				VideoResolutionAttempt(
+					refusalReason = "ambiguous identity — ${matches.size} recent uploads by " +
+						"$ownerHandle and neither a title nor a length to separate them " +
+						"(${matches.joinToString { it.videoId }}); refusing every id",
+				)
+			} else if (title == null) {
 				// With no readable title there are only two fields left, and a
 				// creator who posts several Shorts of the same length ties them.
 				// Measured 2026-08-06: a Short opened straight into

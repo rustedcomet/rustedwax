@@ -287,8 +287,9 @@ class ForegroundShortTracker {
 			diagnostic = when {
 				finalized.isNotEmpty() || prior == null ->
 					"foreground Short proof acquired without a seekbar: " +
-						"\"${observation.title}\" / ${observation.ownerHandle} — " +
-						"YouTube is not rendering the progress bar, so time is inferred"
+						"${observation.title?.let { "\"$it\"" } ?: "no readable title"} / " +
+						"${observation.ownerHandle} — YouTube is not rendering the progress " +
+						"bar, so time is inferred"
 				credited > 0 -> "foreground Short has no seekbar; credited ${credited}ms of " +
 					"inferred wall-clock (inferred total ${inferredMillis / 1000}s)"
 				else -> null

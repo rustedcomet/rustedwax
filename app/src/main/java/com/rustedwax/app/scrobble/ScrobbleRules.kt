@@ -267,10 +267,10 @@ object ScrobbleRules {
 		// Inference ran and still did not reach the bar. Say so with both
 		// numbers, so a short PiP session reads differently from one where the
 		// evidence never supported crediting anything at all.
-		"the Short played on in picture-in-picture, where no progress surface " +
-			"exists: ${(playedMs - inferredMs) / 1000}s measured from the seekbar " +
-			"plus ${inferredMs / 1000}s inferred from wall-clock still falls short " +
-			"of the threshold."
+		"the Short played on with no progress surface — picture-in-picture, or a " +
+			"player YouTube drew no seekbar for: ${(playedMs - inferredMs) / 1000}s " +
+			"measured from the seekbar plus ${inferredMs / 1000}s inferred from " +
+			"wall-clock still falls short of the threshold."
 	} else {
 		"the Short's progress surface went away while it was still playing: the " +
 			"seekbar container is still there but publishes no readable time, and " +

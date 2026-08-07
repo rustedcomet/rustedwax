@@ -126,9 +126,10 @@ object VideoIdentityCorroborator {
 			) {
 				return "resolved candidate duration did not corroborate the foreground seekbar"
 			}
-			if (!durationKnown && session.title == null) {
-				return "the Short published neither a title nor a length to identify it by"
-			}
+			// Neither a title nor a length leaves the handle alone, which the
+			// resolver may only answer with a single recent match — no recency
+			// tie-break. The uniqueness check above and the two handle checks
+			// below are then the whole gate, which is why they are not relaxed.
 			if (!OwnerHandle.matches(wantedHandle, resolution.ownerHandle)) {
 				return "resolved candidate owner handle ${resolution.ownerHandle ?: "<missing>"} " +
 					"contradicts foreground handle $wantedHandle"

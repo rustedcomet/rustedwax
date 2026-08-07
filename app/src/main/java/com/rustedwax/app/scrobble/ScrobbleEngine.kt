@@ -699,9 +699,6 @@ object ScrobbleEngine {
 		// the proven gate is simply handed the right ids.
 		val handle = session.ownerHandle
 		if (handle != null) {
-			// A Short with neither a title nor a length has only its handle left,
-			// which cannot single out one upload — refuse rather than guess.
-			if (title == null && durationSec == null) return null
 			val candidates = history.recentShortIds(title)
 			if (candidates.isEmpty()) return null
 			val attempt = idResolver.resolveVerifiedCandidates(
