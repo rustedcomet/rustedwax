@@ -699,14 +699,16 @@ object ScrobbleEngine {
 		// the proven gate is simply handed the right ids.
 		val handle = session.ownerHandle
 		if (handle != null) {
-			val durationForShort = durationSec ?: return null
+			// A Short with neither a title nor a length has only its handle left,
+			// which cannot single out one upload — refuse rather than guess.
+			if (title == null && durationSec == null) return null
 			val candidates = history.recentShortIds(title)
 			if (candidates.isEmpty()) return null
 			val attempt = idResolver.resolveVerifiedCandidates(
 				videoIds = candidates,
 				title = title,
 				channel = session.artist,
-				durationSec = durationForShort,
+				durationSec = durationSec,
 				ownerHandle = handle,
 			)
 			EventLog.append(
@@ -743,19 +745,26 @@ object ScrobbleEngine {
 		// duration are not, and the watch-history route resolves on exactly those.
 		// Every other source still requires a title, because nothing else has a
 		// second discriminator to fall back on.
-		if (session.title == null &&
-			session.isForegroundShort &&
+		// A foreground Short now reaches here in three shapes: with a title and a
+		// length, with a length but no title (the footer restyle), and — since
+		// YouTube stopped rendering the Shorts seekbar — with a title but no
+		// length at all. Watch history is the only route that can answer any of
+		// them, because it is the only one that knows what this account played.
+		if (session.isForegroundShort &&
 			session.ownerHandle != null &&
-			durationSec != null
+			(session.title == null || durationSec == null)
 		) {
 			// Straight to watch history: the search and playlist routes below all
-			// need a title to query with, and the pre-resolved carry can only
-			// exist for a Short that already had one. History does not — it joins
-			// on owner handle + duration and still requires a unique match.
-			return watchHistoryResolution(session, null, durationSec)
+			// need a title *and* a length to query with, and the pre-resolved
+			// carry can only exist for a Short that already had both. History
+			// needs neither — it names what this account played, and whichever of
+			// the two fields survived still has to match, uniquely, on the
+			// candidate's own watch page.
+			val missing = if (session.title == null) "title" else "length"
+			return watchHistoryResolution(session, session.title, durationSec)
 				?: VideoResolutionAttempt(
-					refusalReason = "this Short's title could not be read and watch history " +
-						"could not identify it from its owner handle and length; " +
+					refusalReason = "this Short's $missing could not be read and watch history " +
+						"could not identify it from what was left; " +
 						// Naming the actual state, when there is one, rather than
 						// always pointing at sign-in: measured 2026-08-06, two of
 						// these were refused with this wording while the route was

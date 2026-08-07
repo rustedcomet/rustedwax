@@ -46,6 +46,15 @@ class NativeShortStabilizer {
 				result.ownerHandle,
 				result.totalSeconds,
 			)
+			// Stabilized on the two fields it has. Its length is not known here
+			// at all, so it cannot take part in the key — which is the point:
+			// the same Short must not re-key itself when the seekbar appears or
+			// disappears mid-viewing.
+			is NativeShortParser.Result.OrganicUnmeasured -> Key.Organic(
+				result.title,
+				result.ownerHandle,
+				totalSeconds = 0,
+			)
 			is NativeShortParser.Result.Ad -> Key.Ad(
 				result.signal,
 				result.title,

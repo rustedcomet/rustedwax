@@ -455,11 +455,17 @@ class VideoIdResolver {
 		durationSec: Long?,
 		ownerHandle: String? = null,
 	): VideoResolutionAttempt {
-		if (videoIds.isEmpty() || durationSec == null ||
+		if (videoIds.isEmpty() ||
 			(ownerHandle == null && channel.isNullOrBlank()) ||
 			// Without an owner handle the title is the only other discriminator,
 			// so a missing one leaves nothing to verify against.
-			(ownerHandle == null && title == null)
+			(ownerHandle == null && title == null) ||
+			// A length is required unless an owner handle carries the check —
+			// YouTube stopped rendering the Shorts seekbar 2026-08-06, so a
+			// foreground Short can arrive with a title and a handle and no
+			// length at all. Handle + title + uniqueness still binds; only the
+			// third field is absent, and it is absent because it does not exist.
+			(durationSec == null && (ownerHandle == null || title == null))
 		) {
 			return VideoResolutionAttempt(refusalReason = "no run-local verified candidate")
 		}
@@ -471,6 +477,9 @@ class VideoIdResolver {
 		if (ownerHandle != null) {
 			return selectOwnerHandleMatch(fetched, title, ownerHandle, durationSec)
 		}
+		durationSec ?: return VideoResolutionAttempt(
+			refusalReason = "no run-local verified candidate",
+		)
 		val matches = fetched.filter { candidate ->
 			val candidateTitle = candidate.title ?: return@filter false
 			val evidence = VideoTitleMatcher.compare(title!!, candidateTitle)
@@ -625,7 +634,7 @@ class VideoIdResolver {
 		candidates: List<VideoResolution>,
 		title: String?,
 		ownerHandle: String,
-		durationSec: Long,
+		durationSec: Long?,
 	): VideoResolutionAttempt {
 		val normalizedHandle = OwnerHandle.normalize(ownerHandle) ?: return VideoResolutionAttempt(
 			refusalReason = "the foreground owner handle was malformed",
@@ -646,8 +655,13 @@ class VideoIdResolver {
 				candidate.localizedTitle?.let {
 					SearchResultsParser.titleKey(it) == wantedTitle
 				} == true
-			titleAgrees &&
-				abs(candidateDuration - durationSec) <= DURATION_TOLERANCE_SEC &&
+			// A null length is not a failed comparison: YouTube stopped rendering
+			// the Shorts seekbar, so there is nothing on screen to compare with.
+			// The title and the exact handle still bind, and uniqueness still
+			// decides — this drops a field, it does not weaken the survivors.
+			val durationAgrees = durationSec == null ||
+				abs(candidateDuration - durationSec) <= DURATION_TOLERANCE_SEC
+			titleAgrees && durationAgrees &&
 				OwnerHandle.normalize(candidate.ownerHandle) == normalizedHandle
 		}.distinctBy { it.videoId }
 		return when (matches.size) {

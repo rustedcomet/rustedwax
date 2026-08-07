@@ -8,6 +8,51 @@ import org.junit.Test
 
 class ForegroundShortTrackerTest {
 
+	/**
+	 * Measured 2026-08-06 late: YouTube stopped rendering the Shorts progress bar
+	 * entirely, so 47 of 71 Shorts in 85 minutes credited nothing — not because
+	 * the inference refused, but because a Short with no reading could never be
+	 * *started*, and `proofMissing` returns immediately when nothing is active.
+	 */
+	@Test
+	fun `a Short with no seekbar still starts and accrues inferred time`() {
+		val tracker = ForegroundShortTracker()
+		val first = tracker.observe(unmeasured(at = 0))
+		assertTrue(tracker.hasActive)
+		assertEquals(0, first.active!!.playedMs)
+		// Nothing is measured, so the length is unknown and quoted as such.
+		assertNull(first.active!!.durationMs)
+
+		var update = first
+		for (second in 1..10) {
+			update = tracker.observe(unmeasured(at = second * 1_000L))
+		}
+		val played = update.active!!.playedMs
+		assertTrue("expected wall-clock to accrue, got ${played}ms", played >= 9_000)
+		assertEquals("every second of it is inferred", played, update.active!!.inferredPlayedMs)
+	}
+
+	@Test
+	fun `a Short with no seekbar credits nothing while the evidence says paused`() {
+		val tracker = ForegroundShortTracker()
+		tracker.observe(unmeasured(at = 0, playing = false))
+		var update = tracker.observe(unmeasured(at = 5_000, playing = false))
+		update = tracker.observe(unmeasured(at = 10_000, playing = false))
+		assertEquals(0, update.active!!.playedMs)
+	}
+
+	/** The seekbar coming back mid-viewing must not restart or double-count it. */
+	@Test
+	fun `a returning seekbar continues the same Short`() {
+		val tracker = ForegroundShortTracker()
+		tracker.observe(unmeasured(at = 0))
+		val inferred = tracker.observe(unmeasured(at = 6_000)).active!!.playedMs
+		assertTrue(inferred > 0)
+		val measured = tracker.observe(organic(position = 6, at = 7_000, total = 60))
+		assertTrue("the same Short continues", measured.finalized.isEmpty())
+		assertEquals(60_000L, measured.active!!.durationMs)
+	}
+
 	@Test
 	fun `only sequential seekbar deltas earn progress`() {
 		val tracker = ForegroundShortTracker()
@@ -402,6 +447,14 @@ class ForegroundShortTrackerTest {
 		at: Long,
 		epoch: Long = 3,
 	) = ForegroundShortTracker.OrganicObservation(title, handle, position, total, at, epoch)
+
+	private fun unmeasured(
+		title: String? = "Organic",
+		handle: String = "@creator",
+		at: Long,
+		playing: Boolean = true,
+		epoch: Long = 3,
+	) = ForegroundShortTracker.UnmeasuredObservation(title, handle, at, epoch, playing)
 
 	private fun ad(position: Long, at: Long) = ForegroundShortTracker.AdObservation(
 		signal = "Sponsored",

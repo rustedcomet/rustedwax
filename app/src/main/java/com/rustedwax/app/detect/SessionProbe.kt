@@ -463,6 +463,16 @@ class SessionProbe(context: Context) {
 							sourceEpoch = epoch,
 						),
 					)
+					is NativeShortParser.Result.OrganicUnmeasured ->
+						foregroundShortTracker.observe(
+							ForegroundShortTracker.UnmeasuredObservation(
+								title = parsed.title,
+								ownerHandle = parsed.ownerHandle,
+								observedAtMillis = event.observedAtMillis,
+								sourceEpoch = epoch,
+								playing = event.inferredPlaying,
+							),
+						)
 					is NativeShortParser.Result.Invalid -> foregroundShortTracker.proofMissing(
 						event.observedAtMillis,
 						parsed.reason,

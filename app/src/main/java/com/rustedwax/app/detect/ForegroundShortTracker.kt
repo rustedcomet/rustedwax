@@ -20,6 +20,20 @@ class ForegroundShortTracker {
 		val sourceEpoch: Long,
 	)
 
+	/**
+	 * A proven, named Short with no progress reading to advance from.
+	 *
+	 * @param playing the paired audio + visible-window evidence, which is the
+	 * only thing that can move this Short's clock. False credits nothing.
+	 */
+	data class UnmeasuredObservation(
+		val title: String?,
+		val ownerHandle: String,
+		val observedAtMillis: Long,
+		val sourceEpoch: Long,
+		val playing: Boolean,
+	)
+
 	data class AdObservation(
 		val signal: String,
 		val title: String?,
@@ -135,7 +149,10 @@ class ForegroundShortTracker {
 		val keyMatches = same != null &&
 			same.title == observation.title &&
 			same.ownerHandle == observation.ownerHandle &&
-			same.totalSeconds == observation.totalSeconds &&
+			// A Short that started without a seekbar has no length yet. The bar
+			// appearing mid-viewing teaches it one; it does not make it a
+			// different Short, and finalizing here would split one listen in two.
+			(same.totalSeconds == observation.totalSeconds || same.totalSeconds == 0L) &&
 			same.sourceEpoch == observation.sourceEpoch
 		val finalized = if (prior != null && !keyMatches) listOf(snapshot(prior, finalized = true)) else emptyList()
 		active = if (keyMatches) {
@@ -191,6 +208,89 @@ class ForegroundShortTracker {
 				newlyEarned > 0 -> "foreground Short seekbar advanced to " +
 					"${observation.currentSeconds}s of ${observation.totalSeconds}s; " +
 					"credited ${newlyEarned}s (measured total ${measuredPlayed}s)"
+				else -> null
+			},
+		)
+	}
+
+	/**
+	 * A Short that is proven and playing but publishes no progress at all.
+	 *
+	 * Measured 2026-08-06 late: YouTube stopped rendering the Shorts seekbar, so
+	 * 47 of 71 Shorts in 85 minutes could never be *started* and therefore could
+	 * never accrue anything. This starts them; the wall-clock inference then
+	 * credits exactly as it does for picture-in-picture, on the same evidence,
+	 * and every second of it is reported as inferred.
+	 *
+	 * The length is unknown here — it came from the seekbar — so nothing caps the
+	 * accrual live. The cap is applied where the length is actually known: at
+	 * finalize, against the duration the resolver read off the video's own page.
+	 */
+	fun observe(observation: UnmeasuredObservation): Update {
+		val prior = active
+		val same = prior as? Active.Organic
+		val keyMatches = same != null &&
+			same.title == observation.title &&
+			same.ownerHandle == observation.ownerHandle &&
+			same.sourceEpoch == observation.sourceEpoch
+		val finalized = if (prior != null && !keyMatches) {
+			listOf(snapshot(prior, finalized = true))
+		} else {
+			emptyList()
+		}
+		val current = if (keyMatches) {
+			same
+		} else {
+			// A fresh Short: nothing measured, nothing inferred, no length.
+			inference = null
+			Active.Organic(
+				title = observation.title,
+				ownerHandle = observation.ownerHandle,
+				currentSeconds = 0,
+				totalSeconds = 0,
+				observedAtMillis = observation.observedAtMillis,
+				sourceEpoch = observation.sourceEpoch,
+				startedAtEpochSec = observation.observedAtMillis / 1000,
+			)
+		}
+		var credited = 0L
+		if (observation.playing) {
+			val running = inference ?: PipPlaybackInference(
+				// A cap of zero would credit nothing, which is the bug being
+				// fixed; no cap at all would let a Short left looping invent
+				// hours. Until the real length is known, the format's own maximum
+				// is the honest ceiling — and the moment a seekbar appears, the
+				// video's own length replaces it.
+				durationMs = if (current.totalSeconds > 0) {
+					current.totalSeconds * 1000
+				} else {
+					MAX_SHORT_DURATION_MS
+				},
+				measuredMs = current.playedSeconds * 1000 + current.inferredMillis,
+			).also { inference = it }
+			credited = running.observe(observation.observedAtMillis, playing = true)
+		} else {
+			inference?.observe(observation.observedAtMillis, playing = false)
+		}
+		val inferredMillis = current.inferredMillis + credited
+		active = current.copy(
+			observedAtMillis = observation.observedAtMillis,
+			frozenForMissingProof = false,
+			progressSurfaceLost = true,
+			inferredMillis = inferredMillis,
+		)
+		missingSinceMillis = null
+		return Update(
+			finalized = finalized,
+			active = active?.let { snapshot(it, finalized = false) },
+			completeForegroundProof = true,
+			diagnostic = when {
+				finalized.isNotEmpty() || prior == null ->
+					"foreground Short proof acquired without a seekbar: " +
+						"\"${observation.title}\" / ${observation.ownerHandle} — " +
+						"YouTube is not rendering the progress bar, so time is inferred"
+				credited > 0 -> "foreground Short has no seekbar; credited ${credited}ms of " +
+					"inferred wall-clock (inferred total ${inferredMillis / 1000}s)"
 				else -> null
 			},
 		)
@@ -337,6 +437,18 @@ class ForegroundShortTracker {
 		observation: OrganicObservation,
 	): Active.Organic {
 		if (observation.observedAtMillis < current.observedAtMillis) return current
+		// The seekbar appearing on a Short that started without one supplies the
+		// length for the first time. Adopt it before anything uses it, so the
+		// completion cap and the percentage are computed against a real duration.
+		if (current.totalSeconds == 0L && observation.totalSeconds > 0) {
+			return current.copy(
+				currentSeconds = observation.currentSeconds,
+				totalSeconds = observation.totalSeconds,
+				observedAtMillis = observation.observedAtMillis,
+				frozenForMissingProof = false,
+				progressSurfaceLost = false,
+			)
+		}
 		if (current.frozenForMissingProof) {
 			// A readable seekbar is back, so whatever took it away is over. Field
 			// §4.3: returning from PiP restores it within ~5s and it survives a
@@ -436,7 +548,11 @@ class ForegroundShortTracker {
 		val measuredMs = state.playedSeconds * 1000
 		val inferredMs = state.inferredMillis
 		val playedMs = measuredMs + inferredMs
-		val durationMs = state.totalSeconds * 1000
+		// Null, not zero, when YouTube rendered no seekbar to read a length from.
+		// Absence of evidence has to stay absence all the way down: the rules
+		// already know how to recover a length from the watch page, and the
+		// corroborator must not read a zero as a contradicted duration.
+		val durationMs = (state.totalSeconds * 1000).takeIf { it > 0 }
 		val proofMissing = state.frozenForMissingProof
 		// Deliberately *not* `proofMissing`. Every Short that ends is frozen for
 		// missing proof first — scrolling to the next one included — so wiring
@@ -463,7 +579,8 @@ class ForegroundShortTracker {
 			isPlaying = !finalized && !proofMissing,
 			foregroundProgressLost = surfaceLost,
 			inferredPlayedMs = inferredMs,
-			percentPlayed = playedMs.toDouble() / durationMs,
+			// Unknown until the resolver reads a length off the video's own page.
+			percentPlayed = durationMs?.let { playedMs.toDouble() / it } ?: 0.0,
 			identity = YouTubeProbe.Identity.SiteOnly(
 				host = YouTubeProbe.YOUTUBE_PACKAGE,
 				isMusic = false,
@@ -492,6 +609,13 @@ class ForegroundShortTracker {
 
 	companion object {
 		const val MISSING_PROOF_GRACE_MS = 3_000L
+
+		/**
+		 * The longest a Short can be, and therefore the most that may be inferred
+		 * for one whose length YouTube never rendered. Three minutes is the
+		 * format's own published maximum.
+		 */
+		const val MAX_SHORT_DURATION_MS = 180_000L
 		const val POSITION_JITTER_SECONDS = 2L
 		private const val LOOP_END_FRACTION = 0.8
 		private const val LOOP_START_FRACTION = 0.2

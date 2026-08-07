@@ -202,49 +202,69 @@ class NativeShortParserTest {
 		)
 	}
 
+	/**
+	 * Measured 2026-08-06 23:00–01:20: YouTube stopped rendering the Shorts
+	 * progress bar altogether — no `SeekBar` node anywhere in the tree and no bar
+	 * on screen — until the viewer taps the video once, which restores it for the
+	 * rest of the session. 47 of 71 Shorts in 85 minutes were lost, because a
+	 * Short that is never *started* can never accrue anything at all.
+	 *
+	 * The player, its container and the exact handle are all still proven, so
+	 * this is a proof without a reading, not a refusal.
+	 */
 	@Test
-	fun `a missing seekbar container and an unreadable seekbar time refuse differently`() {
-		// One shared message for these two made a field log unable to say which
-		// had happened, and the two have unrelated fixes.
-		val missingContainer = NativeShortParser.parse(
-			player(Case("Title", "@owner", 1, 20), includeSeekbar = false),
-		)
-		val unreadableTime = NativeShortParser.parse(
+	fun `a named player with no readable time is proven, not refused`() {
+		val result = NativeShortParser.parse(
 			player(Case("Title", "@owner", 1, 20), seekbarLabel = "8 of 67 seconds"),
 		)
-		assertTrue(missingContainer is NativeShortParser.Result.Invalid)
-		assertTrue(unreadableTime is NativeShortParser.Result.Invalid)
-		assertTrue(
-			(missingContainer as NativeShortParser.Result.Invalid).reason !=
-				(unreadableTime as NativeShortParser.Result.Invalid).reason,
-		)
+		assertTrue("$result", result is NativeShortParser.Result.OrganicUnmeasured)
+		val unmeasured = result as NativeShortParser.Result.OrganicUnmeasured
+		assertEquals("Title", unmeasured.title)
+		assertEquals("@owner", unmeasured.ownerHandle)
 	}
 
 	@Test
-	fun `only a present container with no readable time is the lost-surface signature`() {
-		// FIELD_2026-08-05.md §4.2: with a Short live in picture-in-picture the
-		// tree keeps reel_watch_fragment_root, reel_watch_player and
-		// reel_time_bar but the time bar loses its SeekBar child, so no time text
-		// exists anywhere in the window. 82 of these were measured during PiP and
-		// zero container failures. That exact pair is the only thing that may set
-		// the marker; everything else is an ordinary refusal.
+	fun `a missing seekbar container is still a structural refusal`() {
+		// A container that is not there at all is a swipe or a torn frame, not a
+		// live player whose bar YouTube declined to draw. It keeps its own
+		// message, which a field log once could not tell apart from the other.
+		val missingContainer = NativeShortParser.parse(
+			player(Case("Title", "@owner", 1, 20), includeSeekbar = false),
+		)
+		assertTrue(missingContainer is NativeShortParser.Result.Invalid)
+		assertFalse((missingContainer as NativeShortParser.Result.Invalid).progressSurfaceLost)
+		assertTrue(missingContainer.reason.contains("container"))
+	}
+
+	@Test
+	fun `no handle and no readable time is the picture-in-picture signature`() {
+		// FIELD_2026-08-05.md §4.2: a Short live in picture-in-picture keeps
+		// reel_watch_fragment_root, reel_watch_player and reel_time_bar, but the
+		// time bar loses its SeekBar child and the window has no footer to read
+		// an owner from. Nothing there can start a Short — it only ever credits
+		// one that was already proven.
 		val pip = NativeShortParser.parse(
-			player(Case("Title", "@owner", 1, 20), seekbarLabel = "8 of 67 seconds"),
+			player(
+				Case("Title", "@owner", 1, 20),
+				seekbarLabel = "8 of 67 seconds",
+				includeHandle = false,
+			),
 		)
 		assertTrue((pip as NativeShortParser.Result.Invalid).progressSurfaceLost)
 
-		// A missing container is a structural miss, not a live-but-unmeasurable
-		// player. This is the case a swipe between Shorts produces.
-		val noContainer = NativeShortParser.parse(
-			player(Case("Title", "@owner", 1, 20), includeSeekbar = false),
+		// A readable time with no handle is an ordinary refusal: the surface is
+		// plainly still there.
+		val noHandle = NativeShortParser.parse(
+			player(Case("Title", "@owner", 1, 20), includeHandle = false),
 		)
-		assertFalse((noContainer as NativeShortParser.Result.Invalid).progressSurfaceLost)
+		assertFalse((noHandle as NativeShortParser.Result.Invalid).progressSurfaceLost)
 
 		// Two readable times is an ambiguous read of a surface that is still
-		// there — refuse, but do not claim the surface went away.
+		// there — refuse, and never treat it as unmeasured.
 		val ambiguous = NativeShortParser.parse(
 			player(Case("Title", "@owner", 1, 20), secondSeekbar = 2L to 30L),
 		)
+		assertTrue(ambiguous is NativeShortParser.Result.Invalid)
 		assertFalse((ambiguous as NativeShortParser.Result.Invalid).progressSurfaceLost)
 	}
 

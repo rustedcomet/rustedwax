@@ -54,6 +54,26 @@ object NativeShortParser {
 			val totalSeconds: Long,
 		) : Result
 
+		/**
+		 * A proven, named Shorts player with no readable progress reading.
+		 *
+		 * The player, its time-bar container and its exact owner handle are all
+		 * present; only the seekbar's time is missing. Measured 2026-08-06 late:
+		 * YouTube stopped rendering the Shorts progress bar entirely — no
+		 * `SeekBar` node in the tree, no bar on screen — until the viewer taps
+		 * the video once, which restores it for the rest of the session.
+		 *
+		 * Treating that as a refusal cost 47 of 71 Shorts in 85 minutes, because
+		 * a Short that is never *started* can never accrue anything, inferred or
+		 * otherwise. This result starts it. Time is then credited only by the
+		 * same wall-clock inference picture-in-picture uses, on the same paired
+		 * evidence, and is always reported as inferred.
+		 */
+		data class OrganicUnmeasured(
+			val title: String?,
+			val ownerHandle: String,
+		) : Result
+
 		data class Ad(
 			val signal: String,
 			val title: String?,
@@ -131,17 +151,12 @@ object NativeShortParser {
 			.flatMap { node -> listOf(node.contentDescription, node.text) }
 			.mapNotNull(::parseTime)
 			.distinct()
-		if (times.size != 1) {
+		if (times.size > 1) {
 			return Result.Invalid(
 				"expected exactly one readable Shorts seekbar time; found ${times.size}",
-				// The container is proven present by the check above, so zero
-				// readable times is the surface going away underneath a live
-				// player, not a structural miss. Two or more is an ambiguous
-				// read of a surface that is still there.
-				progressSurfaceLost = times.isEmpty(),
 			)
 		}
-		val (current, total) = times.single()
+		val reading = times.singleOrNull()
 
 		// The semantic footer/overlay is a sibling of reel_watch_player in the
 		// measured tree, but remains inside the one structural Shorts root.
@@ -154,20 +169,43 @@ object NativeShortParser {
 		}.distinct()
 		val title = titleCandidate(playerNodes)
 		if (adSignals.isNotEmpty()) {
-			return Result.Ad(adSignals.first(), title, current, total)
+			// An ad with no readable seekbar is still an ad. It carries no
+			// duration, which costs nothing: an ad is refused, never credited.
+			return Result.Ad(adSignals.first(), title, reading?.first ?: 0, reading?.second ?: 0)
 		}
 
 		val handles = playerNodes.flatMap(::handleCandidates)
 			.mapNotNull(OwnerHandle::canonical)
 			.distinct()
 		if (handles.size != 1) {
-			return Result.Invalid("expected exactly one exact visible owner handle")
+			return Result.Invalid(
+				"expected exactly one exact visible owner handle",
+				// No handle *and* no readable time is the picture-in-picture
+				// signature: the window keeps the player but has no footer to
+				// read an owner from. It stays "playing but unmeasurable", which
+				// only ever accrues for a Short that was already proven.
+				progressSurfaceLost = reading == null,
+			)
 		}
 		// Deliberately NOT refusing on a missing title. It is no longer identity
 		// evidence — the watch-history route is — and refusing here threw away the
 		// measurement as well, which is what made a footer restyle cost the whole
 		// listen rather than just its label.
-		return Result.Organic(title, handles.single(), current, total)
+		if (reading == null) {
+			// Nor on a missing seekbar, for the same reason and at far greater
+			// cost. Measured 2026-08-06 23:00–01:20: YouTube stopped rendering the
+			// Shorts progress bar at all — no `SeekBar` node anywhere in the tree
+			// and no bar on screen — and 47 of 71 Shorts in 85 minutes were lost
+			// because a proven, playing, named Short could not be *started*.
+			// A tap on the video restores the bar for the rest of the session,
+			// which is not something an observer may do for the user.
+			//
+			// The player, the container and the exact handle are all still proven
+			// here. What is missing is only the progress *reading*, and that is
+			// the case the wall-clock inference already exists for.
+			return Result.OrganicUnmeasured(title, handles.single())
+		}
+		return Result.Organic(title, handles.single(), reading.first, reading.second)
 	}
 
 	/** Strict measured/localized seekbar phrases; unknown locale/shape refuses. */

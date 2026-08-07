@@ -20,7 +20,12 @@ object NativeShortsObserver {
 
 	sealed interface Event {
 		data object Connected : Event
-		data class Parsed(val result: NativeShortParser.Result, val observedAtMillis: Long) : Event
+		data class Parsed(
+			val result: NativeShortParser.Result,
+			val observedAtMillis: Long,
+			/** Paired audio + visible-window evidence, for a Short with no seekbar. */
+			val inferredPlaying: Boolean = false,
+		) : Event
 		data class Missing(
 			val reason: String,
 			val observedAtMillis: Long,
@@ -51,7 +56,11 @@ object NativeShortsObserver {
 		onEvent?.invoke(Event.Connected)
 	}
 
-	fun parsed(result: NativeShortParser.Result, observedAtMillis: Long) {
+	fun parsed(
+		result: NativeShortParser.Result,
+		observedAtMillis: Long,
+		inferredPlaying: Boolean = false,
+	) {
 		when (val decision = stabilizer.observe(result, observedAtMillis)) {
 			is NativeShortStabilizer.Decision.Waiting -> {
 				_status.value = _status.value.copy(
@@ -80,6 +89,17 @@ object NativeShortsObserver {
 				lastObservationAtMillis = observedAtMillis,
 				exactReason = "complete foreground Short proof",
 			)
+			is NativeShortParser.Result.OrganicUnmeasured -> Status(
+				connected = true,
+				completePlayerProof = true,
+				activeTitle = result.title,
+				activeHandle = result.ownerHandle,
+				currentSeconds = null,
+				totalSeconds = null,
+				lastObservationAtMillis = observedAtMillis,
+				exactReason = "foreground Short proof without a progress surface — " +
+					"YouTube is not rendering the seekbar",
+			)
 			is NativeShortParser.Result.Ad -> Status(
 				connected = true,
 				completePlayerProof = true,
@@ -100,7 +120,7 @@ object NativeShortsObserver {
 				exactReason = result.reason,
 			)
 		}
-		onEvent?.invoke(Event.Parsed(result, observedAtMillis))
+		onEvent?.invoke(Event.Parsed(result, observedAtMillis, inferredPlaying))
 	}
 
 	fun missing(

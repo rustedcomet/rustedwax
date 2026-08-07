@@ -114,8 +114,20 @@ object VideoIdentityCorroborator {
 						.orEmpty() +
 					" contradicts foreground title \"$frozenTitle\""
 			}
-			if (!SessionProbe.durationsCorroborate(session.durationMs, resolution.lengthSeconds)) {
+			// A seekbar that was never rendered publishes no length, and absence of
+			// evidence is not contradiction — measured 2026-08-06 late, YouTube
+			// stopped drawing the Shorts progress bar entirely. What remains is
+			// the exact owner handle on both the candidate and the final page,
+			// the title when there is one, and the single-match rule; a length
+			// that *is* published must still agree.
+			val durationKnown = session.durationMs != null && session.durationMs > 0
+			if (durationKnown &&
+				!SessionProbe.durationsCorroborate(session.durationMs, resolution.lengthSeconds)
+			) {
 				return "resolved candidate duration did not corroborate the foreground seekbar"
+			}
+			if (!durationKnown && session.title == null) {
+				return "the Short published neither a title nor a length to identify it by"
 			}
 			if (!OwnerHandle.matches(wantedHandle, resolution.ownerHandle)) {
 				return "resolved candidate owner handle ${resolution.ownerHandle ?: "<missing>"} " +

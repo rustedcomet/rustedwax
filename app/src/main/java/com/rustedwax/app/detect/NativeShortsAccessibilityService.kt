@@ -341,7 +341,16 @@ class NativeShortsAccessibilityService : AccessibilityService() {
 			)
 		} else {
 			lastCompleteProofAtMillis = now
-			NativeShortsObserver.parsed(result, now)
+			NativeShortsObserver.parsed(
+				result,
+				now,
+				// A Short with no seekbar has nothing else that can move its
+				// clock, so the same paired evidence picture-in-picture runs on
+				// decides whether wall-clock may accrue. Asked only for that
+				// result, so an ordinary measured Short costs nothing.
+				inferredPlaying = result is NativeShortParser.Result.OrganicUnmeasured &&
+					pipPlaying(now),
+			)
 		}
 	}
 
