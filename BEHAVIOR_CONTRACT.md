@@ -1515,3 +1515,46 @@ playing.
 **Accepted residual, recorded rather than hidden:** a Short played with its audio stopped, on a
 device without Usage Access, can still be lost without a line. Under-reporting was chosen
 deliberately over a report the reader learns to ignore.
+
+## v0.9.10 Shorts measurement contract (2026-08-07)
+
+Field evidence: [FIELD_2026-08-05.md](FIELD_2026-08-05.md) §16.
+
+### 1. A Short is proven by its player and its handle; the seekbar is evidence, not a precondition
+
+**Supersedes the v0.9.7 rule** that "a Short is proven by its structural player, its exact owner
+handle and a readable seekbar".
+
+Measured 2026-08-07: YouTube stopped rendering the Shorts progress bar entirely — no `SeekBar` node
+in the tree and no bar on screen — while the player, the container, the exact handle and the audio
+were all still there. One tap on the video restores it for the session, which an observer may not do
+for the user. 47 of 71 Shorts in 85 minutes were lost, not because the wall-clock fallback refused
+but because it never ran: a Short with no reading could not be *started*, and nothing that is not
+started can accrue anything.
+
+**New rule.** A visible player root, one time-bar container and exactly one exact owner handle prove
+a foreground Short. A readable seekbar time is credited as measurement when present and is otherwise
+absent evidence, not a refusal. Time for a Short with no reading is credited only by the
+picture-in-picture inference, on the same paired evidence, and is always reported as inferred.
+Until the length is known the accrual ceiling is the format's own three-minute maximum; a seekbar
+appearing mid-viewing supplies the real length and continues the same Short.
+
+**No handle and no readable time is unchanged**: that is the picture-in-picture signature, and it
+still only ever credits a Short that was already proven.
+
+### 2. Identity needs any two of title, length and handle — never one
+
+**Extends the v0.9.7 ruling**, which dropped the title and leaned on handle + duration.
+
+The length came from the seekbar, so it can now be absent too. The handle is the field that has
+survived every restyle, so it is mandatory; the other two are interchangeable.
+
+| available | gate |
+| --- | --- |
+| handle + length | unique match on handle + length, recency breaks a tie |
+| handle + title | unique match on handle + title |
+| handle only | refused |
+
+A field that *is* published must still agree. Uniqueness is untouched: two candidates matching
+everything available still refuse, and every candidate is still re-fetched and corroborated on its
+own watch page.
