@@ -3065,3 +3065,40 @@ tell "never identified" from "never observed" — a partial **title** can, becau
 titles and owner handles are logged before identity runs. That is how all six
 untraceable ids of the 2026-08-06 acceptance day were finally accounted for
 (FIELD §14.8).
+
+### Reproducing the seekbar-less Short
+
+YouTube renders a Shorts player **without its progress bar** when the player is *resumed* by tab
+navigation rather than opened fresh. This is the state that cost 47 of 71 Shorts on 2026-08-06
+(FIELD §16), and it reproduces first time:
+
+1. Open the YouTube app.
+2. Tap a Short **on the home feed** — it plays *with* a seekbar.
+3. Tap **Shorts** in the bottom menu → **the bar is gone**.
+4. Tap **Home** → the Short from step 2 resumes, still no bar.
+5. Tap **Shorts** → the Short from step 3 resumes, still no bar.
+
+A swipe to the next Short restores it, which is why the state looks intermittent in a day's log.
+Sending a Short to picture-in-picture and expanding it again reaches the same state, for the same
+reason.
+
+Confirm the state rather than assuming it:
+
+```bash
+adb shell uiautomator dump /sdcard/s.xml && adb pull /sdcard/s.xml
+grep -c 'android.widget.SeekBar' s.xml     # 0 in this state, 1 normally
+grep -c 'reel_watch_player' s.xml          # 1 either way — the player is there
+```
+
+What the log must then show, and what it means:
+
+| line | meaning |
+| --- | --- |
+| `foreground Short proof acquired without a seekbar: "…" / @handle` | the Short started anyway — this is the fix working |
+| `foreground Short has no seekbar; credited 1001ms of inferred wall-clock` | one second per second, on audio + visible-window evidence |
+| `played Ns of an unknown length (0s measured from the seekbar + Ns inferred …)` | the finalize; the length is not known until identity resolves |
+| `duration recovered from the watch page: Ns` | and then it is |
+
+Leave it untouched for a minute, then swipe once to finalize. Both the inferred Short and the
+swipe-restored measured one should reach the chain — verified 2026-08-07,
+`tx 80c427db974908fb096607e381de57aca7136282` and `tx 48f78ee76de4bf99828b88aecb6350e3535713fe`.
