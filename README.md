@@ -40,12 +40,13 @@ off-chain and is listed, with its reason, under **Not logged**.
 | [Release history](docs/RELEASE_HISTORY.md) | Version-by-version specification status |
 | [Testing](TESTING.md) | How the suite is structured and run |
 | [Development plan](DEVELOPMENT_PLAN.md) | Phased build plan and the port map from the extension |
+| [Expansion plan](PHASE_EXPANSION.md) | The forward plan after v0.9.11: correctness fixes, privacy, and the architecture for more platforms |
 
-Phase documents ([Phase 0](PHASE0.md), [Phase 4](PHASE4.md),
+[PHASE_EXPANSION.md](PHASE_EXPANSION.md) is the only forward-looking phase document. The rest are
+historical records: [Phase 0](PHASE0.md), [Phase 4](PHASE4.md),
 [native apps](PHASE_NATIVE_APPS.md), [Shorts](PHASE_NATIVE_SHORTS.md),
 [playlists](PHASE_NATIVE_PLAYLIST.md), [playlist identity](PHASE_NATIVE_PLAYLIST_IDENTITY.md),
-[watch history](PHASE_NATIVE_HISTORY.md)) are historical records. They do not override the behavior
-contract.
+and [watch history](PHASE_NATIVE_HISTORY.md). None of them override the behavior contract.
 
 ---
 

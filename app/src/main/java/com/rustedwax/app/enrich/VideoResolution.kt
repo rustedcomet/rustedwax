@@ -135,8 +135,16 @@ object VideoIdentityCorroborator {
 					"contradicts foreground handle $wantedHandle"
 			}
 			val finalFacts = facts ?: return "final watch-page handle evidence was unavailable"
-			if (!OwnerHandle.matches(wantedHandle, finalFacts.ownerHandle)) {
-				return "final watch-page owner handle ${finalFacts.ownerHandle ?: "<missing>"} " +
+			// A handle the enrichment fetch simply did not carry is absence, not
+			// contradiction — and the candidate's own page has already proven it
+			// above, for this same id. Measured 2026-08-07: an 83-second listen
+			// was refused because the second fetch of a page whose *first* fetch
+			// had supplied `@colewalliser` came back without the field. A handle
+			// that is present and different still contradicts.
+			if (finalFacts.ownerHandle != null &&
+				!OwnerHandle.matches(wantedHandle, finalFacts.ownerHandle)
+			) {
+				return "final watch-page owner handle ${finalFacts.ownerHandle} " +
 					"contradicts foreground handle $wantedHandle"
 			}
 		}

@@ -47,13 +47,27 @@ class VideoIdentityCorroboratorTest {
 				facts,
 			),
 		)
-		assertNotNull(
+		// A handle the enrichment fetch did not carry is absence, not
+		// contradiction: the candidate's own page proved it for this same id a
+		// moment earlier. Measured 2026-08-07, the strict rule refused an
+		// 83-second listen because the second read of one page came back without
+		// the field. A handle that is present and *different* still refuses.
+		assertNull(
 			VideoIdentityCorroborator.contradiction(
 				foreground,
 				resolution,
 				facts.copy(ownerHandle = null),
 			),
 		)
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				foreground,
+				resolution,
+				facts.copy(ownerHandle = "@someone_else"),
+			),
+		)
+		// Seeding the run-local cache still demands both, because a cached
+		// candidate is re-used without the page in front of it.
 		assertFalse(VideoIdentityCorroborator.cacheable(foreground, resolution, facts.copy(ownerHandle = null)))
 	}
 

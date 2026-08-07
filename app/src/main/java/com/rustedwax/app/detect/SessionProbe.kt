@@ -695,6 +695,36 @@ class SessionProbe(context: Context) {
 					publish()
 					return
 				}
+				// YouTube re-creates its MediaSession on every tab switch, and the
+				// first metadata it publishes is empty — no title, no duration —
+				// with the real values arriving a fraction of a second later.
+				// Measured 2026-08-07: a viewer moved between the Home and Shorts
+				// tabs while a 155-second trailer played, and each return produced
+				//
+				//   [track] track change after 0s played
+				//   [finalize] <untitled> — played 0s of 0s
+				//   [metadata] TITLE = "Algo terrible está a punto de suceder…"
+				//
+				// so the trailer was finalized against a placeholder, over and
+				// over, and finished the session having accumulated 18 of the
+				// 155 seconds actually watched. Nothing scrobbled.
+				//
+				// An empty announcement is the session clearing its throat, not a
+				// different track. Hold the current one and wait for the real
+				// metadata; a genuinely ended track still ends by STOPPED, by
+				// session destruction, or by the replacement that follows.
+				if (!newIdentity.isUsable && newIdentity.durationMs == null &&
+					trackIdentity.isUsable
+				) {
+					EventLog.append(
+						"native-identity",
+						"$packageName published empty metadata while " +
+							"\"${titleOf(metadata)}\" was playing; waiting for the real " +
+							"values rather than ending it on a placeholder",
+					)
+					publish()
+					return
+				}
 				val oldMediaSessionHasExactId = trackIdentityOf(metadata, packageName)
 					.hasExactSourceItemId
 				val presentationIdentity = if (!oldMediaSessionHasExactId &&
@@ -765,7 +795,28 @@ class SessionProbe(context: Context) {
 					publish()
 					return
 				}
-				val trackChanged = !trackIdentity.sameTrackAs(newIdentity)
+				// A session that was created holding nothing — no title, no
+				// duration — has not been playing a track that can now "end". It
+				// was YouTube preparing a controller, and this is the real
+				// metadata arriving. Announcing a track change here finalized a
+				// phantom `<untitled> — played 0s of 0s` on every tab switch,
+				// which is noise at best and, when it lands between a teardown
+				// and its carry, throws the real track's progress away.
+				val outgoingWasPlaceholder = !trackIdentity.isUsable &&
+					trackIdentity.durationMs == null &&
+					playedMsNow() == 0L
+				val trackChanged = !trackIdentity.sameTrackAs(newIdentity) &&
+					!outgoingWasPlaceholder
+				if (outgoingWasPlaceholder && newIdentity.isUsable) {
+					trackIdentity = newIdentity
+					trackInstanceToken = MediaSessionAdEvidence.nextTrackToken()
+					trackInstanceEstablishedAtMillis = System.currentTimeMillis()
+					metadata = md
+					restoreCarriedProgress()
+					logMetadata(md, "first real metadata for a freshly created session")
+					publish()
+					return
+				}
 				if (trackChanged) {
 					cancelNativeStoppedFinalization()
 					EventLog.append(
