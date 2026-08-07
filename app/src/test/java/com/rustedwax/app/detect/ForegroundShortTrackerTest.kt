@@ -53,6 +53,63 @@ class ForegroundShortTrackerTest {
 		assertEquals(60_000L, measured.active!!.durationMs)
 	}
 
+	/**
+	 * Measured 2026-08-07: the owner scrolled Shorts while switching between the
+	 * Home and Shorts tabs and **nothing scrobbled for 42 minutes**. Each switch
+	 * outlasts the 3-second grace, so the Short finalized; each switch back
+	 * re-acquired the same Short from zero. One 32-second Short finalized at
+	 * `0s`, `3s` and `5s` across three switches, never reaching a threshold it
+	 * had long since earned in total.
+	 */
+	@Test
+	fun `a Short interrupted by a tab switch resumes what it earned`() {
+		val tracker = ForegroundShortTracker()
+		tracker.observe(organic(position = 0, total = 32, at = 0))
+		tracker.observe(organic(position = 12, total = 32, at = 12_000))
+
+		// The player goes away; the grace expires and it finalizes at 12s.
+		tracker.proofMissing(13_000, "player root gone")
+		val ended = tracker.proofMissing(
+			13_000 + ForegroundShortTracker.MISSING_PROOF_GRACE_MS,
+			"player root gone",
+		)
+		assertEquals(12_000, ended.finalized.single().playedMs)
+		assertFalse(tracker.hasActive)
+
+		// Back within the window, same Short: it continues rather than restarting.
+		val back = tracker.observe(organic(position = 12, total = 32, at = 22_000))
+		assertEquals(12_000, back.active!!.playedMs)
+		assertEquals(20_000, tracker.observe(organic(position = 20, total = 32, at = 30_000)).active!!.playedMs)
+	}
+
+	@Test
+	fun `a different Short does not inherit the interrupted one's seconds`() {
+		val tracker = ForegroundShortTracker()
+		tracker.observe(organic(title = "A", handle = "@a", position = 0, total = 32, at = 0))
+		tracker.observe(organic(title = "A", handle = "@a", position = 20, total = 32, at = 20_000))
+		tracker.proofMissing(21_000, "gone")
+		tracker.proofMissing(21_000 + ForegroundShortTracker.MISSING_PROOF_GRACE_MS, "gone")
+
+		val other = tracker.observe(
+			organic(title = "B", handle = "@b", position = 0, total = 32, at = 26_000),
+		)
+		assertEquals(0, other.active!!.playedMs)
+	}
+
+	@Test
+	fun `coming back long after the interruption starts over`() {
+		val tracker = ForegroundShortTracker()
+		tracker.observe(organic(position = 0, total = 32, at = 0))
+		tracker.observe(organic(position = 20, total = 32, at = 20_000))
+		tracker.proofMissing(21_000, "gone")
+		tracker.proofMissing(21_000 + ForegroundShortTracker.MISSING_PROOF_GRACE_MS, "gone")
+
+		val late = tracker.observe(
+			organic(position = 0, total = 32, at = 25_000 + ForegroundShortTracker.RESUME_WINDOW_MS),
+		)
+		assertEquals(0, late.active!!.playedMs)
+	}
+
 	@Test
 	fun `only sequential seekbar deltas earn progress`() {
 		val tracker = ForegroundShortTracker()

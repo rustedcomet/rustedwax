@@ -312,7 +312,15 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 		// authority. This is the path a Short takes when YouTube's footer restyle
 		// costs the title but leaves the handle and the seekbar intact.
 		if (title == null) {
-			val recent = shorts.map(WatchHistoryParser.ShortEntry::videoId).distinct().take(limit)
+			// Wider than the titled case, because there is nothing to select by.
+			// Measured 2026-08-07: a Short watched eight minutes before it
+			// finalized had fallen well outside the newest five, so a complete
+			// 180-second listen was measured and then could not be named. The
+			// owner-handle check still decides; this only widens what it is
+			// allowed to look at, and every candidate still costs one page.
+			val recent = shorts.map(WatchHistoryParser.ShortEntry::videoId)
+				.distinct()
+				.take(MAX_UNTITLED_SHORT_CANDIDATES)
 			EventLog.append(
 				"history",
 				"no on-screen title for this Short; offering the ${recent.size} most recent " +
@@ -576,6 +584,13 @@ class WatchHistoryResolver(private val vault: YouTubeSessionVault) {
 		 * applies its own eight-page budget on top.
 		 */
 		const val MAX_SHORT_CANDIDATES = 5
+
+		/**
+		 * The window for a Short with no readable title, where recency is the
+		 * only selector there is. Eight, to match the resolver's own page budget
+		 * — widening past what it will fetch would only refuse later.
+		 */
+		const val MAX_UNTITLED_SHORT_CANDIDATES = 8
 
 		/** Diagnostic only; one bounded log line. */
 		const val SHORT_ID_DIAGNOSTIC_LIMIT = 6

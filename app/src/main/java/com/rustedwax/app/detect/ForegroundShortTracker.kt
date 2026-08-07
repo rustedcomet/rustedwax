@@ -132,6 +132,71 @@ class ForegroundShortTracker {
 	private var missingSinceMillis: Long? = null
 
 	/**
+	 * What the Short that just ended had earned, in case it comes straight back.
+	 *
+	 * Measured 2026-08-07: the owner scrolled Shorts while switching between the
+	 * Home and Shorts tabs, and **nothing scrobbled for 42 minutes**. Each switch
+	 * takes the player away for longer than the 3-second grace, so the Short
+	 * finalized; each switch back re-acquired the *same* Short and started it
+	 * again from zero. One 32-second Short was watched across three switches and
+	 * finalized at `0s`, `3s` and `5s` — never once reaching the threshold it had
+	 * long since earned in total.
+	 *
+	 * The MediaSession path solved this years earlier with a continuation window.
+	 * This is the same idea: a Short that returns with the same identity within
+	 * [RESUME_WINDOW_MS] resumes what it had, rather than starting over. Merging
+	 * two genuinely separate viewings of one Short is harmless — the dedup ledger
+	 * already caps a video to one scrobble.
+	 */
+	private data class Interrupted(
+		val title: String?,
+		val ownerHandle: String,
+		val totalSeconds: Long,
+		val sourceEpoch: Long,
+		val playedSeconds: Long,
+		val inferredMillis: Long,
+		val loopDetected: Boolean,
+		val bankedFullListen: Boolean,
+		val atMillis: Long,
+	)
+
+	private var interrupted: Interrupted? = null
+
+	/** Progress to resume for a Short that has just come back, or null. */
+	private fun resumeFor(
+		title: String?,
+		ownerHandle: String,
+		totalSeconds: Long,
+		sourceEpoch: Long,
+		nowMillis: Long,
+	): Interrupted? {
+		val prior = interrupted ?: return null
+		if (nowMillis - prior.atMillis > RESUME_WINDOW_MS || nowMillis < prior.atMillis) return null
+		if (prior.ownerHandle != ownerHandle || prior.sourceEpoch != sourceEpoch) return null
+		if (prior.title != title) return null
+		// A length learned since, or lost since, is still the same Short.
+		if (prior.totalSeconds != 0L && totalSeconds != 0L && prior.totalSeconds != totalSeconds) {
+			return null
+		}
+		return prior
+	}
+
+	private fun remember(state: Active, nowMillis: Long) {
+		val organic = state as? Active.Organic ?: return
+		interrupted = Interrupted(
+			title = organic.title,
+			ownerHandle = organic.ownerHandle,
+			totalSeconds = organic.totalSeconds,
+			sourceEpoch = organic.sourceEpoch,
+			playedSeconds = organic.playedSeconds,
+			inferredMillis = organic.inferredMillis,
+			loopDetected = organic.loopDetected,
+			bankedFullListen = organic.bankedFullListen,
+			atMillis = nowMillis,
+		)
+	}
+
+	/**
 	 * Live only while the current Short's progress surface is gone.
 	 *
 	 * Per-Short by construction: it is created on the first PiP observation and
@@ -158,6 +223,13 @@ class ForegroundShortTracker {
 		active = if (keyMatches) {
 			advanceOrganic(same, observation)
 		} else {
+			val resumed = resumeFor(
+				observation.title,
+				observation.ownerHandle,
+				observation.totalSeconds,
+				observation.sourceEpoch,
+				observation.observedAtMillis,
+			)
 			Active.Organic(
 				title = observation.title,
 				ownerHandle = observation.ownerHandle,
@@ -166,6 +238,10 @@ class ForegroundShortTracker {
 				observedAtMillis = observation.observedAtMillis,
 				sourceEpoch = observation.sourceEpoch,
 				startedAtEpochSec = observation.observedAtMillis / 1000,
+				playedSeconds = resumed?.playedSeconds ?: 0,
+				inferredMillis = resumed?.inferredMillis ?: 0,
+				loopDetected = resumed?.loopDetected ?: false,
+				bankedFullListen = resumed?.bankedFullListen ?: false,
 			)
 		}
 		val measuredPlayed = (active as? Active.Organic)?.playedSeconds ?: 0
@@ -241,16 +317,28 @@ class ForegroundShortTracker {
 		val current = if (keyMatches) {
 			same
 		} else {
-			// A fresh Short: nothing measured, nothing inferred, no length.
+			// A fresh Short — unless it is the one that just went away, in which
+			// case it resumes what it had earned.
 			inference = null
+			val resumed = resumeFor(
+				observation.title,
+				observation.ownerHandle,
+				totalSeconds = 0,
+				sourceEpoch = observation.sourceEpoch,
+				nowMillis = observation.observedAtMillis,
+			)
 			Active.Organic(
 				title = observation.title,
 				ownerHandle = observation.ownerHandle,
 				currentSeconds = 0,
-				totalSeconds = 0,
+				totalSeconds = resumed?.totalSeconds ?: 0,
 				observedAtMillis = observation.observedAtMillis,
 				sourceEpoch = observation.sourceEpoch,
 				startedAtEpochSec = observation.observedAtMillis / 1000,
+				playedSeconds = resumed?.playedSeconds ?: 0,
+				inferredMillis = resumed?.inferredMillis ?: 0,
+				loopDetected = resumed?.loopDetected ?: false,
+				bankedFullListen = resumed?.bankedFullListen ?: false,
 			)
 		}
 		var credited = 0L
@@ -280,11 +368,32 @@ class ForegroundShortTracker {
 			inferredMillis = inferredMillis,
 		)
 		missingSinceMillis = null
+
+		// Nothing more can be earned, so the listen is over — bank it now rather
+		// than waiting for something to take it away. Measured 2026-08-07: an
+		// untitled, seekbar-less Short sat active for **seven minutes**, hit its
+		// ceiling at three, and only finalized when the next Short replaced it.
+		// By then the account had watched enough other Shorts that this one had
+		// fallen out of the recent-history window identity needs, so a full
+		// listen was measured and then could not be named.
+		val organic = active as? Active.Organic
+		val banked = if (organic != null && !organic.bankedFullListen &&
+			inference?.exhausted == true
+		) {
+			active = organic.copy(bankedFullListen = true)
+			listOf(snapshot(organic, finalized = true))
+		} else {
+			emptyList()
+		}
+
 		return Update(
-			finalized = finalized,
+			finalized = finalized + banked,
 			active = active?.let { snapshot(it, finalized = false) },
 			completeForegroundProof = true,
 			diagnostic = when {
+				banked.isNotEmpty() -> "foreground Short with no seekbar reached the most that " +
+					"can be inferred for one (${inferredMillis / 1000}s); banked it now rather " +
+					"than holding it open until something replaces it"
 				finalized.isNotEmpty() || prior == null ->
 					"foreground Short proof acquired without a seekbar: " +
 						"${observation.title?.let { "\"$it\"" } ?: "no readable title"} / " +
@@ -407,6 +516,9 @@ class ForegroundShortTracker {
 		}
 		return if (nowMillis - (missingSinceMillis ?: nowMillis) >= MISSING_PROOF_GRACE_MS) {
 			val ended = snapshot(active ?: current, finalized = true)
+			// The commonest reason a Short's player goes away is that the user
+			// switched tabs, and the commonest thing they do next is switch back.
+			remember(active ?: current, nowMillis)
 			active = null
 			missingSinceMillis = null
 			inference = null
@@ -610,6 +722,15 @@ class ForegroundShortTracker {
 
 	companion object {
 		const val MISSING_PROOF_GRACE_MS = 3_000L
+
+		/**
+		 * How long a Short that has just gone away may come back and resume.
+		 *
+		 * A tab switch away and back measured 7–14 seconds; thirty gives that
+		 * room without letting an unrelated re-encounter half a minute later
+		 * inherit someone else's seconds.
+		 */
+		const val RESUME_WINDOW_MS = 30_000L
 
 		/**
 		 * The longest a Short can be, and therefore the most that may be inferred
