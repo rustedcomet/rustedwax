@@ -49,6 +49,22 @@ condition being diagnosed — the app is on another account — shows up as *dif
 missing, so requiring different tracks costs nothing. A route that is standing down now says so in
 the log and in the refusal, instead of pointing at sign-in.
 
+### Leaving and coming back
+
+A viewing interrupted is not a viewing abandoned. Switching to another tab and back, or letting
+YouTube rebuild its media session, used to end the track and start a new one from zero — measured
+2026-08-07, a 32-second Short finalized at `0s`, `3s` and `5s` across three tab switches without ever
+clearing the threshold it had already earned, and a 155-second trailer banked 18 seconds of a
+several-minute viewing.
+
+Two rules now hold that together:
+
+- A **Short** that comes back with the same identity within 30 seconds resumes the progress it had.
+- The **empty metadata** YouTube publishes while recreating a session is not a track. The session
+  adopts its real identity when it arrives and carries on.
+
+Neither can inflate a scrobble: one video still counts once, whatever route it took to get there.
+
 ### Short clips
 
 A **verified** YouTube short scrobbles from 10 seconds instead of 30. Verified means three things:

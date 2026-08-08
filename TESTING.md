@@ -3102,3 +3102,39 @@ What the log must then show, and what it means:
 Leave it untouched for a minute, then swipe once to finalize. Both the inferred Short and the
 swipe-restored measured one should reach the chain — verified 2026-08-07,
 `tx 80c427db974908fb096607e381de57aca7136282` and `tx 48f78ee76de4bf99828b88aecb6350e3535713fe`.
+
+### Continuity across interruptions (v0.9.11–v0.9.12)
+
+Two viewings that used to be cut into unscoreable fragments. Both reproduce from the Mac.
+
+**A Short across a tab switch.** Play one past 60% of a length over 20 seconds, tap **Home**, wait
+~10s, tap **Shorts**, let it finish.
+
+```
+foreground Short proof acquired: "…" / @handle / Ns of Ms      ← before
+[finalize] … — played Ns of Ms                                  ← the interruption
+foreground Short proof acquired: "…" / @handle / Ns of Ms      ← after
+[finalize] … — played (more than it earned since re-acquiring)  ← the resume working
+```
+
+**A trailer across a tab switch.** Play any watch-page video, tap **Shorts**, tap **Home**, let it
+finish. What must **not** appear:
+
+```
+[track]    track change after 0s played
+[finalize] <untitled> — played 0s of 0s
+```
+
+That phantom is the placeholder bug; `grep -c '<untitled> — played 0s of 0s'` should stay at zero
+while a video is interleaved.
+
+### Two traps that cost this project hours
+
+- **`uiautomator dump` disconnects the accessibility service.** UiAutomation takes exclusive control,
+  and the log records `native Shorts accessibility service disconnected; in-flight foreground Short
+  discarded` each time. Dump before or after a run, never during one, or the measurement becomes the
+  cause.
+- **The log spans days and its timestamps carry no date.** `grep -n '^11:46'` will happily match a
+  line from two days ago — which once produced a "79,921 lines in 33 minutes" reading and a theory
+  about a log flood that did not exist. Anchor a window on a unique string: a tx id, a title, a
+  `[probe] started`.

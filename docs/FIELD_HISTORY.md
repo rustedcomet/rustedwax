@@ -385,3 +385,24 @@ The owner then found the reproduction, which no amount of scrolling had: **a Sho
 by tab navigation renders without its bar**, where one opened fresh renders with it. Verified step by
 step, and a back-to-back pair both reached the chain — one inferred over 149 seconds with no bar at
 any point (`tx 80c427db…`), one measured normally after a swipe restored the bar (`tx 48f78ee7…`).
+
+### 2026-08-07 later — two rounds of owner testing
+
+Field record: [FIELD_2026-08-05.md](../FIELD_2026-08-05.md) §17.
+
+Twice the owner reported that scrobbling had stopped, and twice the log showed a healthy app that
+had simply been shown fragments of what was played.
+
+**Shorts, 42 minutes, nothing scrobbled.** Switching between the Home and Shorts tabs outlasts the
+3-second proof grace, so each switch finalized the Short and each return restarted it from zero —
+one 32-second Short finalized at `0s`, `3s` and `5s` and never cleared the threshold it had earned
+in total. A Short that returns with the same identity within 30 seconds now resumes. Two smaller
+causes rode along: a seekbar-less Short could not end on its own (one sat active for seven minutes),
+and by the time it did its id had fallen out of the recent-history window identity needs.
+
+**A trailer and a Short, interleaved, neither scrobbled.** YouTube recreates its MediaSession on
+every tab switch and publishes empty metadata first. Treating that placeholder as a track change
+finalized the real trailer against it, repeatedly: 18 seconds banked out of several minutes watched,
+with `first seen 154s in` on its own finalize line. Empty metadata is no longer a track. The Short in
+that window was lost separately, to a missing `ownerProfileUrl` on an enrichment fetch of a page
+whose first fetch had supplied it — absence treated as contradiction.

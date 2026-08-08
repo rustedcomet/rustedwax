@@ -1558,3 +1558,55 @@ survived every restyle, so it is mandatory; the other two are interchangeable.
 A field that *is* published must still agree. Uniqueness is untouched: two candidates matching
 everything available still refuse, and every candidate is still re-fetched and corroborated on its
 own watch page.
+
+## v0.9.11 – v0.9.12 continuity contract (2026-08-07)
+
+Field evidence: [FIELD_2026-08-05.md](FIELD_2026-08-05.md) §17. Every entry here exists because one
+viewing was being cut into fragments that individually cleared nothing.
+
+### 1. An interrupted Short resumes rather than restarts
+
+**New rule.** A foreground Short whose player goes away and returns with the same identity —
+same title, same owner handle, same source epoch, and a length that has not changed — within 30
+seconds resumes the progress it had earned. Measured 2026-08-07: switching between the Home and
+Shorts tabs outlasts the 3-second proof grace, so one 32-second Short finalized at `0s`, `3s` and
+`5s` across three switches and never reached a threshold it had long since earned in total.
+
+Merging two genuinely separate viewings of one Short is harmless and accepted: `capForKind` and the
+dedup ledger already cap a video to one scrobble.
+
+### 2. A Short with nothing left to earn ends when it is earned
+
+**New rule.** A Short with no readable length can never reach its own duration, so it could only end
+when something took it away — one sat active for seven minutes. It now finalizes the moment its
+wall-clock inference is exhausted, because nothing further can be credited. Prompt finalization also
+keeps it inside the recent-history window its identity depends on.
+
+### 3. Empty metadata is not a track
+
+**Supersedes** the implicit rule that any metadata change with a different identity ends the current
+track.
+
+YouTube recreates its MediaSession on every tab switch and publishes empty metadata first — no
+title, no duration — with the real values following a fraction of a second later. Treating that as a
+track change finalized a phantom `<untitled> — played 0s of 0s` and, worse, ended the real track
+against it: a 155-second trailer accumulated 18 seconds of a several-minute viewing.
+
+**New rule.** A session holding no title, no duration and no played time has not been playing a
+track that can end. When its real metadata arrives the same Watch adopts that identity, restores any
+carried progress, and continues. A genuinely ended track still ends by `STOPPED`, by session
+destruction, or by the replacement that follows.
+
+### 4. A field the enrichment fetch did not carry is absence, not contradiction
+
+**Supersedes the v0.9.7 rule** that a foreground Short requires the exact owner handle from *both*
+the resolved candidate and the final watch facts.
+
+Measured 2026-08-07: history resolved a Short and corroborated it on its own watch page, then the
+enrichment fetch of that same page returned without an `ownerProfileUrl`, and an 83-second listen was
+refused for a missing field.
+
+**New rule.** A handle absent from the final facts does not refuse, because the candidate's own page
+has already proven it for that same id. A handle that is **present and different** still refuses.
+Seeding the run-local candidate cache continues to require both, because a cached candidate is later
+re-used without its page in front of it.

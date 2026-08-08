@@ -106,16 +106,15 @@ the audit trail behind the behavior contract.
 
 ---
 
-## v0.9.5 – v0.9.10: the native Shorts field rounds
+## v0.9.5 – v0.9.12: the native Shorts field rounds
 
 The block above is the last version-by-version prose written in that style. From
 v0.9.5 the record is kept as measurements instead, because every change in this
 range was forced by one, and the evidence is more useful than the summary:
-[FIELD_2026-08-05.md](../FIELD_2026-08-05.md) §8–§16, with the invariants that
-changed in [BEHAVIOR_CONTRACT.md](../BEHAVIOR_CONTRACT.md) under v0.9.7, v0.9.8,
-v0.9.9 and v0.9.10.
+[FIELD_2026-08-05.md](../FIELD_2026-08-05.md) §8–§17, with the invariants that
+changed in [BEHAVIOR_CONTRACT.md](../BEHAVIOR_CONTRACT.md) under v0.9.7 onward.
 
-**Current development source: v0.9.10 / version code 46.** 578 tests, debug
+**Current development source: v0.9.12 / version code 48.** 581 tests, debug
 assembly and lint clean; the installed artifact verifies as
 `631e83b9b71de67fd4d109da43029b8078424673575cf773ccad3f88a8869d29`.
 
@@ -125,6 +124,8 @@ assembly and lint clean; the installed artifact verifies as
 | v0.9.7 | The on-screen title stops being identity; recency breaks an untitled tie; `AtVEVO` and collaborator bylines; **picture-in-picture is counted, marked inferred**; a completed listen banks when it completes | a full day of real use, 46 scrobbles |
 | v0.9.8 | Either of a page's two published titles may corroborate; watch-history stand-down needs three *different* tracks and says when it is standing down; unmeasured lead-in is stated, never credited | `tx 0d02673d…` on the exact video that had been refused |
 | v0.9.9 | The §5.1 outage report fires only when a listen is being lost; an app is visible while any of its activities is started (this one also un-refused picture-in-picture credit) | `tx 4ba912d3…`, plus a staged outage that reported and recovered on cue |
+| v0.9.11 | An interrupted Short resumes rather than restarts; a Short with nothing left to earn ends when it is earned; the untitled history window matches the fetch budget | `tx 95163ca6…` |
+| v0.9.12 | The empty metadata YouTube publishes on a session restart stops ending the track it interrupted; a handle the enrichment fetch did not carry is absence, not contradiction | `tx 07424882…`, 131s of 135s across a tab switch |
 | v0.9.10 | The seekbar stops being a precondition — YouTube draws none for a *resumed* Shorts player, which cost 47 of 71 Shorts in 85 minutes; identity now needs the handle plus any one of title or length | `tx 2bf618de…`, then a back-to-back pair on the owner's own reproduction: `tx 80c427db…` inferred and `tx 48f78ee7…` measured |
 
 Native sources and the separate Shorts grant remain experimental and default-off.
