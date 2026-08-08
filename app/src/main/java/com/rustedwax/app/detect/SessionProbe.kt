@@ -354,7 +354,7 @@ class SessionProbe(context: Context) {
 			if (watch.packageName == YouTubeProbe.YOUTUBE_PACKAGE &&
 				foregroundShortTracker.hasCompleteProof
 			) {
-				watch.suppressForForegroundShort()
+				watch.suppressForForegroundShort(foregroundShortSnapshot)
 			}
 			EventLog.append(
 				"session",
@@ -501,7 +501,7 @@ class SessionProbe(context: Context) {
 			.filter { it.packageName == YouTubeProbe.YOUTUBE_PACKAGE }
 			.forEach { watch ->
 				if (foregroundShortTracker.hasActive) {
-					watch.suppressForForegroundShort()
+					watch.suppressForForegroundShort(foregroundShortSnapshot)
 				} else {
 					watch.releaseForegroundShortSuppression()
 				}
@@ -1285,11 +1285,11 @@ class SessionProbe(context: Context) {
 		}
 
 		/** Hand ownership to the structural foreground-Short lifecycle. */
-		fun suppressForForegroundShort() {
+		fun suppressForForegroundShort(incomingShort: SessionSnapshot?) {
 			if (suppressedByForegroundShort) return
 			cancelNativeStoppedFinalization()
 			accumulate()
-			cancelContinuation()
+			bankProgressBeforeHandover(incomingShort)
 			suppressedByForegroundShort = true
 			playedMs = 0
 			playingSince = 0
@@ -1299,6 +1299,46 @@ class SessionProbe(context: Context) {
 				"native-shorts",
 				"$packageName MediaSession hidden while complete foreground Shorts proof is active",
 			)
+		}
+
+		/**
+		 * Score what this MediaSession was playing before the foreground Shorts
+		 * route took the player.
+		 *
+		 * Suppression exists so the same seconds are not counted on both
+		 * surfaces, and it starts the MediaSession over at zero for exactly that
+		 * reason. What it must not do is delete a listen on the way past.
+		 * Measured 2026-08-07: "THE RUN — Official Trailer" reached 85s of its
+		 * 104s, the viewer opened the Shorts tab, and the trailer was erased
+		 * without a finalize line — 82% watched, nothing scrobbled, no record it
+		 * had ever played. That log holds ten of these, up to 168 seconds each.
+		 *
+		 * The one case where discarding is right is the Short taking over being
+		 * the very item this session was describing, which
+		 * [ForegroundShortHandover] decides on published evidence alone.
+		 */
+		private fun bankProgressBeforeHandover(incomingShort: SessionSnapshot?) {
+			// A pending continuation cannot survive the hand-off: its expiry
+			// callback would land on a suppressed Watch, where finalization is a
+			// no-op. Whatever it was holding is decided here instead.
+			cancelContinuation()
+			if (playedMs == 0L || !trackIdentity.isUsable) return
+			if (ForegroundShortHandover.describesSameItem(
+					sessionTitle = titleOf(metadata),
+					sessionDurationMs = durationOf(metadata),
+					shortTitle = incomingShort?.title,
+					shortDurationMs = incomingShort?.durationMs,
+				)
+			) {
+				EventLog.append(
+					"native-shorts",
+					"$packageName MediaSession was already describing the Short the " +
+						"foreground route just acquired; its ${playedMs / 1000}s belongs to " +
+						"that route and is not scored twice",
+				)
+				return
+			}
+			finalizeCurrent("foreground Short proof took over playback")
 		}
 
 		/** Resume conservative MediaSession observation from a fresh zero baseline. */
