@@ -481,6 +481,33 @@ class ForegroundShortTrackerTest {
 	}
 
 	@Test
+	fun `a banked listen is not finalized again when the Short goes away`() {
+		// Measured 2026-08-07 on 4x_q2gBomZI: banked at 20:31:29 when it reached
+		// its own 60s, finalized again at 20:31:31 when the next Short arrived.
+		// Both were resolved and enriched, and the second broadcast was stopped
+		// only by the dedup ledger — which is the last line of defence, not the
+		// design.
+		listOf<(ForegroundShortTracker, Long) -> ForegroundShortTracker.Update>(
+			{ tracker, now -> tracker.observe(organic(title = "Next", position = 0, at = now)) },
+			{ tracker, now -> tracker.proofMissing(now, "player went away") },
+		).forEach { end ->
+			val tracker = ForegroundShortTracker()
+			tracker.observe(organic(position = 0, total = 10, at = 0))
+			var now = 0L
+			var banks = 0
+			repeat(12) {
+				now += 1_000
+				banks += tracker.observe(organic(position = it + 1L, total = 10, at = now))
+					.finalized.size
+			}
+			assertEquals(1, banks)
+			// The proof-expiry path needs its grace to elapse before it decides.
+			end(tracker, now + 1_000)
+			assertEquals(0, end(tracker, now + 60_000).finalized.size)
+		}
+	}
+
+	@Test
 	fun `Stop disconnect opt-out and source epoch transition discard`() {
 		listOf("Stop", "accessibility disconnected", "opt-out").forEach { reason ->
 			val tracker = ForegroundShortTracker()

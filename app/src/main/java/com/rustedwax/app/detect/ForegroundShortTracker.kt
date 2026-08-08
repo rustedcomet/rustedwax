@@ -132,6 +132,21 @@ class ForegroundShortTracker {
 	private var missingSinceMillis: Long? = null
 
 	/**
+	 * This viewing has already been scored and must not be scored again.
+	 *
+	 * A Short that reaches its own length banks a complete listen while it is
+	 * still on screen looping, and then something eventually takes it away —
+	 * a swipe, a tab switch, the proof expiring — and every one of those paths
+	 * used to finalize it a second time. Measured 2026-08-07 on
+	 * `4x_q2gBomZI`: banked at `20:31:29`, finalized again at `20:31:31` when
+	 * the next Short arrived, both resolved, both enriched, and the second
+	 * broadcast stopped only by the dedup ledger — `skipped: already
+	 * scrobbled`. The ledger is the last line of defence, not the design.
+	 */
+	private val Active.alreadyBanked: Boolean
+		get() = (this as? Active.Organic)?.bankedFullListen == true
+
+	/**
 	 * What the Short that just ended had earned, in case it comes straight back.
 	 *
 	 * Measured 2026-08-07: the owner scrolled Shorts while switching between the
@@ -219,7 +234,11 @@ class ForegroundShortTracker {
 			// different Short, and finalizing here would split one listen in two.
 			(same.totalSeconds == observation.totalSeconds || same.totalSeconds == 0L) &&
 			same.sourceEpoch == observation.sourceEpoch
-		val finalized = if (prior != null && !keyMatches) listOf(snapshot(prior, finalized = true)) else emptyList()
+		val finalized = if (prior != null && !keyMatches && !prior.alreadyBanked) {
+			listOf(snapshot(prior, finalized = true))
+		} else {
+			emptyList()
+		}
 		active = if (keyMatches) {
 			advanceOrganic(same, observation)
 		} else {
@@ -309,7 +328,7 @@ class ForegroundShortTracker {
 			same.title == observation.title &&
 			same.ownerHandle == observation.ownerHandle &&
 			same.sourceEpoch == observation.sourceEpoch
-		val finalized = if (prior != null && !keyMatches) {
+		val finalized = if (prior != null && !keyMatches && !prior.alreadyBanked) {
 			listOf(snapshot(prior, finalized = true))
 		} else {
 			emptyList()
@@ -411,7 +430,11 @@ class ForegroundShortTracker {
 		val same = prior as? Active.Ad
 		val keyMatches = same != null && same.signal == observation.signal &&
 			same.totalSeconds == observation.totalSeconds && same.sourceEpoch == observation.sourceEpoch
-		val finalized = if (prior != null && !keyMatches) listOf(snapshot(prior, finalized = true)) else emptyList()
+		val finalized = if (prior != null && !keyMatches && !prior.alreadyBanked) {
+			listOf(snapshot(prior, finalized = true))
+		} else {
+			emptyList()
+		}
 		active = if (keyMatches) {
 			advanceAd(same, observation)
 		} else {
@@ -515,15 +538,22 @@ class ForegroundShortTracker {
 			)
 		}
 		return if (nowMillis - (missingSinceMillis ?: nowMillis) >= MISSING_PROOF_GRACE_MS) {
-			val ended = snapshot(active ?: current, finalized = true)
+			val ending = active ?: current
+			// A viewing banked at its own full length is already scored; the
+			// player going away afterwards ends nothing that has not ended.
+			val ended = if (ending.alreadyBanked) {
+				emptyList()
+			} else {
+				listOf(snapshot(ending, finalized = true))
+			}
 			// The commonest reason a Short's player goes away is that the user
 			// switched tabs, and the commonest thing they do next is switch back.
-			remember(active ?: current, nowMillis)
+			remember(ending, nowMillis)
 			active = null
 			missingSinceMillis = null
 			inference = null
 			Update(
-				finalized = listOf(ended),
+				finalized = ended,
 				diagnostic = "$reason; foreground proof grace expired at the last valid seekbar value",
 			)
 		} else {
