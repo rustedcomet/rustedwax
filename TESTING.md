@@ -3128,7 +3128,59 @@ finish. What must **not** appear:
 That phantom is the placeholder bug; `grep -c '<untitled> — played 0s of 0s'` should stay at zero
 while a video is interleaved.
 
-### Two traps that cost this project hours
+### A video handed to the Shorts route (v0.9.13)
+
+The reported shape, and the one that deleted ten listens in a day. Play any watch-page video past the
+threshold, minimize it with the down arrow so the bottom bar shows, then tap **Shorts**.
+
+```
+[finalize] … [foreground Short proof took over playback] <the video> — played Ns of Ms
+[native-shorts] MediaSession hidden while complete foreground Shorts proof is active
+[native-shorts] foreground Short proof acquired: …
+```
+
+The finalize must come **first** and must carry the seconds actually watched. Verified 2026-08-07,
+`tx 99dae0633362c43d017a001e3027dbffd9125541` — 142s of 146s.
+
+The complement matters as much: scrolling Shorts normally must produce **no**
+`[foreground Short proof took over playback]` line at all, because there the MediaSession is
+describing the same Short the route is scoring.
+
+### A handle that is not spelled in ASCII (v0.9.13)
+
+Open any channel whose handle carries an accent or a non-Latin script — `@eduardaarebouçass` is the
+measured one — play one of its Shorts past the threshold and swipe.
+
+```
+foreground Short proof acquired: "…" / @eduardaarebouçass / Ns of Ms
+resolved Short "…" → <id> from watch history, corroborated on its own watch page
+scrobbled (block): @eduardaarebouçass — …
+```
+
+Before v0.9.13 the first line never appeared: the refusal read `expected exactly one exact visible
+owner handle` and the listen ended there. Verified `tx 7eb3a47e4452bc74e6a4c777a882c966c52189ae`.
+
+The refusal itself is now evidence, and worth reading when a Short is not picked up:
+
+| what it says | what it means |
+| --- | --- |
+| `found none; no visible label in the player carried an @ at all (N labelled nodes)` | the footer is not being drawn — picture-in-picture, or the window is gone |
+| `found none; the labels that did carry one were …` | the footer **is** there and the parser would not take it — quote the labels, they are the fix |
+| `found 2: @a, @b` | two footers on screen at once, or a handle mentioned in the title |
+
+### One banked listen, finalized once (v0.9.13)
+
+Let a Short reach its own full length while staying on it, then swipe.
+
+```
+foreground Short completed a full listen of Ns while still on screen; banked it …
+[finalize] … — played Ns of Ns
+```
+
+`grep -c` that title in `[finalize]` lines must return **1**, not 2. The second one used to be
+stopped only by `skipped: already scrobbled`, after a full resolve and enrich.
+
+### Three traps that cost this project hours
 
 - **`uiautomator dump` disconnects the accessibility service.** UiAutomation takes exclusive control,
   and the log records `native Shorts accessibility service disconnected; in-flight foreground Short
@@ -3138,3 +3190,7 @@ while a video is interleaved.
   line from two days ago — which once produced a "79,921 lines in 33 minutes" reading and a theory
   about a log flood that did not exist. Anchor a window on a unique string: a tx id, a title, a
   `[probe] started`.
+- **A pulled log can be truncated and still look whole.** `adb exec-out run-as … cat` returned 7.8 MB
+  of a 10.5 MB log when the cable moved, ending mid-line at a plausible timestamp — which reads as
+  "the log stops here", not "the transfer stopped here". Compare against
+  `adb shell run-as com.rustedwax.app stat -c %s files/rustedwax-log.txt` before trusting the tail.

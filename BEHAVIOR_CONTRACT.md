@@ -1610,3 +1610,65 @@ refused for a missing field.
 has already proven it for that same id. A handle that is **present and different** still refuses.
 Seeding the run-local candidate cache continues to require both, because a cached candidate is later
 re-used without its page in front of it.
+
+## v0.9.13 hand-off and identity contract (2026-08-07)
+
+Field evidence: [FIELD_2026-08-05.md](FIELD_2026-08-05.md) §18. The first two entries each describe
+a listen that was measured correctly and then thrown away.
+
+### 1. Handing the player to the foreground Shorts route is not a discard
+
+**Supersedes** the implicit rule that suppressing the MediaSession for a proven foreground Short may
+reset its accumulated progress.
+
+When the foreground Shorts route acquires a Short it takes ownership of the player, and the
+MediaSession Watch stops counting so the same seconds are not scored twice. Measured 2026-08-07:
+zeroing its accumulator also deleted the listen it was in the middle of, with no finalization —
+`THE RUN — Official Trailer`, 85s of 104s, gone between two log lines. Ten listens in one log,
+up to 168 seconds each.
+
+**New rule.** Progress accumulated before the hand-off belongs to whatever the MediaSession was
+playing. It is finalized, not discarded, unless the Short taking over is that same item — decided on
+published evidence: the title when both surfaces publish one, the length when the Short's footer
+title is absent, and otherwise not proven. A pending continuation cannot survive the hand-off either,
+because its expiry callback would land on a suppressed Watch where finalization is a no-op; it is
+decided at the hand-off instead.
+
+The asymmetry is deliberate: refusing to call two things the same costs at most one extra
+finalization, which `capForKind` and the dedup ledger already cap to one transaction. Wrongly calling
+them the same destroys an earned listen.
+
+### 2. An owner handle is not an ASCII string
+
+**Supersedes the v0.9.10 rule's implicit character set.** The handle remains the one mandatory
+identity field for a foreground Short; what counts as a handle widens.
+
+Measured 2026-08-07: the footer read `Go to channel @eduardaarebouçass` and was refused on the
+cedilla, so the whole listen was refused. Every creator whose handle is not spelled in ASCII was
+invisible.
+
+**New rule.** A handle is letters, marks, digits and YouTube's `.`, `_`, `-`, three to thirty
+characters, in any script. It is composed to NFC before comparison, so one handle encoded two ways is
+one handle. NFC and not NFKC: canonical equivalence only, because an identity field may never fold
+two distinct characters together.
+
+The same widening applies to `ownerProfileUrl`, where the handle is corroborated. Non-ASCII characters
+are percent-encoded before URL parsing and escapes are decoded only *after* the structure is settled,
+and only when they stand for a character outside ASCII — so `%2F` and `%40` remain refused and no
+structural character can be spelled sideways.
+
+### 3. One banked listen is finalized once
+
+**New rule.** A foreground Short that banks a complete listen on reaching its own length (v0.9.11) is
+not finalized again when something later takes it away — not by the next Short, not by an ad
+transition, not by the proof-expiry grace. Measured 2026-08-07: one viewing was resolved, enriched
+and broadcast twice, and only the dedup ledger stopped the second write. The ledger is the last line
+of defence, not the design.
+
+### 4. A refusal names what it refused
+
+**New rule.** Where two unrelated failures can produce the same refusal, the diagnostic distinguishes
+them and carries the evidence it decided on, bounded. `expected exactly one exact visible owner
+handle` now says whether none or several were found, and what the footer actually held. Repeated
+diagnostics stay coalesced by keying the throttle on the failure's shape rather than on its detail,
+so evidence never costs a log flood.

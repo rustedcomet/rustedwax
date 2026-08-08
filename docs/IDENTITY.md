@@ -122,6 +122,11 @@ Two amendments came out of the field, both about the *title* half of that agreem
   A field that *is* published must still agree, every candidate is still re-fetched and corroborated
   on its own watch page, and the length the page reports is what the percentage is then measured
   against.
+- **A handle may be spelled in any script** (v0.9.13). It was read as ASCII only until then, so
+  `@eduardaarebouçass` was refused on the cedilla — and since the handle is the one mandatory field,
+  the listen went with it. A handle is now letters, marks, digits and YouTube's `.`, `_`, `-`, three
+  to thirty characters, in any script, composed to NFC so one handle encoded two ways compares as
+  one. The same applies where the handle is corroborated against the video's own owner URL.
 
 > This scrapes an undocumented blob out of the watch page and **will** break when YouTube changes it.
 > Failures are logged as `EXTRACTION FAILED` precisely so breakage is distinguishable from a video

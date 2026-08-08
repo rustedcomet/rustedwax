@@ -57,13 +57,18 @@ YouTube rebuild its media session, used to end the track and start a new one fro
 clearing the threshold it had already earned, and a 155-second trailer banked 18 seconds of a
 several-minute viewing.
 
-Two rules now hold that together:
+Three rules now hold that together:
 
 - A **Short** that comes back with the same identity within 30 seconds resumes the progress it had.
 - The **empty metadata** YouTube publishes while recreating a session is not a track. The session
   adopts its real identity when it arrives and carries on.
+- **Opening Shorts ends the video you were watching; it does not erase it.** Measured 2026-08-07: a
+  trailer watched to 82% and then interrupted by the Shorts tab was discarded without a trace,
+  because the Shorts tracker takes over the player and the media session was clearing its counter on
+  the way past. What it had earned is now scored first.
 
-Neither can inflate a scrobble: one video still counts once, whatever route it took to get there.
+None of them can inflate a scrobble: one video still counts once, whatever route it took to get
+there.
 
 ### Short clips
 

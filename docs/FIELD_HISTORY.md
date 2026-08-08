@@ -406,3 +406,27 @@ finalized the real trailer against it, repeatedly: 18 seconds banked out of seve
 with `first seen 154s in` on its own finalize line. Empty metadata is no longer a track. The Short in
 that window was lost separately, to a missing `ownerProfileUrl` on an enrichment fetch of a page
 whose first fetch had supplied it — absence treated as contradiction.
+
+### 2026-08-07 evening — the hand-off, and a handle with a cedilla in it
+
+Field record: [FIELD_2026-08-05.md](../FIELD_2026-08-05.md) §18.
+
+**A trailer watched to 82%, deleted by opening Shorts.** The owner sent the exact steps: trailer past
+60%, minimize, tap the Shorts tab — and the trailer never scrobbled, while the same session done in
+the opposite order scrobbled everything. When the foreground Shorts route takes ownership of the
+player, the MediaSession stops counting so nothing is scored twice; it was also throwing away
+whatever it had accumulated, with no finalization and no log line. Ten listens in one day's log went
+that way, up to 168 seconds each. The listen is now finalized at the hand-off unless the Short taking
+over is the very same item.
+
+**Every non-ASCII handle was invisible.** The previous session left an open question — a refusal that
+said only `expected exactly one exact visible owner handle`, 352 times, with no way to tell an absent
+handle from an ambiguous one. Making the refusal say what the footer held answered it in three
+minutes: `Go to channel @eduardaarebouçass`, refused on the cedilla by an ASCII-only pattern. Since
+v0.9.10 the handle is the one mandatory field, so every creator whose handle is not spelled in ASCII
+was never seen at all. Handles are now letters in any script, composed to NFC, on the footer and in
+the owner-profile URL alike.
+
+**One listen, finalized twice.** Found while verifying the above: a Short that banks a complete listen
+while still on screen was finalized again the moment anything replaced it, and only the dedup ledger
+stopped the second write.
