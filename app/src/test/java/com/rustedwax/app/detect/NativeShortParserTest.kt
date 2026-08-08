@@ -116,6 +116,66 @@ class NativeShortParserTest {
 		assertInvalid(player(Case("Title", "@owner", 1, 20), secondSeekbar = 2L to 30L))
 	}
 
+	/**
+	 * The owner handle is the one mandatory field, so losing it loses the whole
+	 * listen — and the 2026-08-07 log holds 352 refusals that all read the same,
+	 * with no way to tell a footer YouTube never drew from one holding two
+	 * handles at once. The two have unrelated fixes, so they say so.
+	 */
+	@Test
+	fun `an absent handle and an ambiguous one are told apart`() {
+		val absent = NativeShortParser.parse(
+			player(Case("Title", "@owner", 1, 20), includeHandle = false),
+		) as NativeShortParser.Result.Invalid
+		assertTrue(absent.reason, "found none" in absent.reason)
+		assertTrue(absent.reason, "no visible label in the player carried an @" in absent.reason)
+
+		val ambiguous = NativeShortParser.parse(
+			player(Case("Title", "@owner", 1, 20), secondHandle = "@different"),
+		) as NativeShortParser.Result.Invalid
+		assertTrue(ambiguous.reason, "found 2" in ambiguous.reason)
+		assertTrue(ambiguous.reason, "@owner" in ambiguous.reason)
+		assertTrue(ambiguous.reason, "@different" in ambiguous.reason)
+	}
+
+	@Test
+	fun `a handle the parser would not accept is quoted rather than lost`() {
+		// A footer that *does* carry an @ but not one this parser recognises —
+		// a locale we have no "Go to channel" phrase for, a handle outside the
+		// accepted character set — is the case worth seeing in the log, because
+		// it is the one a parser change could fix.
+		val refusal = NativeShortParser.parse(
+			player(
+				Case("Title", "@owner", 1, 20),
+				includeHandle = false,
+				extraPlayer = listOf(node(text = "Kanalinaan @Ünïcödé-Öwnér")),
+			),
+		) as NativeShortParser.Result.Invalid
+		assertTrue(refusal.reason, "found none" in refusal.reason)
+		assertTrue(refusal.reason, "Kanalinaan @Ünïcödé-Öwnér" in refusal.reason)
+	}
+
+	@Test
+	fun `the handle refusal detail does not defeat the diagnostic throttle`() {
+		// Keyed on the shape, not the payload: a footer that changes with every
+		// Short must still coalesce to one line per window (FIELD §17.1).
+		val first = NativeShortParser.parse(
+			player(Case("A", "@a", 1, 20), includeHandle = false),
+		) as NativeShortParser.Result.Invalid
+		val second = NativeShortParser.parse(
+			player(
+				Case("B", "@b", 1, 20),
+				includeHandle = false,
+				extraPlayer = listOf(node(text = "Go to canal @somethingelse")),
+			),
+		) as NativeShortParser.Result.Invalid
+		assertEquals(
+			NativeShortDiagnosticKey.of(first.reason),
+			NativeShortDiagnosticKey.of(second.reason),
+		)
+		assertTrue(first.reason != second.reason)
+	}
+
 	@Test
 	fun `hidden evidence and scan budgets fail closed`() {
 		assertInvalid(player(Case("Title", "@owner", 1, 20), handleVisible = false))

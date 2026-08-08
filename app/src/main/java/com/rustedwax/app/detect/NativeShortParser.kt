@@ -179,7 +179,7 @@ object NativeShortParser {
 			.distinct()
 		if (handles.size != 1) {
 			return Result.Invalid(
-				"expected exactly one exact visible owner handle",
+				handleRefusal(handles, playerNodes),
 				// No handle *and* no readable time is the picture-in-picture
 				// signature: the window keeps the player but has no footer to
 				// read an owner from. It stays "playing but unmeasurable", which
@@ -221,6 +221,43 @@ object NativeShortParser {
 		val total = totalMinutes * 60 + totalSecondsPart
 		if (total <= 0 || current < 0 || current > total) return null
 		return current to total
+	}
+
+	/**
+	 * Say which of the two unrelated handle failures happened, and what the
+	 * footer actually held.
+	 *
+	 * Since v0.9.10 the owner handle is the *one* mandatory field, so losing it
+	 * loses the whole listen — and until now every way of losing it printed the
+	 * same sentence. The 2026-08-07 log has 352 of them, and no way to tell a
+	 * footer that YouTube never drew from one holding two handles at once. This
+	 * is the same lesson the seekbar container and its label already taught in
+	 * this file: two refusals with unrelated fixes must not share one message.
+	 *
+	 * Bounded on purpose — a handful of short literals, not a tree dump — and
+	 * [NativeShortDiagnosticKey] collapses the detail so a repeating failure is
+	 * still one line per throttle window rather than a flood.
+	 */
+	private fun handleRefusal(
+		handles: List<String>,
+		playerNodes: List<NativeShortNode>,
+	): String {
+		if (handles.size > 1) {
+			return "expected exactly one exact visible owner handle; found " +
+				"${handles.size}: ${handles.take(4).joinToString(", ")}"
+		}
+		val labels = playerNodes.asSequence()
+			.flatMap { sequenceOf(it.text, it.contentDescription) }
+			.mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
+			.distinct()
+		val nearMisses = labels.filter { it.contains('@') }.take(3).map { it.take(60) }.toList()
+		return "expected exactly one exact visible owner handle; found none" +
+			if (nearMisses.isEmpty()) {
+				"; no visible label in the player carried an @ at all " +
+					"(${labels.count()} labelled nodes)"
+			} else {
+				"; the labels that did carry one were ${nearMisses.joinToString(" | ")}"
+			}
 	}
 
 	private data class Scanned(val nodes: List<DepthNode>, val exceeded: Boolean)
@@ -421,7 +458,14 @@ object NativeShortParser {
 	 */
 	private const val TITLE_LEFT_FRACTION = 33
 
-	private val DIRECT_HANDLE = Regex("""^@[A-Za-z0-9._-]{3,30}$""")
+	/**
+	 * Letters, marks, digits and YouTube's three punctuation characters — not
+	 * ASCII alone. Measured 2026-08-07: `Go to channel @eduardaarebouçass` was
+	 * refused on the `ç`, and with it the entire listen. Kept in step with
+	 * [OwnerHandle], which decides the same question one layer down.
+	 */
+	private const val HANDLE_BODY = """[\p{L}\p{M}\p{N}._-]{3,30}"""
+	private val DIRECT_HANDLE = Regex("""^@$HANDLE_BODY$""")
 	private val SINGLE_HASHTAG = Regex("""^#[\p{L}\p{M}\p{N}_-]+$""")
 
 	/**
@@ -456,7 +500,7 @@ object NativeShortParser {
 		RegexOption.IGNORE_CASE,
 	)
 	private val CHANNEL_DESCRIPTION = Regex(
-		"""^(?:Go to channel|Ir al canal|Acessar canal)\s+(@[A-Za-z0-9._-]{3,30})$""",
+		"""^(?:Go to channel|Ir al canal|Acessar canal)\s+(@$HANDLE_BODY)$""",
 		RegexOption.IGNORE_CASE,
 	)
 	private val TIME_PATTERNS = listOf(

@@ -41,6 +41,13 @@ object NativeShortDiagnosticKey {
 				"no-visible-player-root"
 			"expected exactly one visible Shorts player; found 0" in message ->
 				"no-visible-player"
+			// The handle refusal now names what the footer held, which is the
+			// whole point of it — but that detail changes with every Short, and
+			// keying on it would turn a coalesced line into one per callback.
+			// Key on the shape instead: absent and ambiguous are the two
+			// failures, and they have unrelated fixes.
+			"exact visible owner handle; found none" in message -> "no-owner-handle"
+			"exact visible owner handle; found" in message -> "ambiguous-owner-handle"
 			else -> message
 		}
 		return "$lifecycle|$structural"
