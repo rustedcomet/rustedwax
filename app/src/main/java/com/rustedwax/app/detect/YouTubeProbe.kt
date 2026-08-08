@@ -1,6 +1,9 @@
 package com.rustedwax.app.detect
 
 import android.media.MediaMetadata
+import java.net.URI
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 
 /**
  * Decides whether a browser media session is YouTube — and if possible, which
@@ -26,6 +29,8 @@ import android.media.MediaMetadata
  * or recovered by the playlist/search/watch-page resolver.
  */
 object YouTubeProbe {
+	const val YOUTUBE_PACKAGE = "com.google.android.youtube"
+	const val YOUTUBE_MUSIC_PACKAGE = "com.google.android.apps.youtube.music"
 
 	/** Brave channels — the real target. */
 	val BRAVE_PACKAGES = setOf(
@@ -55,9 +60,37 @@ object YouTubeProbe {
 	 * whatever the browser gives us.
 	 */
 	val YOUTUBE_APP_PACKAGES = setOf(
-		"com.google.android.youtube",
-		"com.google.android.apps.youtube.music",
+		YOUTUBE_PACKAGE,
+		YOUTUBE_MUSIC_PACKAGE,
 	)
+
+	enum class Origin(val displayName: String) {
+		BROWSER("YouTube in browser"),
+		NATIVE_YOUTUBE("native YouTube"),
+		NATIVE_YOUTUBE_MUSIC("native YouTube Music"),
+		UNSUPPORTED("unsupported package"),
+	}
+
+	fun originForPackage(packageName: String): Origin = when (packageName) {
+		in TARGET_PACKAGES -> Origin.BROWSER
+		YOUTUBE_PACKAGE -> Origin.NATIVE_YOUTUBE
+		YOUTUBE_MUSIC_PACKAGE -> Origin.NATIVE_YOUTUBE_MUSIC
+		else -> Origin.UNSUPPORTED
+	}
+
+	fun isNativePackage(packageName: String): Boolean = packageName in YOUTUBE_APP_PACKAGES
+
+	/** Browser acceptance is invariant; each native package has a separate opt-in. */
+	fun acceptsPackage(
+		packageName: String,
+		nativeYouTubeEnabled: Boolean,
+		nativeYouTubeMusicEnabled: Boolean,
+	): Boolean = when (packageName) {
+		in TARGET_PACKAGES -> true
+		YOUTUBE_PACKAGE -> nativeYouTubeEnabled
+		YOUTUBE_MUSIC_PACKAGE -> nativeYouTubeMusicEnabled
+		else -> false
+	}
 
 	private val THUMBNAIL = Regex("""i\d?\.ytimg\.com/vi/([A-Za-z0-9_-]{11})""")
 	private val WATCH_URL =
@@ -104,6 +137,8 @@ object YouTubeProbe {
 			val isShort: Boolean = false,
 			/** URL generation for address-bar identities; null for metadata URIs. */
 			val urlGeneration: Long? = null,
+			/** Native exact-id route; null for the established browser path. */
+			val exactIdRoute: String? = null,
 			override val source: String,
 		) : Identity
 
@@ -135,6 +170,69 @@ object YouTubeProbe {
 			override val source: String get() = reason
 		}
 	}
+
+	/** Pure representation of the standard URI/id fields used by native apps. */
+	data class NativeMetadataFields(
+		val mediaId: String? = null,
+		val mediaUri: String? = null,
+		val artUri: String? = null,
+		val albumArtUri: String? = null,
+		val displayIconUri: String? = null,
+	)
+
+	fun nativeMetadataFields(md: MediaMetadata?): NativeMetadataFields = NativeMetadataFields(
+		mediaId = MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_MEDIA_ID),
+		mediaUri = MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_MEDIA_URI),
+		artUri = MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_ART_URI),
+		albumArtUri = MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_ALBUM_ART_URI),
+		displayIconUri = MetadataDump.textOrNull(md, MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI),
+	)
+
+	/**
+	 * Native package origin proves YouTube, while these fields prove a specific
+	 * video. No title, channel, duration, popularity or package-only inference is
+	 * allowed to manufacture an id here.
+	 */
+	fun identifyNative(packageName: String, fields: NativeMetadataFields): Identity {
+		if (!isNativePackage(packageName)) {
+			return Identity.Unconfirmed("$packageName is not a supported native YouTube package")
+		}
+		val isMusic = packageName == YOUTUBE_MUSIC_PACKAGE
+		fun confirmed(
+			videoId: String,
+			route: String,
+			detail: String,
+			isShort: Boolean = false,
+		) = Identity.Confirmed(
+			videoId = videoId,
+			url = watchUrl(videoId),
+			isMusic = isMusic,
+			isShort = isShort,
+			exactIdRoute = route,
+			source = "native package $packageName + $detail",
+		)
+
+		exactMediaId(fields.mediaId)?.let {
+			return confirmed(it.videoId, "media id", "media id", it.isShort)
+		}
+		videoIdFromYouTubeUri(fields.mediaUri)?.let {
+			return confirmed(it.videoId, "media URI", "media URI", it.isShort)
+		}
+		listOf(fields.artUri, fields.albumArtUri, fields.displayIconUri).forEach { artworkUri ->
+			videoIdFromArtworkUri(artworkUri)?.let {
+				return confirmed(it, "artwork URI", "artwork URI")
+			}
+		}
+
+		return Identity.SiteOnly(
+			host = packageName,
+			isMusic = isMusic,
+			source = "native package origin → $packageName (no exact video id in MediaSession)",
+		)
+	}
+
+	fun identifyNative(packageName: String, md: MediaMetadata?): Identity =
+		identifyNative(packageName, nativeMetadataFields(md))
 
 	/**
 	 * @param md the session's metadata
@@ -245,4 +343,62 @@ object YouTubeProbe {
 	}
 
 	private fun watchUrl(videoId: String) = "https://www.youtube.com/watch?v=$videoId"
+
+	private val VIDEO_ID = Regex("""^[A-Za-z0-9_-]{11}$""")
+
+	private data class UriVideoId(val videoId: String, val isShort: Boolean)
+
+	private fun exactMediaId(value: String?): UriVideoId? {
+		val candidate = value?.trim()?.takeIf(String::isNotEmpty) ?: return null
+		return candidate.takeIf(VIDEO_ID::matches)?.let { UriVideoId(it, false) }
+			?: videoIdFromYouTubeUri(candidate)
+	}
+
+	private fun videoIdFromYouTubeUri(value: String?): UriVideoId? {
+		val uri = parseHttpsUri(value) ?: return null
+		val host = uri.host?.lowercase()?.removePrefix("www.") ?: return null
+		val path = uri.path.orEmpty()
+		val candidate = when {
+			host == "youtu.be" -> path.trim('/').substringBefore('/')
+			host in setOf("youtube.com", "m.youtube.com", "music.youtube.com") &&
+				path == "/watch" -> uniqueQueryParameter(uri.rawQuery, "v")
+			host in setOf("youtube.com", "m.youtube.com", "music.youtube.com") &&
+				(path.startsWith("/shorts/") || path.startsWith("/embed/") ||
+					path.startsWith("/live/")) -> path.split('/').getOrNull(2)
+			else -> null
+		}
+		val videoId = candidate?.takeIf(VIDEO_ID::matches) ?: return null
+		return UriVideoId(videoId, path.startsWith("/shorts/"))
+	}
+
+	private fun videoIdFromArtworkUri(value: String?): String? {
+		val uri = parseHttpsUri(value) ?: return null
+		val host = uri.host?.lowercase() ?: return null
+		val canonicalHost = host == "i.ytimg.com" || host == "img.youtube.com" ||
+			Regex("""i\d+\.ytimg\.com""").matches(host)
+		if (!canonicalHost) return null
+		val segments = uri.path.orEmpty().split('/').filter(String::isNotBlank)
+		val marker = segments.indexOfFirst { it == "vi" || it == "vi_webp" }
+		return segments.getOrNull(marker + 1)?.takeIf { marker >= 0 && VIDEO_ID.matches(it) }
+	}
+
+	private fun parseHttpsUri(value: String?): URI? {
+		val uri = runCatching { URI(value?.trim().orEmpty()) }.getOrNull() ?: return null
+		return uri.takeIf { it.scheme.equals("https", ignoreCase = true) && it.host != null }
+	}
+
+	/** Duplicate conflicting ids are ambiguous and malformed escapes fail closed. */
+	private fun uniqueQueryParameter(rawQuery: String?, wanted: String): String? {
+		val query = rawQuery ?: return null
+		val values = mutableSetOf<String>()
+		for (part in query.split('&')) {
+			if (part.substringBefore('=') != wanted) continue
+			val encoded = part.substringAfter('=', "")
+			val decoded = runCatching {
+				URLDecoder.decode(encoded, StandardCharsets.UTF_8.name())
+			}.getOrNull() ?: return null
+			values += decoded
+		}
+		return values.singleOrNull()
+	}
 }

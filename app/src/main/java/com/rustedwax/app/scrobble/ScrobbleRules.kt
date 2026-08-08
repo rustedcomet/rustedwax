@@ -110,6 +110,13 @@ object ScrobbleRules {
 	/**
 	 * The cheap rejection, before any network call.
 	 *
+	 * @param progressSurfaceLost the Short's progress surface went away while it
+	 * was still playing, so no percentage can honestly be quoted. This has to be
+	 * handled *here* as well as in [decide]: a sub-threshold Short is rejected on
+	 * this path and never reaches [decide] at all, so the honest wording added
+	 * there alone was unreachable on the common path and the log still printed
+	 * `played N%` for something that was never measured (`FIELD_2026-08-05.md`
+	 * §3.2).
 	 * @return a reason to skip now, or null when the track deserves enrichment
 	 * and a full [decide].
 	 */
@@ -118,6 +125,8 @@ object ScrobbleRules {
 		durationMs: Long?,
 		threshold: Double = DEFAULT_THRESHOLD,
 		explicitAdSignal: String? = null,
+		progressSurfaceLost: Boolean = false,
+		inferredMs: Long = 0,
 	): String? {
 		explicitAdSignal?.let { return explicitAdReason(it) }
 		if (durationMs == null || durationMs <= 0) {
@@ -138,6 +147,7 @@ object ScrobbleRules {
 		}
 		val progress = playedMs.toDouble() / durationMs
 		if (progress < threshold) {
+			if (progressSurfaceLost) return progressSurfaceLostReason(playedMs, inferredMs)
 			return "played ${(progress * 100).roundToInt()}%, below " +
 				"${(threshold * 100).roundToInt()}% threshold"
 		}
@@ -167,6 +177,8 @@ object ScrobbleRules {
 		browserEvidenceEnabled: Boolean = false,
 		resolvedWithoutExactUrl: Boolean = false,
 		accessibilityCovered: Boolean = false,
+		progressSurfaceLost: Boolean = false,
+		inferredMs: Long = 0,
 	): Decision {
 		// The optional accessibility service observed YouTube's own visible ad
 		// UI and bound it to this exact track instance. This is the mobile analogue of
@@ -210,6 +222,13 @@ object ScrobbleRules {
 
 		val progress = playedMs.toDouble() / durationMs
 		if (progress < threshold) {
+			// See [progressSurfaceLostReason]. In practice a sub-threshold Short
+			// is rejected by [prefilter] and never arrives here; this stays
+			// because `decide` is also reachable directly and the two stages must
+			// not disagree about what a lost surface means.
+			if (progressSurfaceLost) {
+				return Decision(emptyList(), progressSurfaceLostReason(playedMs, inferredMs))
+			}
 			return Decision(
 				emptyList(),
 				"played ${(progress * 100).roundToInt()}%, below " +
@@ -230,6 +249,36 @@ object ScrobbleRules {
 
 	private fun explicitAdReason(signal: String): String =
 		"YouTube's visible UI marked this track as an ad (\"$signal\")"
+
+	/**
+	 * Shared by both stages so a Short refused early and a Short refused late
+	 * read identically in the log.
+	 *
+	 * A percentage here would be a claim we cannot support. When the progress
+	 * surface is gone there is no measurement at all, not a measurement of zero,
+	 * and the two must not read alike: on 2026-08-05 a picture-in-picture session
+	 * reported "played 0%, below 60% threshold" and was indistinguishable from a
+	 * parser bug for most of a day. It refuses either way — the difference is
+	 * only whether the log tells the truth about why.
+	 */
+	private fun progressSurfaceLostReason(playedMs: Long, inferredMs: Long): String = if (
+		inferredMs > 0
+	) {
+		// Inference ran and still did not reach the bar. Say so with both
+		// numbers, so a short PiP session reads differently from one where the
+		// evidence never supported crediting anything at all.
+		"the Short played on with no progress surface — picture-in-picture, or a " +
+			"player YouTube drew no seekbar for: ${(playedMs - inferredMs) / 1000}s " +
+			"measured from the seekbar plus ${inferredMs / 1000}s inferred from " +
+			"wall-clock still falls short of the threshold."
+	} else {
+		"the Short's progress surface went away while it was still playing: the " +
+			"seekbar container is still there but publishes no readable time, and " +
+			"YouTube's MediaSession publishes no position either, so playback " +
+			"cannot be measured. The measured cause is picture-in-picture or the " +
+			"background. Only ${playedMs / 1000}s was measured before it went; " +
+			"nothing is assumed about the rest."
+	}
 
 	/** Shared automatic/manual evidence-availability boundary. */
 	fun browserEvidenceUnavailableReason(

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+	xmlns:tools="http://schemas.android.com/tools">
 
 	<!--
 		Phases 0–2: detection probe, encrypted key storage, manual broadcast.
@@ -9,6 +10,19 @@
 	<!-- Talking to Hive nodes: validating a key, and broadcasting scrobbles. -->
 	<uses-permission android:name="android.permission.INTERNET" />
 	<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+	<!--
+		Picture-in-picture measurement. A PiP Short publishes no progress at all,
+		so the only way to credit it is to observe that YouTube still holds a
+		visible window while media audio is playing. Usage Access is what makes
+		that attributable to YouTube rather than to "some app" — AudioManager
+		alone hands out anonymized playback configurations with no package on
+		them. Special access, granted by the user in Settings; the app works
+		without it and simply does not count PiP.
+	-->
+	<uses-permission
+		android:name="android.permission.PACKAGE_USAGE_STATS"
+		tools:ignore="ProtectedPermissions" />
 
 	<!-- Lets us resolve app labels for the packages publishing media sessions. -->
 	<queries>
@@ -35,6 +49,15 @@
 		</activity>
 
 		<!--
+			v0.9.6: the watch-history sign-in. Not exported — it can only be
+			started from inside RustedWax, so nothing else can put a Google
+			sign-in page on screen wearing this app's name.
+		-->
+		<activity
+			android:name=".ui.YouTubeSignInActivity"
+			android:exported="false" />
+
+		<!--
 			Stub listener. It exists so the OS has a component to grant
 			Notification Access to; getActiveSessions(ComponentName) then
 			accepts that component from anywhere in the process.
@@ -59,7 +82,7 @@
 		<service
 			android:name=".detect.UrlWatcherService"
 			android:exported="false"
-			android:label="@string/app_name"
+			android:label="@string/browser_evidence_service_name"
 			android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
 			<intent-filter>
 				<action android:name="android.accessibilityservice.AccessibilityService" />
@@ -67,6 +90,24 @@
 			<meta-data
 				android:name="android.accessibilityservice"
 				android:resource="@xml/accessibility_service_config" />
+		</service>
+
+		<!--
+			v0.9.1: independent foreground native-Short observer. Its separate XML
+			config lets Android enforce that this component can receive events only
+			from com.google.android.youtube; the browser grant is not broadened.
+		-->
+		<service
+			android:name=".detect.NativeShortsAccessibilityService"
+			android:exported="false"
+			android:label="@string/native_shorts_service_name"
+			android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+			<intent-filter>
+				<action android:name="android.accessibilityservice.AccessibilityService" />
+			</intent-filter>
+			<meta-data
+				android:name="android.accessibilityservice"
+				android:resource="@xml/native_shorts_accessibility_service_config" />
 		</service>
 
 		<provider

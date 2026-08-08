@@ -94,4 +94,29 @@ class VerifiedIdentityCandidateCacheTest {
 		assertTrue(queries.any { it.equals("when since Vybz Kartel", ignoreCase = true) })
 		assertTrue(queries.size <= 6)
 	}
+
+	@Test
+	fun `foreground handle candidates are exact and legacy channel rows cannot satisfy them`() {
+		val title = "Which is your favorite team?"
+		VerifiedIdentityCandidateCache.remember(
+			pkg, "Bf7Qtyr-2IQ", title, "Status", 41_000,
+			ownerHandle = "@Status_svijet", now = 10_000,
+		)
+		VerifiedIdentityCandidateCache.remember(
+			pkg, "abcdefghijk", title, "Status", 41_000, now = 11_000,
+		)
+		assertEquals(
+			listOf("Bf7Qtyr-2IQ"),
+			VerifiedIdentityCandidateCache.candidates(
+				pkg, title, "Different display author", 42_000,
+				ownerHandle = "@status_SVIJET", now = 12_000,
+			),
+		)
+		assertTrue(
+			VerifiedIdentityCandidateCache.candidates(
+				pkg, title, "Status", 42_000,
+				ownerHandle = "@status-svijet", now = 12_000,
+			).isEmpty(),
+		)
+	}
 }

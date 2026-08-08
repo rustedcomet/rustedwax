@@ -50,6 +50,39 @@ class TrackIdentityTest {
 		assertFalse(cardi(227_125).sameTrackAs(cardi(227_125).copy(album = "Another Album")))
 	}
 
+	@Test
+	fun `different exact native video ids are a real track change`() {
+		val first = cardi(227_125).copy(sourceItemId = "abcdefghijk")
+		val second = cardi(227_125).copy(sourceItemId = "lmnopqrstuv")
+		assertFalse(first.sameTrackAs(second))
+		assertFalse(first.sameTrackAs(cardi(227_125).copy(sourceItemId = "Abcdefghijk")))
+		assertTrue(first.sameTrackAs(cardi(227_125).copy(sourceItemId = null)))
+	}
+
+	@Test
+	fun `exact id less same metadata material duration replacement is discard evidence`() {
+		val sevenSeconds = cardi(7_000)
+		val fullSong = cardi(257_000)
+		assertTrue(sevenSeconds.isExactIdlessMaterialDurationReplacement(fullSong))
+		assertTrue(fullSong.isExactIdlessMaterialDurationReplacement(sevenSeconds))
+		assertFalse(cardi(227_125).isExactIdlessMaterialDurationReplacement(cardi(227_124)))
+		assertFalse(
+			sevenSeconds.isExactIdlessMaterialDurationReplacement(
+				fullSong.copy(title = "Another song"),
+			),
+		)
+		assertFalse(
+			sevenSeconds.copy(sourceItemId = "abcdefghijk")
+				.isExactIdlessMaterialDurationReplacement(fullSong),
+		)
+		// SessionProbe deliberately removes memory-only resolver authority before
+		// evaluating a new exact-ID-less MediaSession duration callback.
+		assertTrue(
+			sevenSeconds.copy(sourceItemId = "abcdefghijk").copy(sourceItemId = null)
+				.isExactIdlessMaterialDurationReplacement(fullSong),
+		)
+	}
+
 	@Before fun setUp() = TrackProgressCarry.clear()
 	@After fun tearDown() = TrackProgressCarry.clear()
 

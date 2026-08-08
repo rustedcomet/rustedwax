@@ -17,6 +17,7 @@ object VerifiedIdentityCandidateCache {
 		val videoId: String,
 		val titleKey: String,
 		val channelKey: String,
+		val ownerHandleKey: String?,
 		val durationSeconds: Long,
 		val verifiedAtMillis: Long,
 	)
@@ -29,11 +30,18 @@ object VerifiedIdentityCandidateCache {
 		title: String?,
 		channel: String?,
 		durationMs: Long?,
+		ownerHandle: String? = null,
 		now: Long = System.currentTimeMillis(),
 	) {
 		val titleKey = title?.let(SearchResultsParser::titleKey)?.takeIf(String::isNotBlank)
 			?: return
-		val channelKey = SearchResultsParser.channelKey(channel) ?: return
+		val ownerHandleKey = ownerHandle?.let(OwnerHandle::normalize)
+		if (ownerHandle != null && ownerHandleKey == null) return
+		val channelKey = if (ownerHandleKey != null) {
+			ownerHandleKey
+		} else {
+			SearchResultsParser.channelKey(channel) ?: return
+		}
 		val durationSeconds = durationMs?.takeIf { it > 0 }?.div(1000) ?: return
 		if (!VIDEO_ID.matches(videoId)) return
 		prune(now)
@@ -42,6 +50,7 @@ object VerifiedIdentityCandidateCache {
 			videoId = videoId,
 			titleKey = titleKey,
 			channelKey = channelKey,
+			ownerHandleKey = ownerHandleKey,
 			durationSeconds = durationSeconds,
 			verifiedAtMillis = now,
 		)
@@ -53,11 +62,18 @@ object VerifiedIdentityCandidateCache {
 		title: String?,
 		channel: String?,
 		durationMs: Long?,
+		ownerHandle: String? = null,
 		now: Long = System.currentTimeMillis(),
 	): List<String> {
 		val titleKey = title?.let(SearchResultsParser::titleKey)?.takeIf(String::isNotBlank)
 			?: return emptyList()
-		val channelKey = SearchResultsParser.channelKey(channel) ?: return emptyList()
+		val ownerHandleKey = ownerHandle?.let(OwnerHandle::normalize)
+		if (ownerHandle != null && ownerHandleKey == null) return emptyList()
+		val channelKey = if (ownerHandleKey != null) {
+			ownerHandleKey
+		} else {
+			SearchResultsParser.channelKey(channel) ?: return emptyList()
+		}
 		val durationSeconds = durationMs?.takeIf { it > 0 }?.div(1000) ?: return emptyList()
 		prune(now)
 		return entries.values
@@ -66,6 +82,7 @@ object VerifiedIdentityCandidateCache {
 				it.packageName == packageName &&
 					it.titleKey == titleKey &&
 					it.channelKey == channelKey &&
+					(ownerHandleKey == null || it.ownerHandleKey == ownerHandleKey) &&
 					abs(it.durationSeconds - durationSeconds) <= DURATION_TOLERANCE_SEC
 			}
 			.sortedByDescending { it.verifiedAtMillis }

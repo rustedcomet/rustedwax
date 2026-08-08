@@ -24,7 +24,13 @@ import com.rustedwax.app.hive.HiveScrobblePayload
 import com.rustedwax.app.hive.KeyValidator
 import com.rustedwax.app.scrobble.ScrobbleEngine
 import com.rustedwax.app.scrobble.ScrobbleRules
+import com.rustedwax.app.detect.AccessibilityGrantHealth
+import com.rustedwax.app.detect.GrantHealth
 import com.rustedwax.app.detect.MonitorSwitch
+import com.rustedwax.app.detect.NativeShortsAccessibilityService
+import com.rustedwax.app.detect.NativeShortsObserver
+import com.rustedwax.app.detect.NativeSourceSwitches
+import com.rustedwax.app.detect.PipPlaybackProbe
 import com.rustedwax.app.detect.ProbeHolder
 import com.rustedwax.app.detect.ScrobbleBuilder
 import com.rustedwax.app.detect.SessionProbe
@@ -33,6 +39,7 @@ import com.rustedwax.app.detect.EventLog
 import com.rustedwax.app.storage.KeyVault
 import com.rustedwax.app.storage.Settings
 import com.rustedwax.app.ui.MainScreen
+import com.rustedwax.app.ui.YouTubeSignInActivity
 
 /**
  * The UI. Detection and scrobbling live in
@@ -51,6 +58,7 @@ class MainActivity : ComponentActivity() {
 		super.onCreate(savedInstanceState)
 		EventLog.init(this)
 		MonitorSwitch.init(this)
+		NativeSourceSwitches.init(this)
 		ScrobbleEngine.init(this)
 		vault = KeyVault(this)
 		settings = Settings(this)
@@ -59,6 +67,8 @@ class MainActivity : ComponentActivity() {
 			MaterialTheme {
 				val probe by ProbeHolder.probe.collectAsStateWithLifecycle()
 				val monitoring by MonitorSwitch.enabled.collectAsStateWithLifecycle()
+				val nativeSources by NativeSourceSwitches.config.collectAsStateWithLifecycle()
+				val nativeShortsStatus by NativeShortsObserver.status.collectAsStateWithLifecycle()
 				val logLines by EventLog.lines.collectAsStateWithLifecycle()
 				val recent by ScrobbleEngine.recent.collectAsStateWithLifecycle()
 				val skipped by ScrobbleEngine.skipped.collectAsStateWithLifecycle()
@@ -68,13 +78,39 @@ class MainActivity : ComponentActivity() {
 				var sessions by remember { mutableStateOf(emptyList<com.rustedwax.app.detect.SessionSnapshot>()) }
 				var hasAccess by remember { mutableStateOf(SessionProbe.hasNotificationAccess(this)) }
 				var urlWatcher by remember { mutableStateOf(UrlWatcherService.isEnabled(this)) }
+				var nativeShortsGranted by remember {
+					mutableStateOf(NativeShortsAccessibilityService.isEnabled(this))
+				}
+				// "Off" and "was on and stopped on its own" are the same boolean
+				// but very different messages: Android drops a crashed
+				// accessibility service from the enabled list, and on 2026-08-05
+				// that silently cost most of a day's browser evidence.
+				var urlWatcherDropped by remember { mutableStateOf(false) }
+				var nativeShortsDropped by remember { mutableStateOf(false) }
+				// When each grant last stopped being live. §2.3: the master flag
+				// reads 0 for a few seconds after an install and then returns on
+				// its own, so a drop is only a drop once it has outlasted that.
+				var urlWatcherNotLiveSince by remember { mutableStateOf(0L) }
+				var nativeShortsNotLiveSince by remember { mutableStateOf(0L) }
 				var enrichment by remember { mutableStateOf(settings.enrichment) }
 				var shortClips by remember { mutableStateOf(settings.shortClips) }
+				var pipInference by remember { mutableStateOf(settings.pipInference) }
+				// Re-read on every tick rather than remembered: Usage access is
+				// granted in another app, so the only way back is to notice it.
+				val usageAccessGranted = PipPlaybackProbe(applicationContext).hasUsageAccess()
 				// Read once per composition rather than held in a flow: mutes change
 				// only by the button below, so recomposing on that is enough.
 				var mutedIds by remember { mutableStateOf(ScrobbleEngine.mutedVideos().keys) }
 				var account by remember { mutableStateOf(vault.account) }
 				var autoScrobble by remember { mutableStateOf(settings.autoScrobble) }
+				// Re-read on every poll: the session is written by the sign-in
+				// activity, and the refusal by the resolver on a background
+				// thread, so neither can be cached in composition.
+				var youTubeAccount by remember { mutableStateOf(ScrobbleEngine.youTubeSession()) }
+				var watchHistory by remember { mutableStateOf(ScrobbleEngine.watchHistoryEnabled()) }
+				var watchHistoryRefusal by remember {
+					mutableStateOf(ScrobbleEngine.watchHistoryRefusal())
+				}
 					var busy by remember { mutableStateOf(false) }
 					var status by remember { mutableStateOf<String?>(null) }
 					var statusIsError by remember { mutableStateOf(false) }
@@ -95,6 +131,34 @@ class MainActivity : ComponentActivity() {
 						// Both grants are revocable from system settings while
 						// we're in the background, so neither is cached.
 						urlWatcher = UrlWatcherService.isEnabled(this@MainActivity)
+						nativeShortsGranted =
+							NativeShortsAccessibilityService.isEnabled(this@MainActivity)
+						val nowMillis = System.currentTimeMillis()
+						val browserGrant = noteGrant(
+							live = urlWatcher,
+							everGranted = settings.browserEvidenceEverGranted,
+							remember = { settings.browserEvidenceEverGranted = it },
+							alreadyReported = urlWatcherDropped,
+							notLiveSince = urlWatcherNotLiveSince,
+							nowMillis = nowMillis,
+							label = "Browser evidence access",
+						)
+						urlWatcherDropped = browserGrant.dropped
+						urlWatcherNotLiveSince = browserGrant.notLiveSince
+						val shortsGrant = noteGrant(
+							live = nativeShortsGranted,
+							everGranted = settings.nativeShortsEverGranted,
+							remember = { settings.nativeShortsEverGranted = it },
+							alreadyReported = nativeShortsDropped,
+							notLiveSince = nativeShortsNotLiveSince,
+							nowMillis = nowMillis,
+							label = "Foreground Shorts evidence",
+						)
+						nativeShortsDropped = shortsGrant.dropped
+						nativeShortsNotLiveSince = shortsGrant.notLiveSince
+						youTubeAccount = ScrobbleEngine.youTubeSession()
+						watchHistory = ScrobbleEngine.watchHistoryEnabled()
+						watchHistoryRefusal = ScrobbleEngine.watchHistoryRefusal()
 						probe?.tick()
 						sessions = probe?.sessions?.value ?: emptyList()
 						delay(1000)
@@ -119,15 +183,44 @@ class MainActivity : ComponentActivity() {
 					accountStatusIsError = statusIsError,
 					monitoring = monitoring,
 					autoScrobble = autoScrobble,
+					nativeYouTube = nativeSources.youtubeEnabled,
+					nativeYouTubeMusic = nativeSources.youtubeMusicEnabled,
+					nativeShortsGranted = nativeShortsGranted,
+					nativeShortsDropped = nativeShortsDropped,
+					nativeShortsStatus = nativeShortsStatus,
 					thresholdPercent = settings.thresholdPercent,
 					urlWatcherEnabled = urlWatcher,
+					urlWatcherDropped = urlWatcherDropped,
 					enrichment = enrichment,
 					shortClips = shortClips,
+					pipInference = pipInference,
+					usageAccessGranted = usageAccessGranted,
 					recent = recent,
 					skipped = skipped,
 					mutedIds = mutedIds,
 					tracksWithoutVideoId = quietBar,
 					queuedCount = queued,
+					youTubeAccount = youTubeAccount,
+					watchHistory = watchHistory,
+					watchHistoryRefusal = watchHistoryRefusal,
+					onToggleWatchHistory = { enabled ->
+						ScrobbleEngine.setWatchHistoryEnabled(enabled)
+						watchHistory = enabled
+						watchHistoryRefusal = ScrobbleEngine.watchHistoryRefusal()
+					},
+					onConnectYouTube = {
+						startActivity(Intent(this@MainActivity, YouTubeSignInActivity::class.java))
+					},
+					onDisconnectYouTube = {
+						ScrobbleEngine.disconnectYouTubeSession()
+						youTubeAccount = null
+						watchHistory = false
+						watchHistoryRefusal = null
+						report(
+							"YouTube account disconnected and its session wiped from this device.",
+							isError = false,
+						)
+					},
 					onGrantAccess = ::openNotificationAccessSettings,
 					onExportLog = ::exportLog,
 					onClearLog = EventLog::clear,
@@ -143,6 +236,12 @@ class MainActivity : ComponentActivity() {
 							isError = false,
 						)
 					},
+					onToggleNativeYouTube = { enabled ->
+						NativeSourceSwitches.setYouTube(this@MainActivity, enabled)
+					},
+					onToggleNativeYouTubeMusic = { enabled ->
+						NativeSourceSwitches.setYouTubeMusic(this@MainActivity, enabled)
+					},
 					onOpenAccessibility = ::openAccessibilitySettings,
 					onToggleEnrichment = { enabled ->
 						settings.enrichment = enabled
@@ -152,6 +251,21 @@ class MainActivity : ComponentActivity() {
 							"video lookup ${if (enabled) "on" else "off"}",
 						)
 					},
+					onTogglePipInference = { enabled ->
+						settings.pipInference = enabled
+						pipInference = enabled
+						EventLog.append(
+							"native-shorts",
+							if (enabled) {
+								"picture-in-picture time on — a Short that keeps playing " +
+									"in PiP is credited from elapsed wall-clock, recorded " +
+									"as inferred rather than measured"
+							} else {
+								"picture-in-picture time off — time in PiP counts for nothing"
+							},
+						)
+					},
+					onGrantUsageAccess = { openUsageAccessSettings() },
 					onToggleShortClips = { enabled ->
 						settings.shortClips = enabled
 						shortClips = enabled
@@ -244,7 +358,7 @@ class MainActivity : ComponentActivity() {
 								playedMs = session.playedMs,
 								durationMs = durationMs,
 								threshold = settings.scrobbleThreshold,
-								isShort = session.confirmed?.isShort == true,
+								isShort = session.hasShortSourceProof,
 								videoResolved = facts?.resolvedOnWatchPage == true,
 								videoUnlisted = facts?.isUnlisted,
 								shortClipsEnabled = settings.shortClips,
@@ -255,6 +369,14 @@ class MainActivity : ComponentActivity() {
 							)
 							val startedAt = session.trackStartedAtEpochSec
 							when {
+								!NativeSourceSwitches.isSnapshotCurrent(
+									session.packageName,
+									session.sourceEpoch,
+								) -> report(
+									"That native source was disabled or reset. Nothing sent.",
+									isError = true,
+								)
+
 								ScrobbleRules.browserEvidenceUnavailableReason(
 									browserEvidenceEnabled = session.browserEvidenceEnabled,
 									resolvedWithoutExactUrl = session.confirmed == null,
@@ -308,12 +430,16 @@ class MainActivity : ComponentActivity() {
 										percentPlayed = ScrobbleRules.capForKind(
 											decision.percentages,
 											payload.kind,
-											isShort = session.confirmed?.isShort == true,
+											isShort = session.hasShortSourceProof,
 											loopDetected = session.loopDetected,
 										).first(),
 									)
 									busy = true
-									broadcast(manualPayload) { msg, err ->
+									broadcast(
+										payload = manualPayload,
+										sourcePackage = session.packageName,
+										sourceEpoch = session.sourceEpoch,
+									) { msg, err ->
 										busy = false
 									// No queue on this path, so a failed send must give
 									// the claim back or the listen is stuck.
@@ -333,8 +459,16 @@ class MainActivity : ComponentActivity() {
 	/** Manual broadcast, still available alongside automatic scrobbling. */
 	private fun broadcast(
 		payload: HiveScrobblePayload,
+		sourcePackage: String? = null,
+		sourceEpoch: Long? = null,
 		onDone: (message: String, isError: Boolean) -> Unit,
 	) {
+		if (sourcePackage != null &&
+			!NativeSourceSwitches.isSnapshotCurrent(sourcePackage, sourceEpoch)
+		) {
+			onDone("That native source was disabled or reset. Nothing sent.", true)
+			return
+		}
 		val saved = vault.account
 		val key = vault.loadKey()
 		if (saved == null || key == null) {
@@ -345,6 +479,12 @@ class MainActivity : ComponentActivity() {
 		EventLog.append("hive", "broadcasting as @${saved.username}: ${payload.toJson()}")
 
 		lifecycleScope.launch {
+			if (sourcePackage != null &&
+				!NativeSourceSwitches.isSnapshotCurrent(sourcePackage, sourceEpoch)
+			) {
+				onDone("That native source was disabled or reset. Nothing sent.", true)
+				return@launch
+			}
 			val result = withContext(Dispatchers.IO) {
 				runCatching { broadcaster.broadcastScrobble(saved.username, key, payload) }
 					.getOrElse { HiveRpc.BroadcastResult.NetworkFailure(it.message ?: "unknown") }
@@ -416,6 +556,23 @@ class MainActivity : ComponentActivity() {
 		startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS))
 	}
 
+	/**
+	 * Usage access, which is what makes PiP audio attributable to YouTube.
+	 *
+	 * Special access rather than a runtime permission, so there is no prompt to
+	 * show — the only route is the Settings screen, and the user has to find
+	 * RustedWax in the list themselves.
+	 */
+	private fun openUsageAccessSettings() {
+		EventLog.append(
+			"native-shorts",
+			"opening Usage access settings — needed so picture-in-picture audio can " +
+				"be attributed to YouTube rather than to any app that happens to be " +
+				"playing",
+		)
+		startActivity(Intent(AndroidSettings.ACTION_USAGE_ACCESS_SETTINGS))
+	}
+
 	private fun exportLog() {
 		val file = EventLog.logFile() ?: return
 		if (!file.exists()) return
@@ -428,4 +585,51 @@ class MainActivity : ComponentActivity() {
 		}
 		startActivity(Intent.createChooser(send, "Export log"))
 	}
+}
+
+/**
+ * Classifies an accessibility grant as live, never granted, or **dropped**.
+ *
+ * Android removes a crashed accessibility service from
+ * `enabled_accessibility_services`, which is indistinguishable from the user
+ * switching it off. On 2026-08-05 the browser watcher was dropped exactly that
+ * way, stayed off for most of a day, and nothing anywhere said so — roughly
+ * half that day's watch history never reached the app. Remembering that a
+ * grant was once live turns one boolean into two very different messages.
+ *
+ * Logged once per transition rather than once per poll, which runs every
+ * second: a run of identical lines is what buried the last two diagnoses.
+ *
+ * @return whether the grant was once live and is not live now.
+ */
+private data class GrantReport(val dropped: Boolean, val notLiveSince: Long)
+
+private fun noteGrant(
+	live: Boolean,
+	everGranted: Boolean,
+	remember: (Boolean) -> Unit,
+	alreadyReported: Boolean,
+	notLiveSince: Long,
+	nowMillis: Long,
+	label: String,
+): GrantReport {
+	if (live) {
+		if (!everGranted) remember(true)
+		return GrantReport(dropped = false, notLiveSince = 0L)
+	}
+	val since = if (notLiveSince == 0L) nowMillis else notLiveSince
+	val health = AccessibilityGrantHealth.classify(
+		live = false,
+		everGranted = everGranted,
+		notLiveForMillis = nowMillis - since,
+	)
+	if (health == GrantHealth.DROPPED && !alreadyReported) {
+		EventLog.append(
+			"health",
+			"$label was granted and is no longer enabled. Android disables an " +
+				"accessibility service when it crashes, so this can happen without " +
+				"anyone changing a setting. Nothing is being read through it.",
+		)
+	}
+	return GrantReport(dropped = health == GrantHealth.DROPPED, notLiveSince = since)
 }

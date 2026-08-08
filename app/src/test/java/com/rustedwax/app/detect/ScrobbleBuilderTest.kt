@@ -5,6 +5,7 @@ import com.rustedwax.app.hive.HiveScrobblePayload
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -15,6 +16,54 @@ import org.junit.Test
  * the identity routes it needs are built directly.
  */
 class ScrobbleBuilderTest {
+
+	@Test
+	fun `resolver-only native foreground proof activates Short rules classifier and cap`() {
+		val nativeShort = session(
+			title = "Epic Moment - Best Scene Ever",
+			channel = "@clip_owner",
+			durationMs = 20_000,
+			playedMs = 20_000,
+			videoId = null,
+		).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube Shorts (foreground)",
+			sourceProof = SourceProof.NATIVE_FOREGROUND_SHORT,
+			ownerHandle = "@clip_owner",
+		)
+		val facts = VideoFacts(
+			videoId = "abcdefghijk",
+			title = nativeShort.title,
+			author = "Different display author",
+			ownerHandle = nativeShort.ownerHandle,
+			category = "People & Blogs",
+			lengthSeconds = 20,
+			isUnlisted = false,
+			isCrawlable = true,
+			watchPageResolved = true,
+		)
+		assertTrue(nativeShort.hasShortSourceProof)
+		assertTrue(
+			com.rustedwax.app.scrobble.ScrobbleRules.decide(
+				playedMs = nativeShort.playedMs,
+				durationMs = nativeShort.durationMs,
+				isShort = nativeShort.hasShortSourceProof,
+				videoResolved = true,
+				videoUnlisted = false,
+				shortClipsEnabled = true,
+			).shouldScrobble,
+		)
+		val payload = ScrobbleBuilder.from(nativeShort, facts, videoId = facts.videoId)
+		assertEquals(HiveScrobblePayload.KIND_VIDEO, payload!!.kind)
+		assertEquals(
+			listOf(100),
+			com.rustedwax.app.scrobble.ScrobbleRules.capForKind(
+				listOf(100, 100),
+				payload.kind,
+				isShort = nativeShort.hasShortSourceProof,
+			),
+		)
+	}
 
 	/**
 	 * `percentPlayed` is derived exactly as `SessionProbe` derives it — null
@@ -59,6 +108,114 @@ class ScrobbleBuilderTest {
 		metadataLines = emptyList(),
 		trackStartedAtEpochSec = 1_700_000_000,
 	)
+
+	private fun nativeMusicSession(
+		title: String,
+		artist: String,
+		album: String?,
+		genre: String? = null,
+	) = SessionSnapshot(
+		packageName = YouTubeProbe.YOUTUBE_MUSIC_PACKAGE,
+		appLabel = "YouTube Music",
+		isTarget = true,
+		title = title,
+		artist = artist,
+		album = album,
+		durationMs = 240_000,
+		positionMs = 240_000,
+		playedMs = 240_000,
+		loopDetected = false,
+		playbackState = "PLAYING",
+		isPlaying = true,
+		percentPlayed = 1.0,
+		identity = YouTubeProbe.Identity.Confirmed(
+			videoId = "abcdefghijk",
+			url = "https://www.youtube.com/watch?v=abcdefghijk",
+			isMusic = true,
+			source = "native media id",
+		),
+		notificationHint = null,
+		metadataLines = emptyList(),
+		trackStartedAtEpochSec = 1_700_000_000,
+		genre = genre,
+	)
+
+	@Test
+	fun `native YouTube Music preserves separated title artist and album`() {
+		val payload = ScrobbleBuilder.from(
+			nativeMusicSession(
+				title = "Song - Not a Browser Credit Shape (Live)",
+				artist = "Native Artist",
+				album = "Native Album",
+			),
+			VideoFacts(
+				videoId = "abcdefghijk",
+				title = "Different Browser-Shaped Artist - Different Title",
+				author = "Different Channel",
+				category = "Music",
+				lengthSeconds = 240,
+				album = "Lookup Album",
+			),
+		)
+
+		assertEquals(HiveScrobblePayload.KIND_SONG, payload!!.kind)
+		assertEquals("Native Artist", payload.artist)
+		assertEquals("Song - Not a Browser Credit Shape (Live)", payload.title)
+		assertEquals("Native Album", payload.album)
+	}
+
+	@Test
+	fun `native YouTube Music podcast stays video`() {
+		val payload = ScrobbleBuilder.from(
+			nativeMusicSession("A Clean Episode", "A Podcast", "Season 1", genre = "Podcast"),
+			VideoFacts(
+				videoId = "abcdefghijk",
+				title = "A Clean Episode",
+				author = "A Podcast",
+				lengthSeconds = 240,
+				musicVideoType = "MUSIC_VIDEO_TYPE_PODCAST_EPISODE",
+			),
+		)
+
+		assertEquals(HiveScrobblePayload.KIND_VIDEO, payload!!.kind)
+		assertEquals("A Podcast", payload.artist)
+		assertEquals("A Clean Episode", payload.title)
+		assertNull(payload.album)
+	}
+
+	@Test
+	fun `native YouTube still uses the evidence-ranked song and video classifier`() {
+		val nativeSong = nativeMusicSession(
+			title = "Clean Song (Official Audio)",
+			artist = "Clean Artist",
+			album = "Clean Album",
+		).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube",
+			identity = YouTubeProbe.Identity.Confirmed(
+				videoId = "abcdefghijk",
+				url = "https://www.youtube.com/watch?v=abcdefghijk",
+				isMusic = false,
+				source = "native media id",
+			),
+		)
+		val nativeVideo = nativeSong.copy(
+			title = "How to repair a bicycle",
+			artist = "Workshop Channel",
+			album = "Should not be broadcast",
+		)
+
+		val songPayload = ScrobbleBuilder.from(nativeSong)
+		val videoPayload = ScrobbleBuilder.from(nativeVideo)
+		assertEquals(HiveScrobblePayload.KIND_SONG, songPayload!!.kind)
+		assertEquals("Clean Artist", songPayload.artist)
+		assertEquals("Clean Song (Official Audio)", songPayload.title)
+		assertEquals("Clean Album", songPayload.album)
+		assertEquals(HiveScrobblePayload.KIND_VIDEO, videoPayload!!.kind)
+		assertEquals("Workshop Channel", videoPayload.artist)
+		assertEquals("How to repair a bicycle", videoPayload.title)
+		assertNull(videoPayload.album)
+	}
 
 	// region credits depend on the kind
 

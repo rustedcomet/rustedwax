@@ -2,6 +2,7 @@ package com.rustedwax.app.enrich
 
 import com.rustedwax.app.detect.ResolverContext
 import com.rustedwax.app.detect.SessionSnapshot
+import com.rustedwax.app.detect.SourceProof
 import com.rustedwax.app.detect.YouTubeProbe
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -10,6 +11,65 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VideoIdentityCorroboratorTest {
+
+	@Test
+	fun `foreground Short final corroboration requires exact handle from candidate and facts`() {
+		val foreground = ended("Hackers' Skills...", "@Beredist", 139_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube Shorts (foreground)",
+			sourceProof = SourceProof.NATIVE_FOREGROUND_SHORT,
+			ownerHandle = "@Beredist",
+		)
+		val resolution = VideoResolution(
+			videoId = "orsMh4bNeGE",
+			source = "owner handle",
+			title = "Hackers' Skills...",
+			channel = "Beredits",
+			lengthSeconds = 139,
+			uniquelyResolved = true,
+			ownerHandle = "@beredist",
+		)
+		val facts = VideoFacts(
+			videoId = resolution.videoId,
+			title = resolution.title,
+			author = resolution.channel,
+			ownerHandle = "@Beredist",
+			lengthSeconds = 139,
+			watchPageResolved = true,
+		)
+		assertNull(VideoIdentityCorroborator.contradiction(foreground, resolution, facts))
+		assertTrue(VideoIdentityCorroborator.cacheable(foreground, resolution, facts))
+
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				foreground,
+				resolution.copy(ownerHandle = "@other_owner"),
+				facts,
+			),
+		)
+		// A handle the enrichment fetch did not carry is absence, not
+		// contradiction: the candidate's own page proved it for this same id a
+		// moment earlier. Measured 2026-08-07, the strict rule refused an
+		// 83-second listen because the second read of one page came back without
+		// the field. A handle that is present and *different* still refuses.
+		assertNull(
+			VideoIdentityCorroborator.contradiction(
+				foreground,
+				resolution,
+				facts.copy(ownerHandle = null),
+			),
+		)
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				foreground,
+				resolution,
+				facts.copy(ownerHandle = "@someone_else"),
+			),
+		)
+		// Seeding the run-local cache still demands both, because a cached
+		// candidate is re-used without the page in front of it.
+		assertFalse(VideoIdentityCorroborator.cacheable(foreground, resolution, facts.copy(ownerHandle = null)))
+	}
 
 	private fun ended(
 		title: String,
@@ -40,6 +100,100 @@ class VideoIdentityCorroboratorTest {
 		metadataLines = emptyList(),
 		trackStartedAtEpochSec = 1_785_000_000,
 	)
+
+	/**
+	 * Measured 2026-08-04, native YouTube, playlist `Reggaeton 2016,17,18`.
+	 *
+	 * `7J6xA1_f8as` is entry #23 and is genuinely the track that played — "Te
+	 * Busco", 234 s, 233 s of it watched. But YouTube spells its channel two
+	 * ways: the playlist page and the MediaSession both say
+	 * "Cosculluela El Principe" while the watch page says "Cosculluela - Topic".
+	 * Stripping " - Topic" leaves "Cosculluela", still not the full stage name,
+	 * so the enriched-watch-facts pass vetoed a correct id the playlist had
+	 * already corroborated and the scrobble was silently lost.
+	 */
+	@Test
+	fun `a Topic channel alias does not veto a playlist-verified native id`() {
+		val session = ended("Te Busco", "Cosculluela El Principe", 234_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube",
+		)
+		val resolution = VideoResolution(
+			videoId = "7J6xA1_f8as",
+			source = "playlist PL7NMzffnWK8RMWFO3rZABAgN-Rk9pCkEm",
+			title = "Te Busco",
+			channel = "Cosculluela El Principe",
+			lengthSeconds = 234,
+			uniquelyResolved = true,
+			playlistVerified = true,
+		)
+		val facts = VideoFacts(
+			videoId = resolution.videoId,
+			title = "Te Busco",
+			author = "Cosculluela - Topic",
+			lengthSeconds = 234,
+			watchPageResolved = true,
+		)
+		assertNull(VideoIdentityCorroborator.contradiction(session, resolution, facts))
+	}
+
+	/** The relaxation is for the channel alias only — a real mismatch still refuses. */
+	@Test
+	fun `a playlist-verified id is still refused when title or duration disagree`() {
+		val session = ended("Te Busco", "Cosculluela El Principe", 234_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube",
+		)
+		val resolution = VideoResolution(
+			videoId = "7J6xA1_f8as",
+			source = "playlist PL7NMzffnWK8RMWFO3rZABAgN-Rk9pCkEm",
+			title = "Te Busco",
+			channel = "Cosculluela El Principe",
+			lengthSeconds = 234,
+			uniquelyResolved = true,
+			playlistVerified = true,
+		)
+		val base = VideoFacts(
+			videoId = resolution.videoId,
+			title = "Te Busco",
+			author = "Cosculluela - Topic",
+			lengthSeconds = 234,
+			watchPageResolved = true,
+		)
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				session, resolution, base.copy(title = "Un Verano Sin Ti"),
+			),
+		)
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				session, resolution, base.copy(lengthSeconds = 95),
+			),
+		)
+	}
+
+	/** Browser sessions must be untouched by the native-only relaxation. */
+	@Test
+	fun `a browser playlist resolution keeps the strict channel rule`() {
+		val session = ended("Te Busco", "Cosculluela El Principe", 234_000)
+		val resolution = VideoResolution(
+			videoId = "7J6xA1_f8as",
+			source = "playlist PL7NMzffnWK8RMWFO3rZABAgN-Rk9pCkEm",
+			title = "Te Busco",
+			channel = "Cosculluela El Principe",
+			lengthSeconds = 234,
+			uniquelyResolved = true,
+			playlistVerified = true,
+		)
+		val facts = VideoFacts(
+			videoId = resolution.videoId,
+			title = "Te Busco",
+			author = "Cosculluela - Topic",
+			lengthSeconds = 234,
+			watchPageResolved = true,
+		)
+		assertNotNull(VideoIdentityCorroborator.contradiction(session, resolution, facts))
+	}
 
 	@Test
 	fun `saGYMhApaH8 can never be completed by La Bebe 3mchJ-EW9rM`() {
@@ -113,6 +267,82 @@ class VideoIdentityCorroboratorTest {
 			lengthSeconds = 192,
 		)
 		assertNull(VideoIdentityCorroborator.contradiction(session, own, null))
+	}
+
+	@Test
+	fun `exact native media id accepts clean short metadata with duration corroboration`() {
+		val id = "oG-4Uvhm4lI"
+		val native = ended("Poker Face", "Lady Gaga", 237_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_MUSIC_PACKAGE,
+			appLabel = "YouTube Music",
+			identity = YouTubeProbe.Identity.Confirmed(
+				videoId = id,
+				url = "https://www.youtube.com/watch?v=$id",
+				isMusic = true,
+				exactIdRoute = "media id",
+				source = "native media id",
+			),
+		)
+		val resolution = VideoResolution(
+			videoId = id,
+			source = "native media id",
+			title = "Lady Gaga - Poker Face (Official Music Video)",
+			channel = "LadyGagaVEVO",
+			lengthSeconds = 237,
+		)
+
+		assertNull(VideoIdentityCorroborator.contradiction(native, resolution, null))
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				native,
+				resolution.copy(title = "A Different Song"),
+				null,
+			),
+		)
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				native,
+				resolution.copy(lengthSeconds = 600),
+				null,
+			),
+		)
+	}
+
+	@Test
+	fun `structured native music proof rechecks parsed facts and never applies to browser`() {
+		val native = ended("No Quiere Enamorarse", "Ozuna", 213_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube",
+		)
+		val resolution = VideoResolution(
+			videoId = "5YXxnHVYRDk",
+			source = "structured native music title+artist+duration",
+			title = "Ozuna - No Quiere Enamorarse (Official Lyric Video)",
+			channel = "Ozunapr",
+			lengthSeconds = 213,
+			uniquelyResolved = true,
+			structuredNativeMusic = true,
+		)
+		val facts = VideoFacts(
+			videoId = resolution.videoId,
+			title = resolution.title,
+			author = resolution.channel,
+			lengthSeconds = resolution.lengthSeconds,
+			watchPageResolved = true,
+		)
+
+		assertNull(VideoIdentityCorroborator.contradiction(native, resolution, facts))
+		assertFalse(VideoIdentityCorroborator.cacheable(native, resolution, facts))
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				native, resolution, facts.copy(title = "A different song"),
+			),
+		)
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				ended("No Quiere Enamorarse", "Ozuna", 213_000), resolution, facts,
+			),
+		)
 	}
 
 	@Test
@@ -227,15 +457,31 @@ class VideoIdentityCorroboratorTest {
 			musicVideoType = type,
 		)
 
-		assertNotNull(VideoIdentityCorroborator.contradiction(session, base, facts(type = null)))
-		assertNotNull(
+		// A byline whose *leader* is the ended channel, with the title and the
+		// duration also agreeing, is the same upload described at greater length
+		// — not a contradiction. Measured 2026-08-05: 12 rejections in one
+		// session on "La Melma Music and 2 more" against "La Melma Music" and
+		// "Eladio Carrion and CAZZU" against "Eladio Carrion", every one a real
+		// listen thrown away. The earlier rule additionally demanded a
+		// YouTube-Music-recognised video and a uniquely-resolved candidate, which
+		// the field showed is not how these arrive — history resolves them, so
+		// those flags are false.
+		assertNull(VideoIdentityCorroborator.contradiction(session, base, facts(type = null)))
+		assertNull(
 			VideoIdentityCorroborator.contradiction(
 				session, base.copy(collaborativeChannel = false), facts(),
 			),
 		)
-		assertNotNull(
+		assertNull(
 			VideoIdentityCorroborator.contradiction(
 				session, base.copy(uniquelyResolved = false), facts(),
+			),
+		)
+		// The three fields still all have to agree: a byline leader match cannot
+		// rescue a contradicting duration.
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				session, base.copy(lengthSeconds = 45), facts(length = 45),
 			),
 		)
 		assertNotNull(
@@ -312,5 +558,178 @@ class VideoIdentityCorroboratorTest {
 				"FloyyMenor, Cris MJ - Gata Only (Video Oficial)",
 			) != com.rustedwax.app.detect.VideoTitleMatcher.Evidence.CONTRADICTION,
 		)
+	}
+
+	/**
+	 * Measured 2026-08-05. The resolver found `QnRnooyKeZk` correctly from the
+	 * account's own watch history, and this guard then discarded it because
+	 * YouTube's uploaded title is Spanish while the phone — and the foreground
+	 * observer reading its screen — shows the auto-translated English one. One
+	 * video, two names, both from its own page.
+	 */
+	@Test
+	fun `an auto-translated displayed title is not a contradiction`() {
+		val onScreen = "The Day Karol G Experienced an Unexpected Moment During a Concert"
+		val session = ended(onScreen, "@enefectoescine17", 60_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube Shorts (foreground)",
+			sourceProof = SourceProof.NATIVE_FOREGROUND_SHORT,
+			ownerHandle = "@enefectoescine17",
+		)
+		val resolution = VideoResolution(
+			videoId = "QnRnooyKeZk",
+			source = "watch history",
+			title = "El D\u00eda que Karol G Vivi\u00f3 un Momento Inesperado en Pleno Concierto",
+			channel = "EN EFECTO ES CINE",
+			lengthSeconds = 60,
+			uniquelyResolved = true,
+			ownerHandle = "@enefectoescine17",
+			localizedTitle = onScreen,
+		)
+		val facts = VideoFacts(
+			videoId = "QnRnooyKeZk",
+			title = "El D\u00eda que Karol G Vivi\u00f3 un Momento Inesperado en Pleno Concierto",
+			author = "EN EFECTO ES CINE",
+			ownerHandle = "@enefectoescine17",
+			lengthSeconds = 60,
+		)
+		assertNull(VideoIdentityCorroborator.contradiction(session, resolution, facts))
+	}
+
+	/** A displayed title that is not the frozen one stays a contradiction. */
+	@Test
+	fun `an unrelated displayed title does not rescue a wrong candidate`() {
+		val session = ended(
+			"The Day Karol G Experienced an Unexpected Moment During a Concert",
+			"@enefectoescine17",
+			60_000,
+		).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube Shorts (foreground)",
+			sourceProof = SourceProof.NATIVE_FOREGROUND_SHORT,
+			ownerHandle = "@enefectoescine17",
+		)
+		val resolution = VideoResolution(
+			videoId = "QnRnooyKeZk",
+			source = "watch history",
+			title = "Something entirely different",
+			channel = "EN EFECTO ES CINE",
+			lengthSeconds = 60,
+			uniquelyResolved = true,
+			ownerHandle = "@enefectoescine17",
+			localizedTitle = "Also entirely different",
+		)
+		assertNotNull(
+			VideoIdentityCorroborator.contradiction(
+				session,
+				resolution,
+				VideoFacts(
+					videoId = "QnRnooyKeZk",
+					title = "Something entirely different",
+					author = "EN EFECTO ES CINE",
+					ownerHandle = "@enefectoescine17",
+					lengthSeconds = 60,
+				),
+			),
+		)
+	}
+
+	/**
+	 * Measured 2026-08-06 on `RTQFqbCPUGg`, and the mirror image of the Karol G
+	 * case above: there the *uploaded* title was Spanish and the screen showed
+	 * English, here the upload is Spanish and the screen shows it while the
+	 * resolver's own `en-US` fetch of the same page renders the auto-translated
+	 * English one.
+	 *
+	 * Verified by fetching the page twice on 2026-08-06:
+	 *
+	 * | `Accept-Language` | `videoDetails.title` | `videoPrimaryInfoRenderer` |
+	 * | --- | --- | --- |
+	 * | `en-US` | `#musica … #noticias` | `#music … #news` |
+	 * | `es-419` | `#musica … #noticias` | `#musica … #noticias` |
+	 *
+	 * The old guard substituted the displayed title whenever its title *key*
+	 * equalled the frozen one — and an all-hashtag title has an empty key, so
+	 * every such title matched vacuously and the English rendering replaced the
+	 * Spanish one the screen had actually shown. A page publishes two names for
+	 * one id; agreement with either is agreement.
+	 */
+	@Test
+	fun `either of a page's two titles may corroborate an all-hashtag Short`() {
+		val onScreen = "#xbox​ #trendingnow​ #rap​ #musica​ #hiphop​ " +
+			"#hiphopindiadancerealtyshowand​ #noticias​ #pubg​ #hindisong​"
+		val uploaded = "#xbox #trendingnow #rap #musica #hiphop " +
+			"#hiphopindiadancerealtyshowand #noticias #pubg #hindisong"
+		val translated = "#xbox #trendingnow #rap #music #hiphop " +
+			"#hiphopindiadancerealtyshowand #news #pubg #hindisong"
+		val session = ended(onScreen, "@shortsvideo", 21_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube Shorts (foreground)",
+			sourceProof = SourceProof.NATIVE_FOREGROUND_SHORT,
+			ownerHandle = "@shortsvideo",
+		)
+		val resolution = VideoResolution(
+			videoId = "RTQFqbCPUGg",
+			source = "run-local verified candidate",
+			title = uploaded,
+			channel = "Shorts Video",
+			lengthSeconds = 21,
+			uniquelyResolved = true,
+			ownerHandle = "@shortsvideo",
+			localizedTitle = translated,
+		)
+		val facts = VideoFacts(
+			videoId = "RTQFqbCPUGg",
+			title = uploaded,
+			author = "Shorts Video",
+			ownerHandle = "@shortsvideo",
+			lengthSeconds = 21,
+		)
+		assertNull(VideoIdentityCorroborator.contradiction(session, resolution, facts))
+
+		// The translated rendering alone still corroborates: it is the name the
+		// screen shows when the phone itself is the one being translated for.
+		assertNull(
+			VideoIdentityCorroborator.contradiction(
+				session.copy(title = translated),
+				resolution,
+				facts,
+			),
+		)
+	}
+
+	/** Neither name agreeing is still a refusal, and the message names both. */
+	@Test
+	fun `a candidate whose two titles both disagree is still refused`() {
+		val session = ended("Nicki Minaj - Barbie Tingz", "@NickiMinaj", 60_000).copy(
+			packageName = YouTubeProbe.YOUTUBE_PACKAGE,
+			appLabel = "YouTube Shorts (foreground)",
+			sourceProof = SourceProof.NATIVE_FOREGROUND_SHORT,
+			ownerHandle = "@NickiMinaj",
+		)
+		val resolution = VideoResolution(
+			videoId = "IcrbM1l_BoI",
+			source = "run-local verified candidate",
+			title = "Some other upload",
+			channel = "Nicki Minaj",
+			lengthSeconds = 60,
+			uniquelyResolved = true,
+			ownerHandle = "@NickiMinaj",
+			localizedTitle = "Otra subida distinta",
+		)
+		val refusal = VideoIdentityCorroborator.contradiction(
+			session,
+			resolution,
+			VideoFacts(
+				videoId = "IcrbM1l_BoI",
+				title = "Some other upload",
+				author = "Nicki Minaj",
+				ownerHandle = "@NickiMinaj",
+				lengthSeconds = 60,
+			),
+		)
+		assertNotNull(refusal)
+		assertTrue(refusal!!.contains("Some other upload"))
+		assertTrue(refusal.contains("Otra subida distinta"))
 	}
 }

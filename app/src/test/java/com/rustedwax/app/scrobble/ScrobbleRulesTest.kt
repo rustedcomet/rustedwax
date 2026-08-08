@@ -19,6 +19,39 @@ class ScrobbleRulesTest {
 	}
 
 	@Test
+	fun `a lost progress surface refuses without claiming a percentage`() {
+		// Measured 2026-08-05 in picture-in-picture: the accessibility tree keeps
+		// the Shorts root, player and time bar but loses the SeekBar, and
+		// YouTube's MediaSession reports STATE_NONE with position 0. Nothing can
+		// be measured, which is not the same fact as "0% was played" — and
+		// reporting it as the latter hid the cause for most of a day.
+		val lost = ScrobbleRules.decide(
+			playedMs = 0,
+			durationMs = fourMinutes,
+			progressSurfaceLost = true,
+		)
+		assertFalse(lost.shouldScrobble)
+		assertFalse(lost.skippedBecause!!.contains("%"))
+		assertTrue(lost.skippedBecause!!.contains("cannot be measured"))
+
+		// Same numbers without the marker still report the percentage.
+		val ordinary = ScrobbleRules.decide(playedMs = 0, durationMs = fourMinutes)
+		assertTrue(ordinary.skippedBecause!!.contains("below"))
+	}
+
+	@Test
+	fun `a lost progress surface cannot rescue a listen that did clear the bar`() {
+		// The marker only ever changes the wording of a refusal. It must never
+		// admit or block a decision that the measurement already settled.
+		val d = ScrobbleRules.decide(
+			playedMs = 145_000,
+			durationMs = fourMinutes,
+			progressSurfaceLost = true,
+		)
+		assertEquals(listOf(60), d.percentages)
+	}
+
+	@Test
 	fun `just past 60 percent scrobbles once`() {
 		val d = ScrobbleRules.decide(playedMs = 145_000, durationMs = fourMinutes)
 		assertEquals(listOf(60), d.percentages)
@@ -367,6 +400,54 @@ class ScrobbleRulesTest {
 	fun `prefilter rejects a missing duration with negligible play time`() {
 		val why = ScrobbleRules.prefilter(playedMs = 1_000, durationMs = null)
 		assertTrue(why!!.contains("too little"))
+	}
+
+	@Test
+	fun `prefilter refuses a lost progress surface without quoting a percentage`() {
+		// The shipped defect (FIELD §3.2): the honest wording was added to
+		// decide(), but a sub-threshold Short is rejected here and never reaches
+		// decide() at all — so the log went on printing "played 0%, below 60%
+		// threshold" for a session that was never measured. This is the common
+		// path, and it is the one the field log actually showed.
+		val why = ScrobbleRules.prefilter(
+			playedMs = 0,
+			durationMs = fourMinutes,
+			progressSurfaceLost = true,
+		)
+		assertFalse(why!!.contains("%"))
+		assertTrue(why.contains("cannot be measured"))
+
+		// Both stages must word it identically, or the same event reads as two
+		// different failures depending on which one caught it.
+		assertEquals(
+			ScrobbleRules.decide(
+				playedMs = 0,
+				durationMs = fourMinutes,
+				progressSurfaceLost = true,
+			).skippedBecause,
+			why,
+		)
+	}
+
+	@Test
+	fun `a lost progress surface still cannot rescue a track prefilter would pass`() {
+		// The marker only ever changes the wording of a refusal.
+		assertNull(
+			ScrobbleRules.prefilter(
+				playedMs = 145_000,
+				durationMs = fourMinutes,
+				progressSurfaceLost = true,
+			),
+		)
+		// And an explicit ad signal still outranks it, as in decide().
+		assertTrue(
+			ScrobbleRules.prefilter(
+				playedMs = 0,
+				durationMs = fourMinutes,
+				explicitAdSignal = "Sponsored",
+				progressSurfaceLost = true,
+			)!!.contains("marked this track as an ad"),
+		)
 	}
 	// endregion
 

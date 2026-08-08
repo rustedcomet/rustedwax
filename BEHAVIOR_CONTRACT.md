@@ -18,6 +18,15 @@ design records rather than current specifications.
 > carry, and incomplete replay of the historical fixture matrix. The user
 > accepted those documented exceptions as the Phase 4 final product. Logs 14,
 > 16, 17, 18, 19, 20 and 21 remain immutable evidence.
+>
+> Current development source is v0.9.4/version code 40. The native package
+> boundary, foreground Shorts route, simplified-music resolver, duration-phase
+> isolation, artist-aware candidate budget and immutable same-id continuation
+> contract below are implemented. The bounded foreground-Short device/write gate
+> passed. The subsequent ordinary-native run block-confirmed unique writes and
+> one same-id controller recreation; the v0.9.4 matcher correction is installed
+> for continued A12 testing. Both native settings still default off.
+> Nothing in v0.9 changes the accepted v0.8.15 browser history or invariants.
 
 ## As-built audit: v0.8.6 before reconciliation
 
@@ -129,6 +138,33 @@ then implementation, tests, UI text, README, and TESTING in that order.
     orientation outrank a generic separator. If orientation is still
     ambiguous, retain the cleaned whole title and channel rather than inventing
     confident but reversed credits.
+15. **Native packages are separately opt-in and package-isolated.** Browser
+    packages remain accepted exactly as in v0.8.15. `com.google.android.youtube`
+    and `com.google.android.apps.youtube.music` each require their own persisted
+    setting, both default off. Package, source epoch and semantic track identity
+    key all progress and continuation state. Stop, opt-out, listener rebuild and
+    package teardown invalidate native in-flight snapshots and clear pending
+    continuation/resolver candidates. No notification hint, URL, playlist, ad,
+    accessibility or resolver evidence moves between browser, YouTube and
+    YouTube Music packages.
+16. **Native origin is not video identity.** An enabled native package proves
+    YouTube origin only. A broadcast still requires one exact 11-character id
+    from MediaMetadata media id, canonical YouTube media URI or canonical
+    YouTube artwork URI, or exactly one existing-resolver candidate
+    corroborated by the immutable native title, artist/channel and duration.
+    Every accepted route produces a canonical `youtube.com/watch?v=` link.
+    Invalid, contradictory, unresolved and ambiguous identities stay
+    off-chain. Runtime History access remains forbidden.
+17. **Native metadata and advertisement evidence stay literal.** Supplied
+    native title, artist and album remain separated and are not unnecessarily
+    replaced by browser-shaped parsing or fetched presentation. Native YouTube
+    Music origin is strong music context below explicit podcast/episode,
+    structured non-music genre and hard format evidence; native YouTube uses the
+    existing classifier. Browser accessibility coverage and visible-ad evidence
+    never apply to native packages. A native ad veto requires a proven generic
+    literal structured MediaSession signal. Until physical evidence establishes
+    one, no title/brand/id/channel/duration/popularity/History heuristic is
+    allowed and the default-off UI must disclose the limitation.
 
 ## Historical v0.8.7 reconciliation plan
 
@@ -930,6 +966,318 @@ TESTING §22 exceptions, not a claim that the strict §21f zero-omission matrix
 was completed. Native YouTube/YouTube Music app support is a separate v0.9
 contract and must not weaken these browser invariants.
 
+## v0.9.0 native YouTube apps contract (implemented; device gate pending)
+
+v0.9.0/version code 36 adds two sources without changing the v0.8.15 browser
+path. Implementation is present in source and covered by focused regressions;
+physical approval remains pending under `PHASE_NATIVE_APPS.md`. The later
+native Shorts field run failed on stale exact-ID-less MediaSession continuation
+and is evidence for a future patch, not part of this as-built contract; see
+`PHASE_NATIVE_SHORTS.md`.
+
+### 1. Admission and state isolation
+
+The target-package decision is exact. Brave and Chrome variants remain
+unconditional target packages. Native YouTube and YouTube Music are admitted
+only by their own setting. Those preferences persist independently and default
+false.
+
+Native snapshots carry a package-specific epoch. Opt-out, Stop/reset and
+listener disconnect/rebuild advance the epoch so already-running async work
+cannot sign after the boundary. Controller removal may retain same-track
+progress only through the existing bounded continuation. Progress keys include
+the package and semantic metadata; a concrete case-sensitive native video id
+is additional contradiction evidence. A different id cannot claim a same-title
+continuation. Package teardown clears pending carry and the verified-candidate
+cache for that package.
+
+The native identity path does not consume notification-hint binding,
+`UrlEvidence`, playlist/URL generation, `AdEvidence`, `MediaSessionAdEvidence`
+or `MediaSessionAccessibilityEvidence`. Native sessions therefore cannot
+acquire browser URL/ad/coverage state. Enabling native sessions does not reduce
+the browser sole-session evidence test; only browser watches participate in
+that count.
+
+### 2. Exact identity and resolver fallback
+
+Exact native routes are ordered media id, media URI, then artwork URI. URI
+parsing uses exact YouTube/ytimg hosts and exact 11-character ids; it rejects
+suffix-confusion hosts and arbitrary embedded strings. All success routes emit
+the canonical watch URL and diagnostics name the exact route. A Shorts media
+URI retains Short-path proof.
+
+Package-only identity is site-only. With lookup disabled it cannot broadcast.
+With lookup enabled, the existing resolver may run only from a frozen nonblank
+title and channel plus duration and must leave one unique matching id after its
+complete candidate/ambiguity checks. Final page title and duration
+contradictions still refuse the result. An exact structured native id can retain
+a clean one/two-word native title when the fetched page is a longer presentation
+and duration corroborates; it does not permit a wrong title or duration.
+
+Payload construction and the central broadcast policy continue to require the
+canonical URL, providing the same defense in depth for automatic, manual and
+queued entry paths. No production fixture catalogue or History lookup is added.
+
+### 3. Metadata, classification and rules
+
+Native title/artist/album values take precedence when present. MusicBrainz may
+verify them but does not replace supplied clean fields; fetched page metadata is
+fallback for missing fields and corroboration/classification evidence.
+
+Native YouTube Music context is evaluated after literal podcast type, structured
+non-music genre and hard title-format rules. Native YouTube receives no package
+music shortcut. Both sources keep the v0.8.15 threshold, 10/30-second floor
+proof, playback-speed accumulator, loop/double-listen cap, kind decision,
+dedup, mute and manual/automatic rule implementations.
+
+### 4. Native ad and instrumentation boundary
+
+No native ad detector is claimed in this source. The package, title, artist,
+album, id, URI, artwork, duration, resolver and classifier are not ad evidence.
+The settings and Now card disclose that browser visible-ad protection does not
+cover native apps.
+
+For physical measurement, every standard MediaMetadata text/numeric/bitmap
+presence field and non-standard key is logged. Native PlaybackState logs numeric
+state, position, buffered position, speed, action bitmask, error message, update
+time, queue id, active flag, custom actions and extras. These are observations,
+not heuristics. A future veto requires generic literal structured evidence from
+that record and a new contract/test change.
+
+No manifest permission was added; Notification Access supplies active
+MediaSession access. The exact device-pending checklist and release risk are in
+`PHASE_NATIVE_APPS.md` and `TESTING.md` §23.
+
+The complete uncached source gate passed 372 tests, 0 skipped, 0 failures and
+0 errors; debug assembly succeeded and lint completed with 0 errors and 23
+warnings. The tested source APK and `dist/rustedwax-0.9.0.apk` both have SHA-256
+`3f8945e997d592dbf40fac6aa727f69215cbf8a805b5a4b15df031171a0ec58c`.
+
+## v0.9.1 native foreground Shorts contract (implemented; bounded gate passed)
+
+Foreground native Shorts are a distinct source proof, never a refinement of
+the stale YouTube MediaSession. Admission requires the exact YouTube package,
+one visible measured Shorts root/player, one non-control title, one exact
+normalized owner handle, one valid current/total seekbar and no conflicting
+structure. Identity-bearing fields must remain unchanged for 750 ms before a
+new organic or ad session exists; current position is excluded from that key.
+
+Only accepted seekbar deltas earn play time. Unchanged values, ordinary rewind,
+material forward seek, pause/interaction proof loss, torn frames, PiP and
+background add nothing. Samsung's unchanged cached accessibility values do not
+move the elapsed bound for the next position delta. Exact scroll/seek events
+freeze and reset the baseline. A strict near-end/near-start wrap may add only
+traversed seconds and sets the existing loop flag/cap.
+
+Complete proof suppresses the stale native YouTube MediaSession. Missing proof
+freezes immediately; a separate freshness watchdog finalizes after the bounded
+three-second no-credit grace and releases MediaSession at a fresh zero baseline.
+Stop, native opt-out, observer disconnect, listener rebuild and source-epoch
+change discard the in-flight foreground observation rather than sign it.
+
+A literal supported ad label inside the proven player is the only native Short
+ad evidence. It isolates organic → ad → organic state and reaches the existing
+central ad veto shared by manual and automatic paths. Brand, title, handle,
+CTA, duration, id, popularity and History are never ad evidence.
+
+Exact-id recovery without browser URL proof requires exact normalized title,
+duration within the existing five-second limit, exact canonical owner handle
+from `ownerProfileUrl`, and exactly one fully fetched public watch-page
+candidate. Missing, contradictory, legacy-cache or ambiguous handle evidence
+refuses every id. The recovered canonical id then uses the same threshold,
+Short floor, payload, mute, dedup, queue and signing rules as every source.
+
+The implementation gate passed 409 tests, assembly and lint. The A12 proved
+progress/seek/pause/wrap/PiP/transitions, two natural literal ads, lifecycle
+invalidation and browser/YouTube Music regressions. On the authorized test
+account, four exact foreground-Short payloads were block-confirmed and
+independently reconciled; lookup-off, unresolved and genuine two-upload
+ambiguity cases remained off-chain. The bounded Shorts gate passed. Native
+sources remain experimental/default-off while broader v0.9 native-app evidence
+is still pending. Artifact SHA-256:
+`c6f2f1800a1cc6b6d76c260181d2402a3d648c9ecf7b3bc94ad897eeb1ce0895`.
+
+## v0.9.2 native simplified music metadata contract (implemented; field continuation pending)
+
+The ordinary native YouTube packages may publish a clean separated song title,
+artist and duration while omitting every exact video-id route. That source may
+use structured recovery only after the global raw title/channel resolver fails.
+Every bounded search candidate must be completed from its public watch page;
+the existing title grammar must reduce the canonical presentation title to the
+exact native work, the exact native artist must be one complete structural
+credit, duration must agree within five seconds, and exactly one distinct upload
+may satisfy all fields. Final frozen facts repeat the same predicate. Browser,
+foreground owner-handle and exact-id paths do not inherit this relaxation, and
+structured recoveries do not seed the raw title/channel candidate cache.
+
+An exact-ID-less native STOPPED callback waits at most ten seconds for the
+measured metadata replacement shape. If normalized title/artist/album remain
+the same but duration becomes materially contradictory, the earlier fragment
+is discarded and the replacement starts at zero. No progress carries, no ad is
+inferred, and no fragment payload is created. A different title finalizes the
+old item immediately; an exact id and browser duration refinement retain their
+prior behavior. Monitoring Stop, listener teardown and source-epoch boundaries
+invalidate the pending timer before it can sign.
+
+The source gate passed 416 tests, assembly and lint (0 errors/23 warnings).
+Version 0.9.2/code 38 and its byte-identical artifact were installed on the A12
+with SHA-256
+`5cf7fbfdd950376c8b61ede0a0effc7f843f25b249f47c06172471f18559d072`.
+Post-install A12 logs physically confirmed the transition guard: the same
+`Hey DJ` metadata changed 218→20→207 seconds within the grace and both
+superseded fragments were discarded with zero carry and no ad inference. The
+clean 207-second phase then completed; structured proof matched two distinct
+uploads (`YN-aYhtMHIw`, `1fb9DtJpbHw`), so RustedWax refused the ambiguity and
+built no payload. That physically confirms the structured refusal branch. A
+unique-match write and reconciliation remain pending; the four pre-patch misses
+remain off-chain.
+
+## v0.9.3 artist-aware budget and immutable native continuation contract
+
+Structured native page budgeting counts only search cards that already prove
+the exact parsed work and one complete exact artist credit, with compatible
+duration where supplied. The eight-page bound, fully fetched final predicate,
+uniqueness requirement and genuine ambiguity refusal remain unchanged.
+
+A stable exact-ID-less ordinary native track may resolve while playing. A
+unique fully corroborated raw or structured result is memory-only controller-
+carry authority, not a MediaSession-published id. A vanished controller may
+defer progress only with that authority; a replacement starts at zero and may
+claim once only after independently resolving the same immutable id with
+compatible semantic metadata and duration. Different ids, no id, ambiguity,
+duration replacement, timeout, foreground-Short ownership, Stop, opt-out and
+lifecycle invalidation cannot claim the fragment. Finalization re-fetches the
+authority through its original raw or structured route and repeats final-facts
+corroboration before payload construction.
+
+Equivalent ordinary-player missing-Short diagnostics are rate-limited to one
+reminder per 30 seconds after dynamic trigger prefixes and node counts are
+canonicalized. Observer events, proof freshness, proof-loss grace and scoring
+are unchanged; proof-frozen/expired transitions log immediately.
+
+The source gate passed 422 tests, assembly and lint (0 errors/23 warnings).
+Version 0.9.3/code 39 and its 14,048,941-byte artifact were installed on the A12
+with SHA-256
+`d18342325d7288f5ccfe16aa549b5752e6ba2fd63d0522cd28e5ae7e65388d88`.
+The final physical-test boundary is 10:12:21 local. Diagnostic coalescing is
+physically confirmed; unique-write and same-id continuation acceptance remain
+pending.
+
+## v0.9.4 structured native author/work contract
+
+For the native-only structured music route, an exact search-card or canonical
+watch-page author/channel is an independent complete artist credit even when the
+presentation title parses to a collaboration. Agreement with the separated
+MediaSession artist is still exact after the existing channel normalization;
+partial, token-overlap, substring and fuzzy matching remain forbidden.
+
+Candidate and native work comparison applies the same narrow trailing
+`ft.`/`feat.`/`featuring` reduction to both sides. This does not remove remix
+identity, arbitrary parentheticals or other words. Search-card duration
+compatibility, the eight-page limit, full page fetch, exact final duration,
+complete-set uniqueness, final re-fetch and fail-closed ambiguity are unchanged.
+The generic raw resolver, browser sources, exact-id routes and continuation
+contract are outside this patch.
+
+The field case requiring the author rule is uniquely corroborated
+`VqEbCxg2bNI`: native `Criminal` / `NATTI NATASHA` / 273s versus canonical
+`Natti Natasha ❌ Ozuna - Criminal [Official Video]`, author `NATTI NATASHA`,
+273s. Symmetric featured-work normalization exposes multiple `Ella Y Yo`
+uploads and therefore must still refuse every id. The irreconcilable
+`Si Te Dejas Llevar`, plus the measured `Te Boté`, `La Pregunta` and `Si Se Da`
+ambiguities, remain off-chain.
+
+Version 0.9.4/code 40 implements this boundary. Its focused matcher plus adjacent
+resolver/carry/browser regressions passed, followed by the complete uncached
+425-test suite with 0 failures, errors or skips. Assembly passed; lint passed at
+0 errors/23 existing warnings; `git diff --check` passed. The source and copied
+14,048,941-byte APKs have SHA-256
+`cbaebadc91d0045b6bd7a2abec8aaacefb2e914782a404d705b24890d4c9ccbf`.
+The exact artifact connected on the A12 at 10:59:34 local with version, installed
+bytes, settings, Notification Access, both accessibility bindings and USB
+stay-awake verified. Its joined `El Efecto` immediately retained the measured
+two-id ambiguity refusal. Subsequent multi-id and bounded no-result observations
+also remained off-chain, provisional/different-duration phases carried zero
+time, and an unresolved controller replacement claimed nothing. A stable
+416-second `Ella Y Yo` / `Pepe Quintana - Topic` observation uniquely resolved
+to `CGjuWHEPxgc`, established immutable authority, finalized at 416/416 seconds,
+re-fetched the same page and block-confirmed the one linked payload as tx
+`49a46d159658d257706c9a3c6b32eed4ddd29ca1` in block 108,734,261 on two Hive
+nodes, with `CGjuWHEPxgc` reconciled on the public profile. The code-40
+unique-write acceptance is complete.
+
+## v0.9.5 native playlist-derived identity contract (implemented)
+
+Native YouTube publishes no video id on any surface a third-party app can read.
+Every one was measured empty: `MediaMetadata`, the MediaSession queue, the
+session-activity `PendingIntent`, the media notification, the accessibility tree
+and the exported `MainAppMediaBrowserService`, which returns an
+`__EMPTY_ROOT__` with zero children. Identity for native sessions therefore
+cannot be sharpened by better comparison; the candidate set has to be reduced.
+
+The playlist being played is that reduced set. A latch may be established only
+from `com.google.android.youtube`, only from a visible `yt:position` parsing as
+`N/M` with `1 ≤ N ≤ M`, and only with a non-blank bounded playlist name. It is
+converted to a playlist id by one bounded playlist-filtered search in which
+**exactly one** result's normalized title equals the observed name; zero or
+several refuse, as does a result contradicting an observed owner or total.
+
+Absence of the playlist bar never drops the latch — four mechanisms hide it
+while the user is still in the playlist (pre-roll ad, miniplayer, scroll
+position, fullscreen) and none is distinguishable from leaving. Only a
+positively different playlist name, or an explicit lifecycle reset, replaces it.
+Position and `next_video_title` are logged and must never gate a scrobble:
+`yt:position` was measured reading `1/120` while the queue was demonstrably
+shuffled, and shuffle state is not observable at all.
+
+A latched playlist authorizes a scrobble only when `PlaylistPageParser.match`
+finds **exactly one** entry matching the finalized title, artist and duration —
+a second matching entry refuses — and every existing downstream gate still
+passes unchanged. The native playlist name is carried in its own
+`nativePlaylistName` field and never written into `playlistId`, which remains
+proven-URL evidence only.
+
+The full field record is `PHASE_NATIVE_PLAYLIST_IDENTITY.md`.
+
+## v0.9.6 signed-in watch-history identity contract (implemented)
+
+Resolution priority is `browser address bar → playlist entry set → watch
+history → search`. History is native `com.google.android.youtube` only, guarded
+on `session.isNative` and on the exact package; browsers and YouTube Music are
+structurally excluded, and browser behaviour is unchanged.
+
+**History supplies a candidate, never a verdict.** An entry is accepted only
+when it passes the identical three-field gate the search route applies
+(`SearchResultsParser.identityMatches`) against the frozen MediaSession tuple,
+and only when it is the sole entry in the recent window that does. Two
+indistinguishable recent entries refuse every id. A carried history-routed id is
+re-derived from the feed at finalization and must come back the same, or the
+listen refuses.
+
+**The listen is still measured locally.** History records that a video was
+started, never how much of it was played, so the threshold decision remains
+MediaSession position and playback rate. Nothing about the scrobble rules
+changes.
+
+**Session handling.** The user performs the Google sign-in; the app never sees a
+password. Only the resulting `youtube.com` cookie jar is kept, in
+`EncryptedSharedPreferences` under an Android Keystore key. It is never logged,
+never exported, never returned to a caller, and attached to exactly one
+hardcoded origin; redirects are not followed, so a 302 cannot walk it elsewhere.
+The WebView's plaintext jar is wiped once the session is in the vault, and
+disconnecting wipes the vault.
+
+**Fail-closed reasons are exact.** A dead session (`responseContext.loggedOut`
+or a redirect to sign-in) and a paused history (YouTube's own "Turn on watch
+history" control) refuse on sight. A YouTube app that is signed out, on another
+account, or in incognito is not separable from the feed, so it is diagnosed
+rather than guessed: three consecutive absences **from freshly-read feeds** stop
+the route and name all three causes. Absence against a cached feed triggers a
+re-read instead, and never counts — a lookup 60 ms into a new track was measured
+missing a 0.5-second-old cache and falling through to the search route.
+
+The build record is `PHASE_NATIVE_HISTORY.md`.
+
 ## Verification mapping
 
 Each invariant must have all four artifacts before a build is considered ready:
@@ -967,3 +1315,360 @@ Each invariant must have all four artifacts before a build is considered ready:
 | Collaborative search byline (v0.8.15) | Unique exact-title/duration hard-music candidate plus exact leading owner segment | BOOGA positive; partial/publisher/no-hard-music/ambiguity/title/duration negatives | Unique compatible id gets canonical link; contradictions remain Not logged | TESTING §§21–22 |
 | Podcast type is not music | Catalogue-type allow/deny rule | Real timer type regression | Now card remains `video` | README + TESTING classification case |
 | Every YouTube entry is linked | Video-id gate, payload-builder gate, and serialized-broadcast gate | Shorts lockup parser, completed identity, ambiguity, unresolved payload, and serialized policy regressions | Not logged names unresolved identity; quiet-bar banner says items stayed off-chain | README + TESTING v0.8.10 recovery cases |
+| Native package opt-ins (v0.9) | Exact package allowlist plus independent persisted settings and source epochs | Default/persistence, enabled/disabled package matrix and epoch invalidation tests | Two default-off switches name their exact packages | README + TESTING §23 + native phase document |
+| Native exact identity (v0.9) | Media id → media URI → artwork URI, then unique resolver fallback; canonical payload guard | Route priority, canonical URL, hostile-host/invalid-id, Shorts URI, ambiguity and finalized corroboration tests | Now/log name package, origin, id and exact route or honest refusal | README + TESTING §23 + native phase document |
+| Native package isolation (v0.9) | Package-scoped semantic/id carry, resolver cache and lifecycle teardown; no browser evidence calls | Browser/YouTube/YouTube Music carry separation, different-id, package clear and reset-epoch tests | Source package/origin and lifecycle clears are logged | TESTING §23 + native phase document |
+| Native metadata and kind (v0.9) | Supplied separated fields take precedence; native Music context below hard non-music evidence | Clean title/artist/album, podcast type/genre, native YouTube song/video tests | Now payload previews exact native fields and kind reason | README + TESTING §23 + native phase document |
+| Native ad limitation (v0.9) | No native heuristic/veto without literal structured proof; full metadata/state dump | Rule fallback and source-boundary tests plus production-source audit | Both settings and Now warn browser protection is inapplicable | README + TESTING §23 + native phase document; physical gate pending |
+| Foreground native Shorts (v0.9.1) | Exact-package structural proof, 750 ms identity stability, position-delta tracker, bounded missing-proof watchdog and literal in-player ad evidence | Parser/stabilizer/tracker, owner-handle resolver, central ad/manual/automatic, carry and lifecycle regressions | Separate grant/status, exact proof/reason, measured progress and foreground-only disclosure | README + TESTING §25 + PHASE_NATIVE_SHORTS; bounded device/write gate passed |
+| Simplified native music metadata (v0.9.2) | Native-only fully fetched parsed work/credit/duration uniqueness plus tokenized STOPPED replacement grace | Four measured shapes, presentation/credit variants, partial/containment/duration/ambiguity negatives and exact-ID-less replacement isolation | Physical zero-carry 218→20→207 replacement and two-upload structured refusal confirmed; unique-write reconciliation pending | README + TESTING §26 + PHASE_NATIVE_PLAYLIST; installed field continuation pending |
+| Native artist-aware budget and controller continuation (v0.9.3) | Exact work+complete credit before page budget; pre-resolved immutable id plus independently same-id replacement and route-matched final re-fetch | Budget noise/over-budget, same/different/unresolved id claim, duration replacement, route provenance and dynamic diagnostic-key regressions | Diagnostic coalescing, multiple unique writes and natural same-id `Unica` recreation/final write confirmed | README + TESTING §§27–28 + PHASE_NATIVE_PLAYLIST |
+| Exact native author credit and featured-work symmetry (v0.9.4) | Canonical author remains an independent complete credit; the same explicit feature suffix reduces native/candidate works | Criminal exact-author positive, partial/unrelated negatives, Ella ambiguity and Si Te Dejas contradiction fixtures | Exact APK installed; ambiguity/no-result/zero-carry controls retained; unique `CGjuWHEPxgc` write block-confirmed | README + TESTING §28 + PHASE_NATIVE_PLAYLIST |
+
+---
+
+## v0.9.7 identity and picture-in-picture contract (2026-08-06)
+
+Field evidence and per-change reasoning: [FIELD_2026-08-05.md](FIELD_2026-08-05.md) §8–§12. This
+section records the invariants that **changed**, because three of them supersede earlier rulings.
+
+### 1. The on-screen title is no longer identity evidence
+
+**Superseded:** the foreground-Short route previously refused any Short whose footer title could not
+be read unambiguously, discarding the measurement with it.
+
+YouTube removed the resource ids from the Shorts footer, so the title was being chosen as the single
+survivor of a blocklist. Five separate causes were corrected in one day and the measured acquisition
+rate stayed at roughly **one Short in six**. The title was never authority — it was a selector.
+
+**New rule.** `NativeShortParser.Result.Organic.title` may be null. A Short is proven by its
+structural player, its exact owner handle and a readable seekbar. Identity is resolved at finalize
+from the signed-in account's watch history, joined on **owner handle + duration**, and every
+candidate is still re-fetched and corroborated on its own watch page. When a title *is* present it
+must still agree exactly. Measured after the change: **8 of 8 Shorts reached a finalize.**
+
+### 2. Recency breaks a tie the other two fields cannot
+
+**Superseded:** two candidates matching all available fields refused unconditionally.
+
+With no readable title only two fields remain, and a creator who posts several Shorts of the same
+length ties them. Measured 2026-08-06: a Short counted to 100% and was discarded because its channel
+had two 57-second uploads.
+
+**New rule.** When and only when the title is unavailable and two or more candidates match owner
+handle **and** duration, the most recently watched is taken. Candidates arrive in watch-history
+order, newest first, and the Short being identified is the one playing now — so recency is a third
+field that restores uniqueness, not a coin flip. **With a title present, two full matches still
+refuse.** Handle and duration remain mandatory; recency never admits a candidate that fails either.
+
+### 3. Collaborative bylines and the `AtVEVO` channel form
+
+**Supersedes the §823 ruling** ("accept only a unique exact-title/duration *hard-music* candidate
+whose owner matches the leading segment … all weaker bylines remain contradictions").
+
+That rule was too narrow to survive the field. 26 listens in one session were lost to a channel
+comparison that was simply wrong, and watch history had already resolved every one of them:
+
+| watch page | media session | count |
+| --- | --- | --- |
+| `NickiMinajAtVEVO` | `Nicki Minaj` | 14 |
+| `La Melma Music and 2 more` | `La Melma Music` | 9 |
+| `Eladio Carrion and CAZZU ` | `Eladio Carrion` | 2 |
+| `Lucky Brown and 2 more` | `Lucky Brown` | 1 |
+
+**New rules.** (a) `AtVEVO` is stripped before `VEVO`, because stripping the bare suffix left a
+trailing `At`. (b) A byline whose **leader** is the ended channel is not a contradiction **provided
+the title and the duration also corroborate** — three agreeing fields. The hard-music and
+uniquely-resolved preconditions are dropped: history resolves these, so both flags are false when
+they arrive. A byline whose leader is a different channel still contradicts, and a name with no
+separator is not a byline.
+
+### 4. Picture-in-picture time may be credited, marked as inferred
+
+**New capability, off the measured path.** PiP publishes no progress of any kind, so elapsed
+wall-clock is credited on the paired evidence that YouTube holds a visible window
+(`UsageStatsManager`, which names packages) *and* media audio is started (`AudioManager`, which
+cannot). Neither alone is sufficient and neither is used alone.
+
+Binding constraints:
+
+- Never used while a readable seekbar exists; it is a fallback, not a source.
+- Only for the exact measured PiP parser signature. A swipe, a blown budget or a hidden root are
+  "gone", not "unmeasurable", and must never accrue.
+- Credit advances only between two consecutive observations that both say playing; one step is
+  capped at 3s; measured + inferred never exceeds the item's own duration.
+- Carried separately as `SessionSnapshot.inferredPlayedMs` to the log and the refusal wording, so
+  every such listen states how much was measured and how much deduced.
+- Its own switch, on by default, inert without Usage Access, absent below API 29.
+
+**Accepted residual risk, recorded rather than hidden:** another app playing audio while a YouTube
+PiP window sits paused is indistinguishable from playback and would be credited. This is the cost of
+counting PiP at all.
+
+### 5. A completed listen is banked when it completes
+
+**Superseded:** a foreground Short ended only when something took it away.
+
+Left alone a Short loops, so it accumulated indefinitely and banked nothing — measured, a 105s Short
+reached `measured total 461s` across four loops without a single finalize. Reaching its own length
+is the end of a listen, so it finalizes there, **once** per viewing, which is all `capForKind`
+permits regardless.
+
+### Unchanged and not negotiable
+
+Every entry still requires a verified video id and a canonical hyperlink; an unresolvable listen
+still fails closed with an exact logged reason; the dedup ledger is untouched; browser behaviour is
+unchanged; and no native gate applies outside `session.isNative`.
+
+## v0.9.8 identity contract (2026-08-06)
+
+Field evidence and per-change reasoning: [FIELD_2026-08-05.md](FIELD_2026-08-05.md) §14. One ruling
+is superseded; the other two entries record rules that were never written down.
+
+### 1. A video's two published names are both its name
+
+**Supersedes the v0.9.7 §1 wording** that the displayed title is *substituted* for the canonical one
+when it equals the frozen title.
+
+Substitution was the defect. The displayed name replaced the canonical one whenever their title
+**keys** matched, and an all-hashtag title has an empty key — so every such title matched vacuously
+and the wrong one of the two was compared. Measured 2026-08-06 on `RTQFqbCPUGg`: the upload is
+Spanish, the resolver's `en-US` fetch renders the same page in English, and the corroborator refused
+a 100% listen because the English rendering is not the Spanish one the screen showed.
+
+**New rule.** A watch page may publish two names for one id — `videoDetails.title` and the
+`videoPrimaryInfoRenderer` rendering. Both are compared against the frozen title and the
+**strongest** evidence decides; neither is preferred and neither can weaken the other. This admits
+no new candidate: both names come from the one page being verified for the one id, and duration,
+channel/owner handle, and the unique-id rule all still bind independently. A refusal names both.
+
+### 2. A stood-down watch-history route must say so, and must not stand down over one track
+
+**Not previously written down**, and both halves cost listens on 2026-08-06.
+
+`WatchHistoryHealth` refuses the route after three consecutive misses, on the reasoning that the
+YouTube app is signed out, on another account, or in incognito. That diagnosis is about *tracks*
+going missing, so:
+
+- **A miss is per track.** Consecutive misses of the same track count once. One video replayed three
+  times armed a fifteen-minute pause on a claim ("the last 3 native tracks were not written") that
+  was true of exactly one.
+- **A refusal is never silent.** `recentShortIds` returned an empty list without a line in the log,
+  and two untitled Shorts at 62% and 77% were refused inside that pause with a message blaming
+  sign-in. A route that is not running states why, in the log and in the refusal the user reads.
+
+### 3. Unmeasured lead-in is stated, never credited
+
+**Not previously written down.** Measured 2026-08-06: YouTube published a MediaSession for
+`_zR6ROjoOX0` for seven seconds, ninety-four seconds into a 227-second video, and nothing before or
+after. The finalize line read `played 12s of 227s` and looked like a fault.
+
+**New rule.** Where the player was when RustedWax first saw a track is **not** evidence that the
+track played that far in this session — a resumed video opens mid-track having played nothing now —
+so it is never credited. It *is* reported: a track first seen more than 10s in says so on its
+finalize line, unless progress was carried across a replacement session, which accounts for its own
+lead-in. Silence about what could not be measured is the failure mode this exists to prevent.
+
+## v0.9.9 observation contract (2026-08-06)
+
+Field evidence and per-change reasoning: [FIELD_2026-08-05.md](FIELD_2026-08-05.md) §15. Both entries
+are about *reporting*; neither changes what may be credited or scrobbled.
+
+### 1. An app is visible while any of its activities is started
+
+**Supersedes the implicit rule** in the picture-in-picture probe that the most recent `ACTIVITY_*`
+event names the app's current state.
+
+Measured 2026-08-06: opening a Short by URL emits `RESUMED MainActivity` and then
+`STOPPED Shell_UrlActivity` in the same second, so the departing activity's stop overwrote the
+arriving one's resume and the probe called a visible, audible YouTube gone. PiP credit reads the same
+signal, so this silently refused time to any Short opened through an activity transition.
+
+**New rule.** Visibility is per activity. `ACTIVITY_RESUMED` and `ACTIVITY_PAUSED` both mean visible —
+a picture-in-picture window leaves its activity paused, which is the case the probe exists for — and
+only `ACTIVITY_STOPPED` removes one. The app is visible while any remain. Activities are keyed by
+class name because instance ids are not public API, so two live instances of one class share a key
+and stopping either reads as stopping both: that fails toward *not* visible, which under-credits
+rather than over-credits.
+
+### 2. An outage is only reported when a listen is being lost
+
+**Supersedes the v0.9.x instrumentation rule** that event silence with the screen on, on any YouTube
+surface, is reportable.
+
+That rule produced 111 reports in a day, on a day that scrobbled 46 tracks. Two of its three states
+were benign: a latched Short is measured by the service's own poll while YouTube emits no callbacks
+at all, and a capture that finds no player is usually the user having left the Shorts feed.
+
+**New rule.** A report requires all of: the screen on; the surface not another app; no successful
+capture within the window; and independent evidence that something is playing which nothing else is
+counting. "Nothing else is counting" excludes MediaSession-measured watch playback and
+picture-in-picture time the inference is already crediting. The evidence is media audio `started`
+paired with a visible YouTube window — never the accessibility tree, which is the suspect, and never
+the MediaSession, which publishes `active=false`, `state=1` and no metadata at all while a Short
+plays.
+
+Where that evidence cannot be obtained — no Usage Access — only the state in which the service can
+see no window at all still reports, and it says outright that it does not know whether anything was
+playing.
+
+**Accepted residual, recorded rather than hidden:** a Short played with its audio stopped, on a
+device without Usage Access, can still be lost without a line. Under-reporting was chosen
+deliberately over a report the reader learns to ignore.
+
+## v0.9.10 Shorts measurement contract (2026-08-07)
+
+Field evidence: [FIELD_2026-08-05.md](FIELD_2026-08-05.md) §16.
+
+### 1. A Short is proven by its player and its handle; the seekbar is evidence, not a precondition
+
+**Supersedes the v0.9.7 rule** that "a Short is proven by its structural player, its exact owner
+handle and a readable seekbar".
+
+Measured 2026-08-07: YouTube stopped rendering the Shorts progress bar entirely — no `SeekBar` node
+in the tree and no bar on screen — while the player, the container, the exact handle and the audio
+were all still there. One tap on the video restores it for the session, which an observer may not do
+for the user. 47 of 71 Shorts in 85 minutes were lost, not because the wall-clock fallback refused
+but because it never ran: a Short with no reading could not be *started*, and nothing that is not
+started can accrue anything.
+
+**New rule.** A visible player root, one time-bar container and exactly one exact owner handle prove
+a foreground Short. A readable seekbar time is credited as measurement when present and is otherwise
+absent evidence, not a refusal. Time for a Short with no reading is credited only by the
+picture-in-picture inference, on the same paired evidence, and is always reported as inferred.
+Until the length is known the accrual ceiling is the format's own three-minute maximum; a seekbar
+appearing mid-viewing supplies the real length and continues the same Short.
+
+**No handle and no readable time is unchanged**: that is the picture-in-picture signature, and it
+still only ever credits a Short that was already proven.
+
+### 2. Identity needs any two of title, length and handle — never one
+
+**Extends the v0.9.7 ruling**, which dropped the title and leaned on handle + duration.
+
+The length came from the seekbar, so it can now be absent too. The handle is the field that has
+survived every restyle, so it is mandatory; the other two are interchangeable.
+
+| available | gate |
+| --- | --- |
+| handle + length | unique match on handle + length, recency breaks a tie |
+| handle + title | unique match on handle + title |
+| handle only | refused |
+
+A field that *is* published must still agree. Uniqueness is untouched: two candidates matching
+everything available still refuse, and every candidate is still re-fetched and corroborated on its
+own watch page.
+
+## v0.9.11 – v0.9.12 continuity contract (2026-08-07)
+
+Field evidence: [FIELD_2026-08-05.md](FIELD_2026-08-05.md) §17. Every entry here exists because one
+viewing was being cut into fragments that individually cleared nothing.
+
+### 1. An interrupted Short resumes rather than restarts
+
+**New rule.** A foreground Short whose player goes away and returns with the same identity —
+same title, same owner handle, same source epoch, and a length that has not changed — within 30
+seconds resumes the progress it had earned. Measured 2026-08-07: switching between the Home and
+Shorts tabs outlasts the 3-second proof grace, so one 32-second Short finalized at `0s`, `3s` and
+`5s` across three switches and never reached a threshold it had long since earned in total.
+
+Merging two genuinely separate viewings of one Short is harmless and accepted: `capForKind` and the
+dedup ledger already cap a video to one scrobble.
+
+### 2. A Short with nothing left to earn ends when it is earned
+
+**New rule.** A Short with no readable length can never reach its own duration, so it could only end
+when something took it away — one sat active for seven minutes. It now finalizes the moment its
+wall-clock inference is exhausted, because nothing further can be credited. Prompt finalization also
+keeps it inside the recent-history window its identity depends on.
+
+### 3. Empty metadata is not a track
+
+**Supersedes** the implicit rule that any metadata change with a different identity ends the current
+track.
+
+YouTube recreates its MediaSession on every tab switch and publishes empty metadata first — no
+title, no duration — with the real values following a fraction of a second later. Treating that as a
+track change finalized a phantom `<untitled> — played 0s of 0s` and, worse, ended the real track
+against it: a 155-second trailer accumulated 18 seconds of a several-minute viewing.
+
+**New rule.** A session holding no title, no duration and no played time has not been playing a
+track that can end. When its real metadata arrives the same Watch adopts that identity, restores any
+carried progress, and continues. A genuinely ended track still ends by `STOPPED`, by session
+destruction, or by the replacement that follows.
+
+### 4. A field the enrichment fetch did not carry is absence, not contradiction
+
+**Supersedes the v0.9.7 rule** that a foreground Short requires the exact owner handle from *both*
+the resolved candidate and the final watch facts.
+
+Measured 2026-08-07: history resolved a Short and corroborated it on its own watch page, then the
+enrichment fetch of that same page returned without an `ownerProfileUrl`, and an 83-second listen was
+refused for a missing field.
+
+**New rule.** A handle absent from the final facts does not refuse, because the candidate's own page
+has already proven it for that same id. A handle that is **present and different** still refuses.
+Seeding the run-local candidate cache continues to require both, because a cached candidate is later
+re-used without its page in front of it.
+
+## v0.9.13 hand-off and identity contract (2026-08-07)
+
+Field evidence: [FIELD_2026-08-05.md](FIELD_2026-08-05.md) §18. The first two entries each describe
+a listen that was measured correctly and then thrown away.
+
+### 1. Handing the player to the foreground Shorts route is not a discard
+
+**Supersedes** the implicit rule that suppressing the MediaSession for a proven foreground Short may
+reset its accumulated progress.
+
+When the foreground Shorts route acquires a Short it takes ownership of the player, and the
+MediaSession Watch stops counting so the same seconds are not scored twice. Measured 2026-08-07:
+zeroing its accumulator also deleted the listen it was in the middle of, with no finalization —
+`THE RUN — Official Trailer`, 85s of 104s, gone between two log lines. Ten listens in one log,
+up to 168 seconds each.
+
+**New rule.** Progress accumulated before the hand-off belongs to whatever the MediaSession was
+playing. It is finalized, not discarded, unless the Short taking over is that same item — decided on
+published evidence: the title when both surfaces publish one, the length when the Short's footer
+title is absent, and otherwise not proven. A pending continuation cannot survive the hand-off either,
+because its expiry callback would land on a suppressed Watch where finalization is a no-op; it is
+decided at the hand-off instead.
+
+The asymmetry is deliberate: refusing to call two things the same costs at most one extra
+finalization, which `capForKind` and the dedup ledger already cap to one transaction. Wrongly calling
+them the same destroys an earned listen.
+
+### 2. An owner handle is not an ASCII string
+
+**Supersedes the v0.9.10 rule's implicit character set.** The handle remains the one mandatory
+identity field for a foreground Short; what counts as a handle widens.
+
+Measured 2026-08-07: the footer read `Go to channel @eduardaarebouçass` and was refused on the
+cedilla, so the whole listen was refused. Every creator whose handle is not spelled in ASCII was
+invisible.
+
+**New rule.** A handle is letters, marks, digits and YouTube's `.`, `_`, `-`, three to thirty
+characters, in any script. It is composed to NFC before comparison, so one handle encoded two ways is
+one handle. NFC and not NFKC: canonical equivalence only, because an identity field may never fold
+two distinct characters together.
+
+The same widening applies to `ownerProfileUrl`, where the handle is corroborated. Non-ASCII characters
+are percent-encoded before URL parsing and escapes are decoded only *after* the structure is settled,
+and only when they stand for a character outside ASCII — so `%2F` and `%40` remain refused and no
+structural character can be spelled sideways.
+
+### 3. One banked listen is finalized once
+
+**New rule.** A foreground Short that banks a complete listen on reaching its own length (v0.9.11) is
+not finalized again when something later takes it away — not by the next Short, not by an ad
+transition, not by the proof-expiry grace. Measured 2026-08-07: one viewing was resolved, enriched
+and broadcast twice, and only the dedup ledger stopped the second write. The ledger is the last line
+of defence, not the design.
+
+### 4. A refusal names what it refused
+
+**New rule.** Where two unrelated failures can produce the same refusal, the diagnostic distinguishes
+them and carries the evidence it decided on, bounded. `expected exactly one exact visible owner
+handle` now says whether none or several were found, and what the footer actually held. Repeated
+diagnostics stay coalesced by keying the throttle on the failure's shape rather than on its detail,
+so evidence never costs a log flood.

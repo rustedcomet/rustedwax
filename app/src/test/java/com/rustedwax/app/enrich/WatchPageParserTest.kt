@@ -38,6 +38,24 @@ class WatchPageParserTest {
 		assertEquals(254L, facts.lengthSeconds)
 	}
 
+	@Test
+	fun `extracts exact owner handle only from canonical microformat profile URL`() {
+		val facts = WatchPageParser.parsePlayerResponse(
+			"s8ZQSxuKPb0",
+			"""{"videoDetails":{"videoId":"s8ZQSxuKPb0","title":"The Mask"},
+			"microformat":{"playerMicroformatRenderer":{
+			"ownerProfileUrl":"http://www.youtube.com/@SonaDarus"}}}""",
+		)
+		assertEquals("@sonadarus", facts.ownerHandle)
+		val hostile = WatchPageParser.parsePlayerResponse(
+			"s8ZQSxuKPb0",
+			"""{"videoDetails":{"videoId":"s8ZQSxuKPb0"},
+			"microformat":{"playerMicroformatRenderer":{
+			"ownerProfileUrl":"https://youtube.com.evil.example/@SonaDarus"}}}""",
+		)
+		assertNull(hostile.ownerHandle)
+	}
+
 	/**
 	 * `lengthSeconds` does two jobs. It is the duration when the media session
 	 * publishes none — 10 shorts were skipped as "no duration" in the 2026-07-29

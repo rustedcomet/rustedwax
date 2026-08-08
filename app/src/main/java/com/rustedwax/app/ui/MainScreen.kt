@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -42,9 +43,11 @@ import androidx.compose.ui.unit.sp
 import com.rustedwax.app.scrobble.ScrobbleEngine
 import com.rustedwax.app.detect.ScrobbleBuilder
 import com.rustedwax.app.detect.SessionSnapshot
+import com.rustedwax.app.detect.NativeShortsObserver
 import com.rustedwax.app.detect.YouTubeProbe
 import com.rustedwax.app.enrich.VideoFacts
 import com.rustedwax.app.storage.KeyVault
+import com.rustedwax.app.storage.YouTubeSessionVault
 import kotlin.math.roundToInt
 
 /**
@@ -68,22 +71,40 @@ fun MainScreen(
 	accountStatusIsError: Boolean,
 	monitoring: Boolean,
 	autoScrobble: Boolean,
+	nativeYouTube: Boolean,
+	nativeYouTubeMusic: Boolean,
+	nativeShortsGranted: Boolean,
+	nativeShortsDropped: Boolean,
+	nativeShortsStatus: NativeShortsObserver.Status,
 	thresholdPercent: Int,
 	urlWatcherEnabled: Boolean,
+	urlWatcherDropped: Boolean,
 	enrichment: Boolean,
 	shortClips: Boolean,
+	pipInference: Boolean,
+	usageAccessGranted: Boolean,
 	recent: List<ScrobbleEngine.ScrobbleRecord>,
 	skipped: List<ScrobbleEngine.SkipRecord>,
 	mutedIds: Set<String>,
 	tracksWithoutVideoId: Int,
 	queuedCount: Int,
+	youTubeAccount: YouTubeSessionVault.Session?,
+	watchHistory: Boolean,
+	watchHistoryRefusal: String?,
+	onToggleWatchHistory: (Boolean) -> Unit,
+	onConnectYouTube: () -> Unit,
+	onDisconnectYouTube: () -> Unit,
 	onGrantAccess: () -> Unit,
 	onExportLog: () -> Unit,
 	onClearLog: () -> Unit,
 	onToggleMonitoring: (Boolean) -> Unit,
+	onToggleNativeYouTube: (Boolean) -> Unit,
+	onToggleNativeYouTubeMusic: (Boolean) -> Unit,
 	onOpenAccessibility: () -> Unit,
 	onToggleEnrichment: (Boolean) -> Unit,
 	onToggleShortClips: (Boolean) -> Unit,
+	onTogglePipInference: (Boolean) -> Unit,
+	onGrantUsageAccess: () -> Unit,
 	onToggleAutoScrobble: (Boolean) -> Unit,
 	onMute: (ScrobbleEngine.ScrobbleRecord) -> Unit,
 	onRetryQueue: () -> Unit,
@@ -120,21 +141,17 @@ fun MainScreen(
 				)
 			}
 
-			ScrobbleControls(
+			// One line, not the whole settings card. Everything below this point
+			// gets the rest of a 720×1600 screen, which the card used to spend
+			// on itself — and would have spent more of with every feature added.
+			// The switches now live on their own scrolling tab.
+			StatusStrip(
 				monitoring = monitoring,
 				autoScrobble = autoScrobble,
-				thresholdPercent = thresholdPercent,
 				hasKey = account != null,
+				thresholdPercent = thresholdPercent,
 				queuedCount = queuedCount,
-				urlWatcherEnabled = urlWatcherEnabled,
-				enrichment = enrichment,
-				shortClips = shortClips,
 				onToggleMonitoring = onToggleMonitoring,
-				onOpenAccessibility = onOpenAccessibility,
-				onToggleEnrichment = onToggleEnrichment,
-				onToggleShortClips = onToggleShortClips,
-				onToggle = onToggleAutoScrobble,
-				onRetryQueue = onRetryQueue,
 			)
 			error?.let {
 				Text(
@@ -206,6 +223,9 @@ fun MainScreen(
 				OutlinedButton(onClick = { tab = 4 }) {
 					Text(if (tab == 4) "▸ Log" else "Log")
 				}
+				OutlinedButton(onClick = { tab = 5 }) {
+					Text(if (tab == 5) "▸ Settings" else "Settings")
+				}
 				// No weight spacer: inside a scrolling row the width is
 				// unbounded, and `weight` can't resolve against infinity.
 				if (tab == 4) OutlinedButton(onClick = onExportLog) { Text("Export") }
@@ -218,7 +238,7 @@ fun MainScreen(
 						thresholdPercent = thresholdPercent,
 						canBroadcast = account != null,
 					busy = accountBusy,
-					lookupsOn = enrichment && urlWatcherEnabled,
+					lookupsOn = enrichment,
 					onBroadcast = onBroadcastSession,
 				)
 				1 -> AccountTab(
@@ -233,8 +253,114 @@ fun MainScreen(
 
 				2 -> HistoryList(recent, mutedIds, onMute)
 				3 -> SkippedList(skipped)
-				else -> LogList(logLines, onClearLog)
+				4 -> LogList(logLines, onClearLog)
+
+				// Its own scroll, so a switch added next month pushes nothing
+				// off the bottom of a small screen.
+				else -> Column(
+					Modifier
+						.fillMaxSize()
+						.verticalScroll(rememberScrollState()),
+				) {
+					ScrobbleControls(
+						monitoring = monitoring,
+						autoScrobble = autoScrobble,
+						nativeYouTube = nativeYouTube,
+						nativeYouTubeMusic = nativeYouTubeMusic,
+						nativeShortsGranted = nativeShortsGranted,
+						nativeShortsDropped = nativeShortsDropped,
+						nativeShortsStatus = nativeShortsStatus,
+						thresholdPercent = thresholdPercent,
+						hasKey = account != null,
+						queuedCount = queuedCount,
+						urlWatcherEnabled = urlWatcherEnabled,
+						urlWatcherDropped = urlWatcherDropped,
+						enrichment = enrichment,
+						shortClips = shortClips,
+					pipInference = pipInference,
+					usageAccessGranted = usageAccessGranted,
+						youTubeAccount = youTubeAccount,
+						watchHistory = watchHistory,
+						watchHistoryRefusal = watchHistoryRefusal,
+						onToggleNativeYouTube = onToggleNativeYouTube,
+						onToggleNativeYouTubeMusic = onToggleNativeYouTubeMusic,
+						onOpenAccessibility = onOpenAccessibility,
+						onToggleEnrichment = onToggleEnrichment,
+						onToggleShortClips = onToggleShortClips,
+					onTogglePipInference = onTogglePipInference,
+					onGrantUsageAccess = onGrantUsageAccess,
+						onToggleWatchHistory = onToggleWatchHistory,
+						onConnectYouTube = onConnectYouTube,
+						onDisconnectYouTube = onDisconnectYouTube,
+						onToggle = onToggleAutoScrobble,
+						onRetryQueue = onRetryQueue,
+					)
+					Spacer(Modifier.height(16.dp))
+				}
 			}
+		}
+	}
+}
+
+/**
+ * The one line that has to be visible from every tab.
+ *
+ * Monitoring is the switch that decides whether anything is read at all, so
+ * "is it on, and can I stop it right now" must never be behind a tab. Nothing
+ * else qualifies: the rest are set once and left, which is exactly why they
+ * were costing a third of the screen on a 720×1600 phone.
+ */
+@Composable
+private fun StatusStrip(
+	monitoring: Boolean,
+	autoScrobble: Boolean,
+	hasKey: Boolean,
+	thresholdPercent: Int,
+	queuedCount: Int,
+	onToggleMonitoring: (Boolean) -> Unit,
+) {
+	Row(
+		verticalAlignment = Alignment.CenterVertically,
+		modifier = Modifier
+			.fillMaxWidth()
+			.padding(top = 8.dp),
+	) {
+		Column(Modifier.weight(1f)) {
+			Text(
+				if (monitoring) "Monitoring" else "Stopped",
+				style = MaterialTheme.typography.titleSmall,
+				color = if (monitoring) {
+					MaterialTheme.colorScheme.onSurface
+				} else {
+					MaterialTheme.colorScheme.error
+				},
+			)
+			Text(
+				buildString {
+					append(
+						when {
+							!monitoring -> "Nothing is being read"
+							!hasKey -> "Watching — add a Hive key to scrobble"
+							autoScrobble -> "Scrobbling at $thresholdPercent% played"
+							else -> "Watching — automatic scrobbling is off"
+						},
+					)
+					if (queuedCount > 0) append(" · $queuedCount waiting to send")
+				},
+				style = MaterialTheme.typography.bodySmall,
+				maxLines = 1,
+				overflow = TextOverflow.Ellipsis,
+			)
+		}
+		Button(
+			onClick = { onToggleMonitoring(!monitoring) },
+			colors = if (monitoring) {
+				ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+			} else {
+				ButtonDefaults.buttonColors()
+			},
+		) {
+			Text(if (monitoring) "Stop" else "Start")
 		}
 	}
 }
@@ -251,54 +377,131 @@ fun MainScreen(
 private fun ScrobbleControls(
 	monitoring: Boolean,
 	autoScrobble: Boolean,
+	nativeYouTube: Boolean,
+	nativeYouTubeMusic: Boolean,
+	nativeShortsGranted: Boolean,
+	nativeShortsDropped: Boolean,
+	nativeShortsStatus: NativeShortsObserver.Status,
 	thresholdPercent: Int,
 	hasKey: Boolean,
 	queuedCount: Int,
 	urlWatcherEnabled: Boolean,
+	urlWatcherDropped: Boolean,
 	enrichment: Boolean,
 	shortClips: Boolean,
-	onToggleMonitoring: (Boolean) -> Unit,
+	pipInference: Boolean,
+	usageAccessGranted: Boolean,
+	youTubeAccount: YouTubeSessionVault.Session?,
+	watchHistory: Boolean,
+	watchHistoryRefusal: String?,
+	onToggleNativeYouTube: (Boolean) -> Unit,
+	onToggleNativeYouTubeMusic: (Boolean) -> Unit,
 	onOpenAccessibility: () -> Unit,
 	onToggleEnrichment: (Boolean) -> Unit,
 	onToggleShortClips: (Boolean) -> Unit,
+	onTogglePipInference: (Boolean) -> Unit,
+	onGrantUsageAccess: () -> Unit,
+	onToggleWatchHistory: (Boolean) -> Unit,
+	onConnectYouTube: () -> Unit,
+	onDisconnectYouTube: () -> Unit,
 	onToggle: (Boolean) -> Unit,
 	onRetryQueue: () -> Unit,
 ) {
+	val nativeShortProofAvailable = nativeYouTube && nativeShortsGranted
+	val anyShortProofAvailable = urlWatcherEnabled || nativeShortProofAvailable
 	Card(
 		modifier = Modifier
 			.fillMaxWidth()
 			.padding(top = 8.dp),
 	) {
 		Column(Modifier.padding(12.dp)) {
+			// Monitoring itself is not here: it is the one control that has to
+			// be reachable from every tab, so it lives in the always-visible
+			// strip above rather than twice.
+			Text(
+				if (monitoring) {
+					"Watching YouTube playback in Brave and Chrome" +
+						if (nativeYouTube || nativeYouTubeMusic) " plus enabled native apps" else ""
+				} else {
+					"Monitoring is stopped — no sessions or notifications are being read"
+				},
+				style = MaterialTheme.typography.bodySmall,
+				color = if (monitoring) {
+					MaterialTheme.colorScheme.onSurface
+				} else {
+					MaterialTheme.colorScheme.error
+				},
+			)
+
+			Spacer(Modifier.height(8.dp))
+			HorizontalDivider()
+			Spacer(Modifier.height(8.dp))
+
 			Row(verticalAlignment = Alignment.CenterVertically) {
 				Column(Modifier.weight(1f)) {
-					Text("Monitoring", style = MaterialTheme.typography.titleSmall)
-						Text(
-							if (monitoring) {
-								"Watching YouTube playback in Brave and Chrome"
+					Text("Native YouTube", style = MaterialTheme.typography.titleSmall)
+					Text(
+						if (nativeYouTube) {
+							"On — reads com.google.android.youtube MediaSessions. The separate " +
+								"experimental grant below adds foreground Shorts proof."
 						} else {
-							"Stopped — no sessions or notifications are being read"
+							"Off (default) — native YouTube sessions and foreground Shorts are ignored."
 						},
 						style = MaterialTheme.typography.bodySmall,
-						color = if (monitoring) {
-							MaterialTheme.colorScheme.onSurface
-						} else {
-							MaterialTheme.colorScheme.error
-						},
 					)
 				}
-				Button(
-					onClick = { onToggleMonitoring(!monitoring) },
-					colors = if (monitoring) {
-						ButtonDefaults.buttonColors(
-							containerColor = MaterialTheme.colorScheme.error,
-						)
-					} else {
-						ButtonDefaults.buttonColors()
-					},
-				) {
-					Text(if (monitoring) "Stop" else "Start")
+				Switch(
+					checked = nativeYouTube,
+					onCheckedChange = onToggleNativeYouTube,
+				)
+			}
+
+			Spacer(Modifier.height(8.dp))
+			Row(verticalAlignment = Alignment.CenterVertically) {
+				Column(Modifier.weight(1f)) {
+					Text("Foreground Shorts evidence", style = MaterialTheme.typography.titleSmall)
+					Text(
+						when {
+							nativeShortsDropped ->
+								"Stopped on its own — this was granted and Android has since " +
+									"disabled it, which is what happens when the service crashes. " +
+									"No foreground Short has been read since. Re-enable RustedWax — " +
+									"Native Shorts in Accessibility."
+							!nativeShortsGranted ->
+								"Experimental grant off — enable RustedWax — Native Shorts in " +
+									"Accessibility. It is OS-scoped only to com.google.android.youtube."
+							!nativeYouTube ->
+								"Granted but idle — turn on Native YouTube to use it."
+							nativeShortsStatus.completePlayerProof ->
+								"Complete foreground player proof: ${nativeShortsStatus.exactReason}."
+							else -> "Granted — ${nativeShortsStatus.exactReason}."
+						} + " Foreground Shorts only; PiP/background time is not counted.",
+						style = MaterialTheme.typography.bodySmall,
+					)
 				}
+				OutlinedButton(onClick = onOpenAccessibility) {
+					Text(if (nativeShortsGranted) "Manage" else "Enable")
+				}
+			}
+
+			Spacer(Modifier.height(8.dp))
+			Row(verticalAlignment = Alignment.CenterVertically) {
+				Column(Modifier.weight(1f)) {
+					Text("Native YouTube Music", style = MaterialTheme.typography.titleSmall)
+					Text(
+						if (nativeYouTubeMusic) {
+							"On — reads com.google.android.apps.youtube.music MediaSessions. Browser " +
+								"visible-ad protection does not cover the native app."
+						} else {
+							"Off (default) — enable only for device testing; native ad detection is unproven."
+						},
+						style = MaterialTheme.typography.bodySmall,
+					)
+				}
+				Switch(
+					checked = nativeYouTubeMusic,
+					onCheckedChange = onToggleNativeYouTubeMusic,
+				)
 			}
 
 			Spacer(Modifier.height(8.dp))
@@ -332,10 +535,14 @@ private fun ScrobbleControls(
 				Column(Modifier.weight(1f)) {
 					Text("Browser evidence access", style = MaterialTheme.typography.titleSmall)
 					Text(
-						if (urlWatcherEnabled) {
-							"On — exact site/video link and visible YouTube ad labels"
-						} else {
-							"Off — no video link or visible ad-label detection"
+						when {
+							urlWatcherDropped ->
+								"Stopped on its own — this was granted and Android has since " +
+									"disabled it, which is what happens when the service crashes. " +
+									"Nothing watched in Chrome or Brave has been recorded since."
+							urlWatcherEnabled ->
+								"On — exact site/video link and visible YouTube ad labels"
+							else -> "Off — no video link or visible ad-label detection"
 						},
 						style = MaterialTheme.typography.bodySmall,
 					)
@@ -350,33 +557,74 @@ private fun ScrobbleControls(
 				Column(Modifier.weight(1f)) {
 					Text("Look videos up", style = MaterialTheme.typography.titleSmall)
 					Text(
-						when {
-							!urlWatcherEnabled -> "Needs browser evidence access"
-							enrichment -> "On — fetches the video page for artist and category"
-							else -> "Off — titles are parsed on-device only"
+						if (enrichment) {
+							"On — fetches video facts and may recover one uniquely corroborated id"
+						} else {
+							"Off — only exact ids published by browser/native MediaSessions can scrobble"
 						},
 						style = MaterialTheme.typography.bodySmall,
 					)
 				}
 				Switch(
-					checked = enrichment && urlWatcherEnabled,
+					checked = enrichment,
 					onCheckedChange = onToggleEnrichment,
-					enabled = urlWatcherEnabled,
 				)
 			}
 
-			// The dependency is stated rather than implied. Both switches above
-			// supply half the proof this rule needs — the address bar proves the
-			// /shorts/ path, the lookup proves the video exists — so with either
-			// off it is a no-op, and an unexplained no-op reads as a bug.
+			// The only route that names an exact id for native playback outside a
+			// playlist. Two independent things: whether an account is connected,
+			// and whether the route is allowed to use it.
+			Spacer(Modifier.height(8.dp))
+			Row(verticalAlignment = Alignment.CenterVertically) {
+				Column(Modifier.weight(1f)) {
+					Text("YouTube watch history", style = MaterialTheme.typography.titleSmall)
+					Text(
+						when {
+							youTubeAccount == null ->
+								"Not connected — native videos outside a playlist can only be " +
+									"identified by search, which sometimes cannot tell two " +
+									"uploads apart and then logs nothing."
+							!nativeYouTube -> "Connected but idle — turn on Native YouTube to use it."
+							!enrichment -> "Needs video lookups to be on."
+							watchHistoryRefusal != null -> "Standing down: $watchHistoryRefusal"
+							watchHistory ->
+								"On — reads only youtube.com/feed/history, as " +
+									(youTubeAccount.accountLabel ?: "the connected account") +
+									", to name the video that just played."
+							else -> "Off — the stored session is kept but not used."
+						},
+						style = MaterialTheme.typography.bodySmall,
+					)
+				}
+				if (youTubeAccount == null) {
+					OutlinedButton(onClick = onConnectYouTube) { Text("Sign in") }
+				} else {
+					Switch(
+						checked = watchHistory && nativeYouTube && enrichment,
+						onCheckedChange = onToggleWatchHistory,
+						enabled = nativeYouTube && enrichment,
+					)
+				}
+			}
+			if (youTubeAccount != null) {
+				Row(
+					horizontalArrangement = Arrangement.spacedBy(8.dp),
+					modifier = Modifier.padding(top = 4.dp),
+				) {
+					OutlinedButton(onClick = onDisconnectYouTube) { Text("Disconnect account") }
+				}
+			}
+
+			// A browser /shorts/ URL or a complete native foreground player can
+			// supply source proof. Lookup still must resolve one exact public video.
 			Spacer(Modifier.height(8.dp))
 			Row(verticalAlignment = Alignment.CenterVertically) {
 				Column(Modifier.weight(1f)) {
 					Text("Short clips", style = MaterialTheme.typography.titleSmall)
 					Text(
 						when {
-							!urlWatcherEnabled ->
-								"Needs browser evidence access to tell a short from a video"
+							!anyShortProofAvailable ->
+								"Needs browser evidence access or the Native Shorts grant"
 							!enrichment -> "Needs video lookups to confirm the clip is real"
 							shortClips ->
 								"On — verified shorts count from 10s; everything " +
@@ -387,10 +635,46 @@ private fun ScrobbleControls(
 					)
 				}
 				Switch(
-					checked = shortClips && urlWatcherEnabled && enrichment,
+					checked = shortClips && anyShortProofAvailable && enrichment,
 					onCheckedChange = onToggleShortClips,
-					enabled = urlWatcherEnabled && enrichment,
+					enabled = anyShortProofAvailable && enrichment,
 				)
+			}
+
+			// Picture-in-picture publishes no seekbar and no MediaSession
+			// position, so this is the only thing standing between a PiP Short
+			// and counting for nothing at all. Usage Access is what makes the
+			// audio evidence attributable to YouTube rather than to "some app".
+			Spacer(Modifier.height(8.dp))
+			Row(verticalAlignment = Alignment.CenterVertically) {
+				Column(Modifier.weight(1f)) {
+					Text("Count picture-in-picture", style = MaterialTheme.typography.titleSmall)
+					Text(
+						when {
+							!usageAccessGranted ->
+								"Needs Usage access — without it YouTube can't be told " +
+									"apart from any other app playing audio"
+							pipInference ->
+								"On — a Short that keeps playing in PiP is credited from " +
+									"elapsed time, marked inferred rather than measured"
+							else -> "Off — time in PiP counts for nothing"
+						},
+						style = MaterialTheme.typography.bodySmall,
+					)
+				}
+				Switch(
+					checked = pipInference && usageAccessGranted,
+					onCheckedChange = onTogglePipInference,
+					enabled = usageAccessGranted,
+				)
+			}
+			if (!usageAccessGranted) {
+				Row(
+					horizontalArrangement = Arrangement.spacedBy(8.dp),
+					modifier = Modifier.padding(top = 4.dp),
+				) {
+					OutlinedButton(onClick = onGrantUsageAccess) { Text("Grant usage access") }
+				}
 			}
 
 			if (queuedCount > 0) {
@@ -530,10 +814,11 @@ private fun AccessBanner(onGrantAccess: () -> Unit) {
 		Column(Modifier.padding(12.dp)) {
 				Text("Notification Access required", style = MaterialTheme.typography.titleSmall)
 				Text(
-					"Android gates browser media-session access behind this grant. " +
+					"Android gates media-session access behind this grant. " +
 						"RustedWax reads media-notification title, text, and site labels " +
-						"from Brave and Chrome only; non-media notifications and every " +
-						"other app are ignored.",
+						"from Brave and Chrome only. If you opt into a native YouTube app, " +
+						"it reads that package's MediaSession metadata/state, not its " +
+						"notification contents. Every other app is ignored.",
 				style = MaterialTheme.typography.bodySmall,
 			)
 			Spacer(Modifier.height(8.dp))
@@ -562,9 +847,9 @@ private fun SessionList(
 		return
 	}
 	if (sessions.isEmpty()) {
-			Text(
-				"No active media sessions.\n\nOpen youtube.com in Brave or Chrome, play a video, " +
-					"then come back.",
+		Text(
+				"No active supported media sessions.\n\nOpen youtube.com in Brave or Chrome, or play " +
+					"something in an enabled native YouTube app, then come back.",
 			style = MaterialTheme.typography.bodyMedium,
 			modifier = Modifier.padding(top = 24.dp),
 		)
@@ -601,6 +886,15 @@ private fun SessionCard(
 					Verdict(s, effectiveDurationMs, facts)
 			}
 			Text(s.packageName, style = MaterialTheme.typography.labelSmall)
+			Field("origin", "${s.origin.displayName} · ${s.packageName}")
+			Field(
+				"source proof",
+				if (s.isForegroundShort) {
+					"native foreground Short player"
+				} else {
+					"MediaSession${if (s.confirmed?.isShort == true) " + browser /shorts/ URL" else ""}"
+				},
+			)
 
 			Spacer(Modifier.height(8.dp))
 			Field("title", s.title)
@@ -609,22 +903,45 @@ private fun SessionCard(
 			Field("duration", s.durationMs?.let { fmt(it) })
 			Field("position", s.positionMs?.let { fmt(it) })
 			Field("played", fmt(s.playedMs))
+			s.ownerHandle?.let { Field("owner handle", it) }
 			if (s.loopDetected) Field("loop", "detected — continuous viewing capped to one")
 			s.explicitAdSignal?.let { Field("ad", "blocked — YouTube UI: \"$it\"") }
 			Field(
 				"browser scan",
 				when {
+					s.isForegroundShort -> "not used — separate native foreground observer"
+					s.isNative -> "not applicable to native MediaSessions"
 					s.accessibilityCoverage != null -> "covered for this track"
 					s.browserEvidenceEnabled -> "unavailable for this track"
 					else -> "disabled — notification/lookup fallback disclosed"
 				},
 			)
+			if (s.isForegroundShort) {
+				Field(
+					"observer coverage",
+					if (s.playbackState == "FOREGROUND_PROOF_MISSING") {
+						"missing — progress frozen during bounded finalization grace"
+					} else {
+						"complete title + exact handle + current/total seekbar"
+					},
+				)
+				Field(
+					"native ad guard",
+					"only a literal YouTube ad label inside the proven player blocks",
+				)
+			} else if (s.isNative) {
+				Field(
+					"native ad guard",
+					"unproven — browser visible-ad protection does not apply; see raw metadata/state",
+				)
+			}
 
 			when (val id = s.identity) {
 				is YouTubeProbe.Identity.Confirmed -> {
 					Field("video id", id.videoId)
 					Field("url", id.url)
 					Field("proven by", id.source)
+					id.exactIdRoute?.let { Field("id route", it) }
 				}
 
 				is YouTubeProbe.Identity.SiteOnly -> {
@@ -706,7 +1023,7 @@ private fun SessionCard(
 					"listed",
 					when (facts?.isUnlisted) {
 						null -> "— (unknown)"
-						true -> if (s.confirmed?.isShort == true) {
+						true -> if (s.hasShortSourceProof) {
 							"no — unlisted Short blocked"
 						} else {
 							"no — unlisted"
@@ -758,7 +1075,7 @@ private fun Verdict(s: SessionSnapshot, effectiveDurationMs: Long?, facts: Video
 		!s.isTarget -> "SHOULD NOT BE WATCHED" to Color(0xFFC62828)
 		s.explicitAdSignal != null ->
 			"blocked: YouTube UI says ad" to Color(0xFFC62828)
-		s.confirmed?.isShort == true && facts?.isUnlisted == true ->
+		s.hasShortSourceProof && facts?.isUnlisted == true ->
 			"blocked: unlisted Short" to Color(0xFFC62828)
 		s.isYouTube && !s.title.isNullOrBlank() && effectiveDurationMs != null &&
 			s.confirmed != null -> "payload OK" to Color(0xFF2E7D32)

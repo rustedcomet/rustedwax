@@ -42,6 +42,35 @@ data class SessionSnapshot(
 	/** Fresh successful visible-YouTube-root scan frozen for this exact track. */
 	val accessibilityCoverage: MediaSessionAccessibilityEvidence.Coverage? = null,
 	val playbackState: String,
+	/**
+	 * The Short is still playing but its progress surface has gone away, so
+	 * nothing further can be measured.
+	 *
+	 * Measured on 2026-08-05 in picture-in-picture: the accessibility tree keeps
+	 * `reel_watch_fragment_root`, `reel_watch_player` and `reel_time_bar`, but
+	 * the time bar loses its `SeekBar` child and no time text exists anywhere in
+	 * the window, while YouTube's MediaSession reports `STATE_NONE` with
+	 * `position=0`. Neither source can say how much was played.
+	 *
+	 * This is not the same as "0% was played", and reporting it as such is what
+	 * made a PiP session indistinguishable from a parser bug for most of a day.
+	 */
+	val foregroundProgressLost: Boolean = false,
+	/**
+	 * The part of [playedMs] that was inferred rather than measured.
+	 *
+	 * Non-zero only for a foreground Short that continued in picture-in-picture,
+	 * where no progress source exists at all and elapsed wall-clock was credited
+	 * on the evidence that YouTube still held a visible window and media audio
+	 * was started. See [PipPlaybackInference] for what that evidence can and
+	 * cannot prove.
+	 *
+	 * Carried separately so every listen can say how much of it was watched on a
+	 * seekbar we could read and how much was deduced. A scrobble built on this
+	 * is still a claim about a real listen — it is just a weaker one, and the log
+	 * has to be able to say so.
+	 */
+	val inferredPlayedMs: Long = 0,
 	val isPlaying: Boolean,
 	/** playedMs / durationMs; null when duration is unknown. */
 	val percentPlayed: Double?,
@@ -55,6 +84,14 @@ data class SessionSnapshot(
 	val notificationHint: NotificationHints.Hint?,
 	val metadataLines: List<String>,
 	val trackStartedAtEpochSec: Long,
+	/** Structured native metadata that can explicitly identify podcast/episode context. */
+	val genre: String? = null,
+	/** Native source generation; invalidated by opt-out, Stop and listener reconnect. */
+	val sourceEpoch: Long? = null,
+	/** Literal observer provenance; never inferred from a resolver result. */
+	val sourceProof: SourceProof = SourceProof.MEDIA_SESSION,
+	/** Exact accessibility owner handle for the native foreground-Short route. */
+	val ownerHandle: String? = null,
 ) {
 	val confirmed: YouTubeProbe.Identity.Confirmed?
 		get() = identity as? YouTubeProbe.Identity.Confirmed
@@ -64,9 +101,28 @@ data class SessionSnapshot(
 		get() = identity is YouTubeProbe.Identity.Confirmed ||
 			identity is YouTubeProbe.Identity.SiteOnly
 
+	val origin: YouTubeProbe.Origin get() = YouTubeProbe.originForPackage(packageName)
+
+	val isNative: Boolean get() = YouTubeProbe.isNativePackage(packageName)
+
+	val isNativeYouTubeMusic: Boolean
+		get() = packageName == YouTubeProbe.YOUTUBE_MUSIC_PACKAGE
+
+	val isForegroundShort: Boolean
+		get() = sourceProof == SourceProof.NATIVE_FOREGROUND_SHORT
+
+	/** Browser path proof or the separately proven native foreground player. */
+	val hasShortSourceProof: Boolean
+		get() = isForegroundShort || confirmed?.isShort == true
+
 	/** Progress-only threshold check; final eligibility still belongs to ScrobbleRules. */
 	fun reachedThreshold(threshold: Double): Boolean =
 		(percentPlayed ?: 0.0) >= threshold
+}
+
+enum class SourceProof {
+	MEDIA_SESSION,
+	NATIVE_FOREGROUND_SHORT,
 }
 
 /** Immutable URL, playlist and cache evidence carried into finalization. */
@@ -79,4 +135,46 @@ data class ResolverContext(
 	val knownChannel: String? = null,
 	val knownDurationSeconds: Long? = null,
 	val rejectedVideoIds: Set<String> = emptySet(),
+	/**
+	 * Unique structured id proven while an exact-ID-less native track was still
+	 * playing. Memory-only carry authority; finalization must re-fetch it.
+	 */
+	val preResolvedNativeVideoId: String? = null,
+	/** The resolver predicate whose uniqueness proof authorized that id. */
+	val preResolvedNativeRoute: NativePreResolvedRoute? = null,
+	/**
+	 * Playlist bar name read off the native watch screen.
+	 *
+	 * Kept separate from [playlistId], which stays exclusively browser
+	 * address-bar evidence, so a native observation can never be mistaken for a
+	 * proven URL. Resolved to an id at finalization
+	 * (`PHASE_NATIVE_PLAYLIST_IDENTITY.md` §7).
+	 */
+	val nativePlaylistName: String? = null,
+	val nativePlaylistOwner: String? = null,
+	val nativePlaylistTotal: Int? = null,
 )
+
+enum class NativePreResolvedRoute {
+	RAW_TITLE_CHANNEL,
+	STRUCTURED_MUSIC,
+
+	/**
+	 * The id came from the bounded entry list of the playlist being played.
+	 *
+	 * Kept distinct so finalization re-verifies against that same playlist.
+	 * Re-deriving it from the watch page instead loses the playlist's own
+	 * channel evidence, which is what silently dropped `Te Busco` /
+	 * `7J6xA1_f8as` on 2026-08-04.
+	 */
+	PLAYLIST,
+
+	/**
+	 * The id came from the signed-in account's watch history.
+	 *
+	 * Kept distinct for the same reason as [PLAYLIST]: finalization re-asks the
+	 * feed that produced it and requires the same id back, so a listen that
+	 * history has since re-described refuses instead of carrying a stale answer.
+	 */
+	HISTORY,
+}
