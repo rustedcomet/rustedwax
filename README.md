@@ -36,11 +36,11 @@ off-chain and is listed, with its reason, under **Not logged**.
 | --- | --- |
 | [Behavior contract](BEHAVIOR_CONTRACT.md) | The canonical product invariants and as-built audit |
 | [Field results](docs/FIELD_HISTORY.md) | Every device round from v0.8.8, with the evidence behind each fix |
-| [Field session 2026-08-05/06](FIELD_2026-08-05.md) | The most recent sessions: PiP measurement, the identity rebuild, the owner acceptance day, and what §5.1 turned out to be |
+| [Field session 2026-08-05/07](FIELD_2026-08-05.md) | The most recent sessions: PiP measurement, the identity rebuild, the owner acceptance day, what §5.1 turned out to be, and the continuity rounds that followed |
 | [Release history](docs/RELEASE_HISTORY.md) | Version-by-version specification status |
 | [Testing](TESTING.md) | How the suite is structured and run |
 | [Development plan](DEVELOPMENT_PLAN.md) | Phased build plan and the port map from the extension |
-| [Expansion plan](PHASE_EXPANSION.md) | The forward plan after v0.9.11: correctness fixes, privacy, and the architecture for more platforms |
+| [Expansion plan](PHASE_EXPANSION.md) | The forward plan after the v0.9.x field rounds: correctness fixes, privacy, and the architecture for more platforms |
 
 [PHASE_EXPANSION.md](PHASE_EXPANSION.md) is the only forward-looking phase document. The rest are
 historical records: [Phase 0](PHASE0.md), [Phase 4](PHASE4.md),

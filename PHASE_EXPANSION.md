@@ -1,9 +1,12 @@
 # Platform expansion and correctness — build plan
 
-This document is the plan for the work after v0.9.11. It was written on 2026-08-07 from a
-side-by-side reading of four upstream projects, and it is the contract for the phases below.
+This document is the plan for the work after the v0.9.x field rounds. It was written on 2026-08-07
+from a side-by-side reading of four upstream projects, and it is the contract for the phases below.
 It does not override `BEHAVIOR_CONTRACT.md`; where the two disagree, the contract wins and this
 document is wrong.
+
+Nothing in it has been started. v0.9.12 and v0.9.13 landed after it was written and were field
+repairs, not plan work — but two of them moved facts this plan is built on, recorded in §2.1.
 
 Sources read in full:
 
@@ -51,6 +54,25 @@ checking the source:
 One item was found to be **less constrained than assumed**: YouTube chapters are not blocked by the
 platform. MediaSession does not carry them, but `YouTubePageResolver` already fetches the watch
 page, and chapters are in it. Chapters are a scope decision, not a capability gap. See §6.5.
+
+### 2.1 What v0.9.12–v0.9.13 changed underneath this plan
+
+Field repairs, all recorded in `FIELD_2026-08-05.md` §17–§18. Two of them touch sections below.
+
+- **§3.6 now has a third normalizer.** `OwnerHandle` composes to **NFC** as of v0.9.13, because an
+  owner handle may be spelled in any script and the footer and the watch page need not agree on how
+  to encode a cedilla. `TrackIdentity` uses NFKC, `DedupLedger` still uses neither. That is three
+  components with three answers to "are these the same string", which is exactly the latent
+  duplicate-broadcast bug §3.6 exists for — and it is no longer hypothetical, because a dedup key
+  now reads `…|@eduardaarebouçass|496153`. Note when doing §3.6 that the shared normalizer cannot
+  simply be NFKC everywhere: an **identity** field may only use canonical equivalence, because NFKC
+  folds distinct characters together.
+- **§3.5's premise is confirmed from the other direction.** The handle pattern was ASCII-only and
+  silently refused every non-ASCII creator; `TitleParser` has the same shape of assumption about
+  zero-width and RTL marks. Both are "a field that looks correct on screen and does not match", and
+  the handle case cost every listen by those creators until it was measured.
+
+Neither is done here — they are notes for whoever does §3.5 and §3.6.
 
 ---
 
@@ -150,9 +172,13 @@ already covered.
 
 ### 3.6 Dedup key normalization
 
-`DedupLedger.keyFor` lowercases but does not NFKC-normalize. `TrackIdentity` does. Two components
-that disagree about whether two strings are the same track is a latent duplicate-broadcast bug,
-independent of §3.5 — fix both together and share one normalizer.
+`DedupLedger.keyFor` lowercases but does not normalize. `TrackIdentity` uses NFKC. `OwnerHandle`
+uses NFC (v0.9.13, §2.1). Three components with three answers to "are these the same string" is a
+latent duplicate-broadcast bug, independent of §3.5 — fix them together and share one normalizer.
+
+The shared normalizer is not simply "NFKC everywhere". Presentation fields may fold compatibility
+variants; an **identity** field may not, because NFKC maps distinct characters onto each other and
+would let two different handles collide. The split is deliberate and has to survive the merge.
 
 ### 3.7 Bare `MV` suffix
 

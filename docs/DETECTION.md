@@ -67,6 +67,18 @@ title, or handle plus length, each with a unique match; handle alone resolves on
 own recent history holds exactly one Short by that channel, and refuses outright when two or more are
 indistinguishable.
 
+Because it is mandatory, what counts as a handle matters more than anything else here — and until
+v0.9.13 it was read as ASCII only, so `@eduardaarebouçass` was refused on the cedilla and every
+listen by every creator with an accent or a non-Latin script in their handle was refused with it. A
+handle is letters, marks, digits and YouTube's `.`, `_`, `-`, in any script, composed to NFC so one
+handle encoded two ways is one handle. When the handle *is* refused the log now says whether none or
+several were found, and quotes what the footer held — that distinction is what found this one.
+
+**A video handed to the Shorts route is scored, not discarded** (v0.9.13). Opening Shorts while a
+watch-page video is playing hands the player to this observer, and the MediaSession stops counting so
+the same seconds are never scored twice. What it had already earned is finalized first, unless the
+Short taking over is that same item.
+
 A Short publishes **nothing** to its MediaSession — measured 2026-08-06, `active=false`, `state=1`,
 `metadata: size=0` — so the accessibility observer is the only thing that can see one at all. When
 it cannot, and independent evidence says something is playing that nothing else is counting, the log
